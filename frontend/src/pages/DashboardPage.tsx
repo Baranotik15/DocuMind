@@ -29,8 +29,8 @@ export function DashboardPage(): JSX.Element {
         <Table.Tbody>
           {events.map((event) => (
             <Table.Tr key={event.id}>
-              <Table.Td>{event.timestamp}</Table.Td>
-              <Table.Td>{event.type}</Table.Td>
+              <Table.Td ff="monospace">{event.timestamp}</Table.Td>
+              <Table.Td ff="monospace">{event.type}</Table.Td>
               <Table.Td>{event.detail}</Table.Td>
             </Table.Tr>
           ))}

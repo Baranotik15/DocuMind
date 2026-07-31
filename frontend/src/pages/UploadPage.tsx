@@ -40,9 +40,9 @@ export function UploadPage(): JSX.Element {
         <Table.Tbody>
           {documents.map((document) => (
             <Table.Tr key={document.id}>
-              <Table.Td>{document.filename}</Table.Td>
-              <Table.Td>{document.status}</Table.Td>
-              <Table.Td>{document.uploadedAt}</Table.Td>
+              <Table.Td ff="monospace">{document.filename}</Table.Td>
+              <Table.Td ff="monospace">{document.status}</Table.Td>
+              <Table.Td ff="monospace">{document.uploadedAt}</Table.Td>
             </Table.Tr>
           ))}
         </Table.Tbody>
