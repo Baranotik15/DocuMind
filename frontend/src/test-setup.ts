@@ -15,3 +15,16 @@ Object.defineProperty(window, 'matchMedia', {
     dispatchEvent: () => false,
   }),
 })
+
+// jsdom doesn't implement ResizeObserver; Mantine's Select/Combobox dropdown
+// (its internal ScrollArea) reads it to track scrollbar size.
+class ResizeObserverStub {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+Object.defineProperty(window, 'ResizeObserver', {
+  writable: true,
+  value: ResizeObserverStub,
+})
