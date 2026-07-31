@@ -1,0 +1,21 @@
+/*
+ * Base nav item treatment. The active/inactive color and the amber
+ * signature-mark border color are applied per-item via inline style (they
+ * depend on react-router's `isActive`) - this stylesheet only owns the
+ * structural shape and the hover state, which inline styles can't express.
+ */
+.navLink {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--mantine-radius-sm);
+  border-left: 3px solid transparent;
+  text-decoration: none;
+  font-size: var(--mantine-font-size-sm);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.navLink:hover {
+  background-color: var(--doc-hairline);
+}
