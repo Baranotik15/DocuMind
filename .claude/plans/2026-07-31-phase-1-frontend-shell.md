@@ -436,3 +436,29 @@ the real backend yet, per the spec's Non-Goals.
 **Step 5: Commit**
 
 Only if Steps 1-4 required fixes; otherwise this task is verification-only.
+
+---
+
+## Known Issue: react-router-dom high-severity advisory (not yet fixed)
+
+Surfaced by `npm audit` on 2026-08-01, during the visual-design pass, while
+reinstalling `frontend/` deps - unrelated to that pass, but first noticed
+here since `react-router-dom` was introduced in Task 1 above.
+
+- **Package:** `react-router-dom@7.18.2` (pulls in `react-router@7.18.2`)
+- **Advisory:** [GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2)
+  — "React Router: RSC Mode CSRF Bypass Allows Action Execution Before 400
+  Response." Severity: high. Affects `react-router` `7.12.0 - 8.2.0`.
+- **Why not fixed yet:** `npm audit fix --force` wants to install
+  `react-router-dom@7.11.0` (a downgrade, and a breaking change per npm's
+  own warning) - not something to apply blindly mid-unrelated-PR without
+  understanding why the fix goes backward in version. The advisory is
+  specific to "RSC Mode" (React Router's Server Components/data mode);
+  this app is a plain Vite SPA using `BrowserRouter`/`Routes`/`Route`/
+  `NavLink` only, not RSC, so actual exploitability here is unclear but
+  unconfirmed either way - hasn't been verified, just assumed low risk.
+- **Follow-up needed:** investigate whether a non-breaking patched version
+  exists (check for a `7.x` release past `8.2.0`'s fixed line, not just
+  what `npm audit fix` proposes), confirm whether this app's routing usage
+  is actually in the affected code path, then upgrade/patch deliberately
+  as its own change - not bundled into a feature or design PR.
