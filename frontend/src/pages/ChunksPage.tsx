@@ -59,19 +59,24 @@ export function ChunksPage(): JSX.Element {
         value={selectedDocumentId}
         onChange={setSelectedDocumentId}
         allowDeselect={false}
+        size="md"
       />
 
-      <Stack gap="sm">
+      <Stack gap="md">
         {chunks.map((chunk) => (
-          // The amber left border is DocuMind's "signature mark" - it appears
-          // if, and only if, this chunk has unsaved edits (isDirty). It is
-          // never used as a background fill, only this thin structural mark.
+          // The sparkOrange left border + glow is DocuMind's "signature
+          // mark" - it appears if, and only if, this chunk has unsaved edits
+          // (isDirty). It is never used as a background fill, only this
+          // structural border-plus-glow mark (see design-principles.md).
           <Box
             key={chunk.id}
-            p="sm"
-            bdrs="sm"
+            p="md"
+            bg="var(--doc-surface)"
+            bdrs="lg"
             style={{
-              borderLeft: `3px solid ${chunk.isDirty ? 'var(--mantine-color-markAmber-6)' : 'transparent'}`,
+              borderLeft: `3px solid ${chunk.isDirty ? 'var(--mantine-color-sparkOrange-6)' : 'transparent'}`,
+              boxShadow: chunk.isDirty ? 'var(--doc-mark-glow)' : 'none',
+              transition: 'box-shadow 150ms ease, border-color 150ms ease',
             }}
           >
             <Textarea
@@ -79,14 +84,15 @@ export function ChunksPage(): JSX.Element {
               value={chunk.editedContent}
               onChange={(event) => handleChunkChange(chunk.id, event.currentTarget.value)}
               minRows={2}
-              styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}
+              size="md"
+              styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)', fontSize: 'var(--mantine-font-size-md)' } }}
             />
           </Box>
         ))}
       </Stack>
 
       <Group>
-        <Button onClick={() => void handleSave()} disabled={!selectedDocumentId}>
+        <Button onClick={() => void handleSave()} disabled={!selectedDocumentId} size="md" radius="xl">
           Save
         </Button>
       </Group>
