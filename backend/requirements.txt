@@ -7,3 +7,5 @@ sqlalchemy[asyncio]
 asyncpg
 psycopg[binary]
 alembic
+celery
+redis
