@@ -8,10 +8,11 @@ import { ChatPage } from './pages/ChatPage'
 import { ChunksPage } from './pages/ChunksPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { UploadPage } from './pages/UploadPage'
+import { cssVariablesResolver, theme } from './theme'
 
 export function App() {
   return (
-    <MantineProvider>
+    <MantineProvider theme={theme} cssVariablesResolver={cssVariablesResolver}>
       <BrowserRouter>
         <AppLayout>
           <Routes>

@@ -18,22 +18,62 @@
 
 ## Design Philosophy
 
-This project targets S-Tier SaaS design quality inspired by **Linear, Stripe, Vercel, and Airbnb**. Every interface should feel professional, polished, and intentional.
+DocuMind is a working tool for admin operators curating a RAG knowledge base -
+uploading documents, manually reviewing/editing machine-generated chunks
+before they're embedded, testing the chat pipeline, and monitoring system
+activity. It should read as a **precise editorial/systems tool**, not a
+marketing dashboard.
 
 ### Core Tenets
 
-- **Clarity over decoration** — every element serves a purpose; remove anything that doesn't communicate
-- **Consistency over novelty** — use established patterns from the design system before inventing new ones
-- **Subtlety over loudness** — rely on spacing, typography weight, and muted color to create hierarchy rather than bold borders or heavy shadows
-- **Data density without clutter** — present information-rich views that remain scannable through whitespace and type scale
+- **Clarity over decoration** - every element serves a purpose; remove
+  anything that doesn't communicate
+- **Restraint as a feature** - the one expressive device in this system (the
+  amber "signature mark", see below) is deliberately used in very few places.
+  Its rarity is what makes it meaningful - resist the urge to reach for it
+  decoratively
+- **Consistency over novelty** - reuse the same structural devices (the mark,
+  the mono/sans split) everywhere they apply, rather than inventing new ones
+  per page
+- **Data density without clutter** - tables and editing surfaces stay
+  scannable through whitespace and a clear mono/sans typographic split
+  between "data being inspected" and "UI chrome"
+
+### The Signature Element: the Amber Mark
+
+A **3px solid left border** in `mark-amber` (`#E2A93B`) is DocuMind's one
+signature visual device. It appears **only** on elements that are currently
+active, edited, or contextually relevant:
+
+- the active nav item (`AppLayout.tsx`)
+- a chunk with unsaved edits, i.e. `chunk.isDirty === true` (`ChunksPage.tsx`)
+- the chat `context-indicator` badge, because the context indicator is
+  inherently about relevance/highlighting (`ChatPage.tsx`) - this is the one
+  place amber appears outside an "edited" state, and it's intentional
+
+**Rules for the mark:**
+
+- It is **always** a left border, **never** a background fill, tint, or other
+  decoration.
+- It is applied conditionally (transparent border reserving the same 3px of
+  space when inactive, so nothing shifts layout when state toggles) - see the
+  `chunk.isDirty` treatment in `ChunksPage.tsx` for the reference
+  implementation.
+- Dashboard and Upload pages do **not** use amber anywhere - they have no
+  "edited/active" concept the mark would meaningfully apply to. Do not force
+  it in just for visual consistency; the absence is intentional.
+- Before adding a new amber usage anywhere in the app, ask: "is this thing
+  currently active, being edited, or the currently-relevant context?" If not,
+  it doesn't get the mark.
 
 ### Distinctiveness
 
-Avoid generic AI-generated aesthetics. The UI should feel **crafted**, not templated:
-- Use the brand color palette (brand, accent, indigo) with intention
-- Prefer light mode for the professional/business context
-- Use subtle contrast over harsh blacks/whites
-- Design for the operator (facility managers) — efficient, task-oriented, trustworthy
+- Avoid generic AI-generated SaaS aesthetics (purple/indigo gradients, heavy
+  shadows, pill-everything). DocuMind's palette is warm, muted, and
+  paper/ink-toned rather than glossy.
+- Prefer light mode only (no dark-mode support currently).
+- Rely on borders and warm neutral contrast over harsh black/white or heavy
+  shadows.
 
 ---
 
@@ -41,95 +81,104 @@ Avoid generic AI-generated aesthetics. The UI should feel **crafted**, not templ
 
 ### Information Ordering
 
-1. **Primary** — key metrics, page titles, action buttons. Use `fw={600}`, larger font sizes, `color="gray.9"`
-2. **Secondary** — body text, descriptions, supporting data. Use `fw={400}`, standard sizes, `color="gray.6"`
-3. **Tertiary** — labels, timestamps, metadata. Use smaller sizes, `color="gray.5"` or `c="dimmed"`
-4. **Disabled/placeholder** — `color="gray.4"`
+1. **Primary** - page titles, primary actions. `Title`/`fw={600}` in `ink`.
+2. **Secondary** - body text, descriptions, supporting data - `ink` at
+   regular weight.
+3. **Tertiary** - labels, timestamps, metadata - `ink-muted`
+   (`c="dimmed"` resolves to `ink-muted` globally, see Color & Theming).
+4. **Structural/contextual emphasis** - the amber mark (see above), used
+   instead of color-coded text weight for "this needs your attention."
 
 ### Depth
 
-- Rely on **borders and background contrast** rather than heavy shadows
-- Cards: `border: 1px solid gray.2`, `bg="white"` on a `gray.0` page background
-- Use shadows sparingly (elevation levels 0-2 for most elements)
-- Focus states: change border color, not shadow
+- Rely on **borders and warm background contrast** rather than heavy shadows.
+- Page background is `paper` (`#F5F3EE`); content surfaces that need to stand
+  apart from it (chat message bubbles, cards) use `white` or a light tint of
+  `signal-blue`, with a hairline border - not shadows.
+- Borders throughout the app (`Table`, `Paper[withBorder]`, `AppShell`
+  dividers, input borders) resolve through Mantine's `gray.3` slot, which is
+  globally remapped to the `hairline` token (`#DEDACD`) in `theme.ts` - so
+  "just use Mantine's default border" already gets DocuMind's warm hairline
+  color for free. Don't hardcode a separate border color unless you have a
+  specific reason to deviate.
 
 ---
 
 ## Color & Theming
 
-All colors come from `frontend/src/theme.ts`. Never use hardcoded hex values.
+All colors are defined once in `frontend/src/theme.ts`. **Never hardcode
+these hex values in component files** - reference them via the mechanisms
+below.
 
-### Brand Palette
+### Tokens
 
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `brand[5]` | `#ec322b` | Active navigation, brand accents |
-| `brand[9]` | `#aa0a0a` | Primary buttons, CTAs |
-| `accent[5]` | `#20f0d0` | Accent highlights, secondary metrics |
-| `indigo[5]` | `#6366f1` | Interactive elements, links |
+| Token | Hex | Role | How to use it |
+|-------|-----|------|----------------|
+| `paper` | `#F5F3EE` | Page/content background | Applied globally via `--mantine-color-body`; also `var(--doc-paper)` |
+| `ink` | `#1B1F2B` | Primary text; AppShell header background | Applied globally via `--mantine-color-text`; also `var(--doc-ink)` |
+| `ink-muted` | `#5B6472` | Secondary text/labels | `c="dimmed"` (remapped globally); also `var(--doc-ink-muted)` |
+| `signal-blue` | `#2C5F73` | Default interactive color (buttons, links, focus rings) | `theme.primaryColor` - use Mantine's default `color`/`variant` props, or explicit `color="signalBlue"` / `var(--mantine-color-signalBlue-6)` |
+| `mark-amber` | `#E2A93B` | The signature mark **only** - see Design Philosophy | `var(--mantine-color-markAmber-6)`, always as a `border-left`, never a fill |
+| `alert-red` | `#B84C3E` | Errors, the dislike-active state, destructive actions | `color="alertRed"` on `Button`/`ActionIcon`/`Badge`, or `var(--mantine-color-alertRed-6)` |
+| `hairline` | `#DEDACD` | Borders/dividers | Default via the global `gray.3` remap (see Visual Hierarchy); `var(--doc-hairline)` when you need the raw value outside a bordered component |
 
-### Neutral Grays
-
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `gray[0]` | `#f9fafb` | Page background, hover states |
-| `gray[1]` | `#f3f4f6` | Light borders |
-| `gray[2]` | `#e5e7eb` | Card borders, dividers |
-| `gray[3]` | `#d1d5db` | Input borders |
-| `gray[5]` | `#6b7280` | Tertiary text, labels |
-| `gray[6]` | `#4b5563` | Secondary text |
-| `gray[9]` | `#111827` | Primary text, headings |
-
-### Semantic Colors
-
-- **Success**: bg `#ecfed7`, text `#228403`
-- **Warning**: bg `#fff4e6`, text `#f97316`
-- **Error**: bg `#ffe7f2`, text `#e11d48`
-- **Info**: bg `rgba(99,102,241,0.1)`, text `indigo[5]`
+`signal-blue`, `mark-amber`, and `alert-red` are registered as full 10-shade
+Mantine color ramps (`buildShades()` in `theme.ts` derives the ramp from the
+single approved hex, placing it at shade index 6) so they work with Mantine's
+normal `variant`/hover/active color system. `paper`, `ink`, `ink-muted`, and
+`hairline` are flat tokens exposed via `theme.other` and wired into Mantine's
+own CSS variables through a `cssVariablesResolver` (see `theme.ts`), rather
+than being registered as ramps - they're used as-is, not through variants.
 
 ### Rules
 
-- Backgrounds: white for content surfaces, `gray[0]` for page chrome
-- Text on white: `gray[9]` for primary, `gray[6]` for secondary
-- Maintain **4.5:1** minimum contrast ratio (WCAG AA)
-- Use Mantine theme props (`c="gray.6"`, `bg="gray.0"`), not inline hex
+- Do not add new hardcoded hex colors in page/component files - extend
+  `theme.ts` instead if a new token is genuinely needed, and update this
+  document.
+- `mark-amber` is never a background/fill color anywhere in the app (see
+  Design Philosophy) - if you catch yourself writing
+  `bg="markAmber.something"`, stop and reconsider.
+- Mantine's built-in color names (`gray`, `blue`, `red`, etc.) are still
+  available and fine to use for anything that isn't one of the roles above
+  (e.g. the header's decorative status dot uses Mantine's stock `teal`, since
+  it's not a branded token, just a generic "ok" indicator).
+- Maintain WCAG AA contrast (4.5:1 normal text, 3:1 large text). `ink` on
+  `paper` and `paper` on `ink` both comfortably clear this; check new
+  combinations, especially anything placed on the dark header.
 
 ---
 
 ## Typography
 
-### Font Stack
+### Font Families
 
-```
-Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif
-```
+Two self-hosted (offline-safe, no CDN) type families, imported in
+`frontend/src/main.tsx` via `@fontsource/ibm-plex-sans` and
+`@fontsource/ibm-plex-mono` (weights 400/500/600 for Sans, 400/500 for Mono
+only - don't pull in more weights without a reason, it costs bundle size):
 
-Defined in `theme.ts` — never override the font family in components.
+- **IBM Plex Sans** (`theme.fontFamily` / `theme.headings.fontFamily`) - all
+  UI chrome: navigation, headings, buttons, labels, non-data body text. This
+  is the default; you don't need to set it explicitly.
+- **IBM Plex Mono** (`theme.fontFamilyMonospace`) - anything that is
+  **content/data being curated or inspected**, not UI chrome:
+  - chunk `originalContent`/`editedContent` text in `ChunksPage.tsx`
+    (`Textarea` `styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}`)
+  - data table cells in `DashboardPage.tsx` and `UploadPage.tsx` - filenames,
+    statuses, event types, timestamps, ids (`ff="monospace"` on the relevant
+    `Table.Td`s only, not the whole row/table)
+  - chat message content in `ChatPage.tsx` (`Text ff="monospace"`)
 
-### Scale (from theme.ts)
-
-| Token | Size | Usage |
-|-------|------|-------|
-| `xs` | 12px | Metadata, timestamps, small labels |
-| `sm` | 14px | Body text, nav items, primary content |
-| `md` | 16px | Emphasized body, form labels |
-| `lg` | 18px | Section headings |
-| `xl` | 20px | Page section titles |
-
-For large metrics/numbers, use inline `fz={28}` or `fz={32}` with `fw={600}`.
+  Free-text/human-authored fields (e.g. a dashboard event's `detail`
+  sentence) stay in Plex Sans - the mono treatment is for structured/data
+  fields, not prose.
 
 ### Weight Rules
 
-- **400 (Regular)** — body text, descriptions, default
-- **500 (Medium)** — buttons, active nav, emphasis
-- **600 (Semibold)** — card titles, section headers, metric values, page titles
-- **700 (Bold)** — avoid; use 600 instead for a cleaner look
-
-### Letter Spacing
-
-- Large numbers (28px+): `-0.01em` for tighter feel
-- Uppercase labels: `0.5px` wider for readability
-- Body text: default (no modification)
+- **400 (Regular)** - body text, descriptions, default
+- **500 (Medium)** - emphasis where 600 is too heavy
+- **600 (Semibold)** - page titles, active nav item, section headings
+- **700 (Bold)** - avoid; not loaded (not in the imported weight set)
 
 ---
 
@@ -137,42 +186,24 @@ For large metrics/numbers, use inline `fz={28}` or `fz={32}` with `fw={600}`.
 
 ### Base Grid
 
-All spacing follows a **4px base unit** via Mantine's spacing tokens:
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| `xs` | 10px | Tight gaps, inline spacing |
-| `sm` | 12px | Small padding, icon margins |
-| `md` | 16px | Standard padding, card spacing |
-| `lg` | 20px | Section padding, large gaps |
-| `xl` | 32px | Page section spacing |
+Mantine's default spacing tokens (`xs`/`sm`/`md`/`lg`/`xl`), used via the
+`gap`/`p`/`m` props - no custom spacing scale is defined in `theme.ts`
+currently, Mantine's defaults are used as-is.
 
 ### Layout Structure
 
-- **Sidebar**: 240px fixed width (Mantine AppShell.Navbar), hidden on mobile
-- **Header**: 60px fixed height
-- **Content area**: flexible, padding `xl` (32px)
-- **Card grid**: `SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}` with `spacing="lg"`
-
-### Border Radius (from theme.ts)
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| `xs` | 2px | Micro elements |
-| `sm` | 4px | Badges, small elements |
-| `md` | 6px | Buttons, inputs, nav items |
-| `lg` | 8px | Cards |
-| `xl` | 12px | Large containers |
-
-### Shadows (from theme.ts)
-
-| Token | Usage |
-|-------|-------|
-| `xs` | Subtle, barely visible |
-| `sm` | Cards at rest |
-| `md` | Elevated cards, dropdowns |
-| `lg` | Modals |
-| `xl` | Overlays |
+- **Header**: 60px fixed height, `ink` background, `paper`-toned text (see
+  `AppLayout.tsx` - the header locally overrides the `--mantine-color-text`
+  CSS variable for its own subtree rather than setting color per-child).
+  Includes the brand wordmark and a static decorative "system ok" status
+  indicator (no real health-check wiring yet).
+- **Navbar**: 240px fixed width, `paper` background (inherits the page
+  background), hidden below the `sm` breakpoint. Nav items get the amber mark
+  when active (`AppLayout.module.css` + inline style in `AppLayout.tsx`).
+- **Content max-width**: Chunks and Chat are editing/reading surfaces and
+  use `maw={900}` on their outer `Stack` for a comfortable line length.
+  Dashboard and Upload are tables that benefit from the extra width and stay
+  full-bleed (no `maw`).
 
 ---
 
@@ -190,40 +221,55 @@ All spacing follows a **4px base unit** via Mantine's spacing tokens:
   </Group>
 </Stack>
 
-// Wrong — no raw divs with inline styles
+// Wrong - no raw divs with inline styles for things Mantine already models
 ```
+
+Reach for a plain `Box`/inline `style` only for the small number of things
+Mantine's props don't cover - the amber mark's conditional `border-left` and
+CSS-variable scoping are the two examples currently in the codebase
+(`ChunksPage.tsx`, `AppLayout.tsx`).
 
 ### Buttons
 
-- **Primary** (`variant="filled"`): `brand[9]` bg, white text — one per view
-- **Secondary** (`variant="outline"`): white bg, `gray[3]` border
-- **Subtle** (`variant="subtle"`): transparent bg, text-colored
-- Sizing: `size="sm"` (compact), `size="md"` (standard)
+- **Primary** (`variant="filled"`): resolves to `signal-blue` (the default
+  `primaryColor`) - don't pass an explicit `color` unless you specifically
+  need a different one.
+- **Destructive** (dislike button, future delete actions): `color="alertRed"`.
+- Never `color="markAmber"` on a button/fill - see the mark's "never a fill"
+  rule.
 
-### Cards
+### Cards / Surfaces
 
-- `bg="white"`, `radius="lg"` (8px), `p="lg"` (20px)
-- Border: `1px solid var(--mantine-color-gray-2)`
-- Footer divider: top border only with `pt="md"` and `mt="lg"`
+- `Paper withBorder` picks up the `hairline` border color automatically (see
+  Visual Hierarchy) - no need to set a border color explicitly.
+- Content surfaces sitting on the `paper` page background use `white` or a
+  light tint of `signal-blue` (e.g. `bg="signalBlue.0"` for the user's own
+  chat messages) to differentiate from the page, not shadows.
 
-### Forms
+### The Amber Mark, Concretely
 
-- Use `useForm` from `@mantine/form` for validation
-- Use `useDisclosure` for modal state
-- Show loading with `<Skeleton />` components, not spinners
-- User feedback via `notifications.show()`
+Reference implementation (from `ChunksPage.tsx`):
+
+```tsx
+<Box
+  p="sm"
+  bdrs="sm"
+  style={{
+    borderLeft: `3px solid ${chunk.isDirty ? 'var(--mantine-color-markAmber-6)' : 'transparent'}`,
+  }}
+>
+  <Textarea ... />
+</Box>
+```
+
+Always reserve the 3px of space with a `transparent` border when inactive, so
+toggling the state doesn't shift layout.
 
 ### Icons
 
-- Source: `@tabler/icons-react`
-- Sizes: 16px (small actions), 20px (medium), 24px (large headers)
-- Always inherit color via `currentColor`
-
-### Data Fetching
-
-- Use Apollo Client hooks (`useQuery`, `useMutation`)
-- Loading: `<Skeleton />` placeholders matching content shape
-- Errors: `<Text c="red">`
+- No icon library is currently installed (Mantine components and text labels
+  only as of this pass). If one is added later, prefer `@tabler/icons-react`
+  and update this section.
 
 ---
 
@@ -231,25 +277,20 @@ All spacing follows a **4px base unit** via Mantine's spacing tokens:
 
 ### WCAG 2.1 AA Compliance
 
-- **Color contrast**: 4.5:1 for normal text, 3:1 for large text
-- **Keyboard navigation**: all interactive elements must be focusable and operable
-- **Focus indicators**: visible outline on `:focus-visible`, suppressed on mouse click
-- **Semantic HTML**: use `<nav>`, `<main>`, `<button>` vs generic `<div>`
-- **ARIA labels**: required on icon-only buttons (`aria-label="Settings"`)
-- **Decorative icons**: `aria-hidden="true"` on icons next to text labels
-
-### Focus Style
-
-```tsx
-// Mantine handles this by default, but for custom elements:
-// outline: 2px solid rgba(99, 102, 241, 0.3), outline-offset: 2px
-```
-
-### Screen Readers
-
-- Use `VisuallyHidden` from Mantine for screen-reader-only text
-- Dynamic content: `role="status"` with `aria-live="polite"`
-- Progress indicators: `role="progressbar"` with `aria-valuenow`
+- **Color contrast**: 4.5:1 for normal text, 3:1 for large text - verify any
+  new color combination, especially text placed on the dark (`ink`) header.
+- **Keyboard navigation**: all interactive elements must be focusable and
+  operable. Focus rings use `signal-blue` automatically (Mantine's
+  `--mantine-primary-color-filled`, driven by `theme.primaryColor`) - don't
+  override focus-ring color to amber or red.
+- **Semantic HTML**: use `<nav>` (`AppShell.Navbar aria-label="Main
+  navigation"`), `<main>`, `<button>` vs generic `<div>`.
+- **ARIA labels**: required on icon-only buttons (e.g. the dislike
+  `ActionIcon` in `ChatPage.tsx` toggles its `aria-label`/`aria-pressed`
+  between "Dislike message" and "Message disliked").
+- **Decorative content**: the header's status dot + "system ok" text is
+  marked `aria-hidden="true"` on its wrapping `Group` since it conveys no
+  real (non-fake) information yet.
 
 ---
 
@@ -257,50 +298,28 @@ All spacing follows a **4px base unit** via Mantine's spacing tokens:
 
 ### Breakpoints
 
-| Name | Width | Target |
-|------|-------|--------|
-| `base` | 0px+ | Mobile (375px reference) |
-| `sm` | 768px+ | Tablet |
-| `md` | 992px+ | Small desktop |
-| `lg` | 1200px+ | Desktop (1440px reference) |
-| `xl` | 1408px+ | Large desktop |
-
-### Responsive Props
-
-```tsx
-<SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing={{ base: "sm", md: "lg" }}>
-<Box p={{ base: "md", lg: "xl" }}>
-```
+Mantine's default breakpoints; the only one in active use today is `sm`
+(`AppShell navbar={{ breakpoint: 'sm' }}`), which collapses the sidebar on
+narrow viewports.
 
 ### Mobile Adaptations
 
-- Sidebar collapses via AppShell `breakpoint="sm"`
-- Card grid stacks to single column
-- Reduce padding (`xl` to `md`)
-- Scale down heading sizes
+- Sidebar collapses via `AppShell`'s built-in `breakpoint="sm"` behavior - no
+  custom CSS needed.
+- Chunks/Chat's `maw={900}` naturally becomes full-width on narrow viewports
+  since `max-width` only constrains, never forces, width.
 
 ---
 
 ## Motion & Interaction
 
-### Transitions
-
-- **Duration**: 150-200ms for hover/focus, 300ms for layout changes
-- **Easing**: browser default (`ease`)
-- **Properties**: `background`, `border-color`, `opacity` — avoid animating `width`/`height`
-
-### Philosophy
-
-Motion should be **subtle and purposeful**:
-- Hover: background color shift to `gray[0]`
-- Active nav: tinted background with brand color at 10% opacity
-- Toggle switches: smooth slide (200ms)
-- No bouncing, pulsing, or decorative animation
-
-### Micro-Interactions (Optional)
-
-- Button press: `transform: scale(0.98)` on `:active` (100ms)
-- Card entrance: `opacity 0→1, translateY 8px→0` (300ms, ease-out)
+- **Duration**: ~150ms for hover/focus transitions (see
+  `AppLayout.module.css`'s `.navLink` hover).
+- **Properties**: `background-color`, `color` - avoid animating layout
+  properties (`width`/`height`/`border-width`) since the mark's border
+  toggles are meant to read as instantaneous state, not an animated reveal.
+- No decorative motion (no bouncing, pulsing, skeleton shimmer, etc.) as of
+  this pass.
 
 ---
 
@@ -308,30 +327,19 @@ Motion should be **subtle and purposeful**:
 
 ### Files
 
-- Components: `PascalCase.tsx` (`SiteCard.tsx`, `CallMetrics.tsx`)
-- Hooks: `camelCase.ts` prefixed with `use` (`useSiteData.ts`)
-- Utilities: `camelCase.ts` (`formatCurrency.ts`)
-- CSS modules: `ComponentName.module.css`
-
-### Component Props
-
-- Boolean props: `is`/`has` prefix (`isLoading`, `hasError`)
-- Callbacks: `on` prefix (`onSubmit`, `onClose`)
-- Children slots: descriptive names (`leftSection`, `rightSection`)
+- Components: `PascalCase.tsx` (`ChunksPage.tsx`, `AppLayout.tsx`)
+- CSS Modules: `ComponentName.module.css` (`AppLayout.module.css`)
+- Theme: single source of truth at `frontend/src/theme.ts`
 
 ### Theme Tokens
 
-Always reference via Mantine's token system:
-
 ```tsx
-// Colors: "colorName.shade"
-c="gray.9"  bg="gray.0"  color="brand.5"
+// Ramp colors (signal-blue / mark-amber / alert-red): Mantine token syntax
+color="alertRed"  bg="signalBlue.0"  var(--mantine-color-markAmber-6)
 
-// Spacing: named tokens
-p="md"  gap="lg"  m="sm"
-
-// Radius and shadow: named tokens
-radius="lg"  shadow="sm"
+// Flat tokens (paper / ink / ink-muted / hairline): CSS custom properties,
+// or rely on the global remap (--mantine-color-body/text/dimmed/gray-3)
+var(--doc-ink)  var(--doc-paper)
 ```
 
 ---
@@ -341,36 +349,35 @@ radius="lg"  shadow="sm"
 Use this before finalizing any UI implementation:
 
 ### Visual Quality
-- [ ] Uses Mantine components (not raw HTML/divs with inline styles)
-- [ ] Uses theme tokens (not hardcoded colors, spacing, or font sizes)
-- [ ] Visual hierarchy: clear primary/secondary/tertiary text levels
-- [ ] Consistent spacing following the 4px grid
-- [ ] Font weights: 500 or 600 only (no 700)
-- [ ] Border radius proportional to element size
+- [ ] Uses Mantine components (not raw HTML/divs with inline styles), except
+      where the amber mark or CSS-variable scoping genuinely requires it
+- [ ] Uses theme tokens (`theme.ts`), never a new hardcoded hex value
+- [ ] The amber mark, if used, is a left border only, applied only to an
+      active/edited/contextually-relevant element, and reserves its 3px of
+      space even when inactive
+- [ ] Mono font applied to data/content being inspected, not to UI chrome
+- [ ] Font weights: 400/500/600 only (700 isn't loaded)
 
 ### Functionality
-- [ ] Loading states with `<Skeleton />`
-- [ ] Error states with clear messaging
-- [ ] Empty states with helpful guidance
-- [ ] Form validation with `useForm`
-- [ ] Modal state with `useDisclosure`
-- [ ] User feedback with `notifications`
+- [ ] Loading/empty/error states considered
+- [ ] Existing tests (`npm test`) still pass unchanged - don't restructure
+      DOM in ways that break `getByRole`/`getByText`/`data-testid` queries
 
 ### Responsiveness
-- [ ] Works at mobile (375px), tablet (768px), desktop (1440px)
-- [ ] Responsive props on grid/layout components
-- [ ] Sidebar collapses on mobile
+- [ ] Works with the sidebar collapsed (`sm` breakpoint and below)
+- [ ] Chunks/Chat `maw={900}` respected for new editing/reading surfaces
 
 ### Accessibility
 - [ ] Keyboard navigable (Tab, Enter, Escape)
-- [ ] Focus indicators visible on `:focus-visible`
-- [ ] Color contrast >= 4.5:1 for text
+- [ ] Focus indicators visible (`signal-blue`, Mantine's default - don't
+      override)
+- [ ] Color contrast >= 4.5:1 for text, including anything on the `ink`
+      header background
 - [ ] Icon-only buttons have `aria-label`
-- [ ] Semantic HTML elements used
+- [ ] Purely decorative elements are `aria-hidden`
 
 ### Polish
-- [ ] Hover states on all interactive elements
-- [ ] Transitions are 150-300ms, subtle
+- [ ] Hover states on interactive elements (~150ms transitions)
 - [ ] No console errors
-- [ ] Icons from `@tabler/icons-react` with consistent sizing
-- [ ] Original design respected (if mockup provided)
+- [ ] `npm run lint` (oxlint) and `npm run build` (`tsc -b && vite build`)
+      both pass
