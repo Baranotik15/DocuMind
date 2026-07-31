@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}\"/.claude/hooks/ci-full.sh",
+            "timeout": 600,
+            "description": "Run project CI checks before commit"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}\"/.claude/hooks/session-finalize.sh",
+            "timeout": 30,
+            "description": "Remind to review branch changes on session end"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}\"/.claude/hooks/worktree-create.sh",
+            "timeout": 30,
+            "description": "Create worktree in .worktrees/ with matching branch"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}\"/.claude/hooks/worktree-remove.sh",
+            "timeout": 15,
+            "description": "Clean up branch after worktree removal"
+          }
+        ]
+      }
+    ]
+  },
+  "plansDirectory": ".claude/plans"
+}
