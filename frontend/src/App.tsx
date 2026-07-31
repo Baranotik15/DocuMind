@@ -4,6 +4,7 @@ import { MantineProvider } from '@mantine/core'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 
 import { AppLayout } from './layout/AppLayout'
+import { UploadPage } from './pages/UploadPage'
 
 export function App() {
   return (
@@ -12,7 +13,7 @@ export function App() {
         <AppLayout>
           <Routes>
             <Route path="/" element={<Navigate to="/upload" replace />} />
-            <Route path="/upload" element={<div>Upload page</div>} />
+            <Route path="/upload" element={<UploadPage />} />
             <Route path="/chunks" element={<div>Chunks page</div>} />
             <Route path="/chat" element={<div>Chat page</div>} />
             <Route path="/dashboard" element={<div>Dashboard page</div>} />
