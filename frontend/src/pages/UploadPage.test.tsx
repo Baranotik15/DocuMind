@@ -15,10 +15,11 @@ describe('UploadPage', () => {
     expect(await screen.findByText('release-plan.md')).toBeInTheDocument()
 
     const file = new File(['contents'], 'new-report.pdf', { type: 'application/pdf' })
-    // Mantine's FileInput renders a visually-hidden native <input type="file">
-    // behind a styled trigger button, so the accessible-name query used above
-    // for the seeded rows doesn't apply here - the hidden input carries no
-    // label of its own, only the visible trigger button does.
+    // @mantine/dropzone's <Dropzone> renders a visually-hidden native
+    // <input type="file"> (via react-dropzone's getInputProps()) behind the
+    // large styled drop area, so the accessible-name query used above for
+    // the seeded rows doesn't apply here - the hidden input carries no label
+    // of its own, only the drop area's visible copy does.
     const input = container.querySelector('input[type="file"]')
     expect(input).not.toBeNull()
 
