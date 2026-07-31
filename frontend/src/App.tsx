@@ -6,6 +6,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './layout/AppLayout'
 import { ChatPage } from './pages/ChatPage'
 import { ChunksPage } from './pages/ChunksPage'
+import { DashboardPage } from './pages/DashboardPage'
 import { UploadPage } from './pages/UploadPage'
 
 export function App() {
@@ -18,7 +19,7 @@ export function App() {
             <Route path="/upload" element={<UploadPage />} />
             <Route path="/chunks" element={<ChunksPage />} />
             <Route path="/chat" element={<ChatPage />} />
-            <Route path="/dashboard" element={<div>Dashboard page</div>} />
+            <Route path="/dashboard" element={<DashboardPage />} />
           </Routes>
         </AppLayout>
       </BrowserRouter>
