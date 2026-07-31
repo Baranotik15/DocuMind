@@ -1,21 +1,35 @@
 /*
- * Base nav item treatment. The active/inactive color and the amber
- * signature-mark border color are applied per-item via inline style (they
- * depend on react-router's `isActive`) - this stylesheet only owns the
+ * Base nav item treatment. The active/inactive color and the signature
+ * sparkOrange mark (border + glow) are applied per-item via inline style
+ * (they depend on react-router's `isActive`) - this stylesheet only owns the
  * structural shape and the hover state, which inline styles can't express.
  */
 .navLink {
   display: block;
-  padding: 8px 12px;
-  border-radius: var(--mantine-radius-sm);
+  padding: 12px 16px;
+  border-radius: var(--mantine-radius-md);
   border-left: 3px solid transparent;
   text-decoration: none;
-  font-size: var(--mantine-font-size-sm);
+  font-size: var(--mantine-font-size-md);
   transition:
     background-color 150ms ease,
-    color 150ms ease;
+    color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .navLink:hover {
-  background-color: var(--doc-hairline);
+  background-color: rgba(232, 237, 250, 0.06);
+}
+
+/*
+ * Decorative dot-grid "graph" texture on the navbar - a subtle nod to
+ * DocuMind's document/chunk connection graph. Kept low-opacity and confined
+ * to the navbar (not the working content area) so it reads as ambient
+ * texture, never clutter. See design-principles.md "Network Texture".
+ */
+.navbar {
+  background-color: var(--doc-void);
+  background-image: radial-gradient(circle, rgba(61, 107, 255, 0.22) 1px, transparent 1.6px);
+  background-size: 22px 22px;
+  border-right: 1px solid var(--doc-hairline);
 }
