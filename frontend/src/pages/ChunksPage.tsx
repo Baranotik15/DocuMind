@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { Button, Group, Select, Stack, Textarea, Title } from '@mantine/core'
+import { Box, Button, Group, Select, Stack, Textarea, Title } from '@mantine/core'
 
 import { apiClient } from '../api/client'
 import type { Chunk, DocumentSummary } from '../api/types'
@@ -49,7 +49,7 @@ export function ChunksPage(): JSX.Element {
   }
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" maw={900}>
       <Title order={2}>Chunks</Title>
 
       <Select
@@ -63,13 +63,25 @@ export function ChunksPage(): JSX.Element {
 
       <Stack gap="sm">
         {chunks.map((chunk) => (
-          <Textarea
+          // The amber left border is DocuMind's "signature mark" - it appears
+          // if, and only if, this chunk has unsaved edits (isDirty). It is
+          // never used as a background fill, only this thin structural mark.
+          <Box
             key={chunk.id}
-            label={chunk.id}
-            value={chunk.editedContent}
-            onChange={(event) => handleChunkChange(chunk.id, event.currentTarget.value)}
-            minRows={2}
-          />
+            p="sm"
+            bdrs="sm"
+            style={{
+              borderLeft: `3px solid ${chunk.isDirty ? 'var(--mantine-color-markAmber-6)' : 'transparent'}`,
+            }}
+          >
+            <Textarea
+              label={chunk.id}
+              value={chunk.editedContent}
+              onChange={(event) => handleChunkChange(chunk.id, event.currentTarget.value)}
+              minRows={2}
+              styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}
+            />
+          </Box>
         ))}
       </Stack>
 
