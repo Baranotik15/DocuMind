@@ -91,9 +91,9 @@ export function AppLayout({ children }: AppLayoutProps) {
               style={({ isActive }) => ({
                 color: isActive ? 'var(--doc-text)' : 'var(--doc-text-muted)',
                 fontWeight: isActive ? 700 : 500,
-                borderLeftColor: isActive ? 'var(--mantine-color-sparkOrange-6)' : 'transparent',
+                borderColor: isActive ? 'var(--mantine-color-sparkOrange-5)' : 'transparent',
                 boxShadow: isActive ? 'var(--doc-mark-glow)' : 'none',
-                backgroundColor: isActive ? 'rgba(61, 107, 255, 0.12)' : 'transparent',
+                backgroundColor: isActive ? 'rgba(10, 14, 26, 0.35)' : 'transparent',
               })}
             >
               {item.label}

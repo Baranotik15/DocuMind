@@ -31,7 +31,7 @@ const signalBlueBase = '#3D6BFF'
  * Secondary accent: active/highlighted state, secondary CTAs. Also the base
  * color of the signature "mark" - see below.
  */
-const sparkOrangeBase = '#FF7A29'
+const sparkOrangeBase = '#FF8A00'
 /** Errors, the dislike-active state, destructive actions - distinct from both blue and orange. */
 const alertMagentaBase = '#FF3D71'
 /**
@@ -164,7 +164,7 @@ export const theme = createTheme({
      * design-principles.md). Exposed once here so the exact glow never
      * drifts between the three call sites.
      */
-    markGlow: '0 0 12px rgba(255, 122, 41, 0.55)',
+    markGlow: '0 0 16px rgba(255, 138, 0, 0.75)',
   },
 })
 

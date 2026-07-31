@@ -62,6 +62,13 @@ export function UploadPage(): JSX.Element {
         acceptColor="sparkOrange"
         rejectColor="alertMagenta"
         classNames={{ root: classes.dropzone }}
+        // Mantine's own Dropzone stylesheet sets a hardcoded white
+        // background for [data-mantine-color-scheme='light'] inside
+        // `@layer mantine` - it was winning the cascade over our CSS
+        // module override. Inline styles always beat stylesheet rules
+        // regardless of layers/specificity, so the idle background is
+        // pinned here instead of fighting that rule in CSS.
+        styles={{ root: { backgroundColor: 'var(--doc-surface)' } }}
       >
         <Group justify="center" gap="lg" mih={160} style={{ pointerEvents: 'none' }}>
           <UploadIcon />

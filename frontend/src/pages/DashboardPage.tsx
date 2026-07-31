@@ -34,7 +34,7 @@ function StatCard({ label, value }: StatCardProps): JSX.Element {
 // .claude/plans/2026-07-31-phase-1-frontend-shell.md's Task 6 (charts are a
 // later, dedicated feature if the real backend ever needs one).
 const BAR_COLORS = ['var(--mantine-color-signalBlue-6)', 'var(--mantine-color-sparkOrange-6)']
-const BAR_GLOWS = ['0 0 10px rgba(61, 107, 255, 0.45)', '0 0 10px rgba(255, 122, 41, 0.45)']
+const BAR_GLOWS = ['0 0 12px rgba(61, 107, 255, 0.55)', '0 0 12px rgba(255, 138, 0, 0.65)']
 
 export function DashboardPage(): JSX.Element {
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
