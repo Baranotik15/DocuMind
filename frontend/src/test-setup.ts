@@ -1,4 +1,14 @@
+import { afterEach } from 'vitest'
+
+import { cleanup } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
+
+// The project's vitest config doesn't enable RTL's implicit `globals`-based
+// auto cleanup, so without this, DOM from one test in a multi-`it` file
+// leaks into the next (duplicate seeded content, stale event handlers).
+afterEach(() => {
+  cleanup()
+})
 
 // jsdom doesn't implement matchMedia; Mantine's MantineProvider reads it
 // to detect the OS color scheme.
