@@ -3,3 +3,7 @@ uvicorn[standard]
 pydantic-settings
 pytest
 httpx
+sqlalchemy[asyncio]
+asyncpg
+psycopg[binary]
+alembic
