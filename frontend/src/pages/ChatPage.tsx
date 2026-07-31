@@ -36,13 +36,24 @@ export function ChatPage(): JSX.Element {
   }
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" maw={900}>
       <Group justify="space-between">
         <Title order={2}>Chat</Title>
         {/* Placeholder slot for the future context-switch indicator feature -
             no behavior behind it yet, per
-            .claude/specs/phase-1-frontend-shell.md's Non-Goals. */}
-        <Badge data-testid="context-indicator" variant="light">
+            .claude/specs/phase-1-frontend-shell.md's Non-Goals.
+            This is the one place the amber signature mark is used outside an
+            "edited" state: the context indicator is about relevance, which
+            is exactly what the mark signifies. Same left-border device as
+            the active nav item / dirty chunks, de-pilled to a small radius
+            so the flat marked edge reads clearly. */}
+        <Badge
+          data-testid="context-indicator"
+          variant="outline"
+          color="signalBlue"
+          radius="sm"
+          style={{ borderLeft: '3px solid var(--mantine-color-markAmber-6)' }}
+        >
           Context: default
         </Badge>
       </Group>
@@ -55,20 +66,20 @@ export function ChatPage(): JSX.Element {
             withBorder
             p="sm"
             radius="md"
-            bg={message.role === 'user' ? 'blue.0' : 'gray.0'}
+            bg={message.role === 'user' ? 'signalBlue.0' : 'white'}
             style={{
               marginLeft: message.role === 'user' ? '20%' : 0,
               marginRight: message.role === 'assistant' ? '20%' : 0,
             }}
           >
             <Group justify="space-between" align="flex-start" wrap="nowrap">
-              <Text>{message.content}</Text>
+              <Text ff="monospace">{message.content}</Text>
               {message.role === 'assistant' ? (
                 <ActionIcon
                   aria-label={message.disliked ? 'Message disliked' : 'Dislike message'}
                   aria-pressed={message.disliked}
                   variant={message.disliked ? 'filled' : 'outline'}
-                  color="red"
+                  color="alertRed"
                   onClick={() => void handleDislike(message.id)}
                 >
                   👎
