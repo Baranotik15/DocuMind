@@ -56,6 +56,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    volumes:
+      # Shared with worker so uploaded documents (written here via
+      # app.storage.LocalDiskStorage, rooted at Settings.storage_base_dir =
+      # "./data/documents", i.e. /app/data/documents given WORKDIR /app) are
+      # visible to the worker's Celery task, which reads the same files back
+      # by storage_key. Without this, backend and worker each have their own
+      # ephemeral container filesystem and the worker's read 404s.
+      - documind_storage:/app/data
 
   worker:
     build: ./backend
@@ -66,6 +74,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - documind_storage:/app/data
 
 volumes:
   postgres_data:
+  documind_storage:
