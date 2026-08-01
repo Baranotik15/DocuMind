@@ -42,32 +42,37 @@ async def send_message(
     )
     await session.commit()
 
-    # 2. Embed the incoming message (single-text batch call).
-    [query_embedding] = await embed_texts([body.content])
-
-    # 3. Similarity search across ready documents' chunks. Empty result is
-    # valid (no ready documents yet) - passed through as an empty context
-    # list, not special-cased.
-    rows = (
-        await session.execute(
-            text(
-                "SELECT chunks.edited_content FROM chunks "
-                "JOIN documents ON documents.id = chunks.document_id "
-                "WHERE documents.status = 'ready' "
-                "ORDER BY chunks.embedding <=> :query_embedding ::vector "
-                "LIMIT :top_k"
-            ),
-            {
-                "query_embedding": format_vector(query_embedding),
-                "top_k": get_settings().chat_retrieval_top_k,
-            },
-        )
-    ).all()
-    context_chunks = [row.edited_content for row in rows]
-
-    # 4. Generate the assistant reply. The user message inserted above
-    # stays committed even if this fails - no assistant row gets written.
+    # 2-4. Embed the incoming message, run similarity search, and generate
+    # the assistant reply. The user message inserted above stays committed
+    # even if any of this fails - no assistant row gets written. Both the
+    # embedding call (2) and the chat completion call (4) hit the OpenAI
+    # client and can raise LLMError, so both are covered by the same
+    # handler.
     try:
+        # 2. Embed the incoming message (single-text batch call).
+        [query_embedding] = await embed_texts([body.content])
+
+        # 3. Similarity search across ready documents' chunks. Empty result
+        # is valid (no ready documents yet) - passed through as an empty
+        # context list, not special-cased.
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT chunks.edited_content FROM chunks "
+                    "JOIN documents ON documents.id = chunks.document_id "
+                    "WHERE documents.status = 'ready' "
+                    "ORDER BY chunks.embedding <=> :query_embedding ::vector "
+                    "LIMIT :top_k"
+                ),
+                {
+                    "query_embedding": format_vector(query_embedding),
+                    "top_k": get_settings().chat_retrieval_top_k,
+                },
+            )
+        ).all()
+        context_chunks = [row.edited_content for row in rows]
+
+        # 4. Generate the assistant reply.
         reply = await generate_reply(body.content, context_chunks)
     except LLMError:
         raise HTTPException(status_code=502, detail="chat_completion_failed")

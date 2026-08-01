@@ -189,6 +189,41 @@ def test_send_message_llm_error_returns_502_and_user_message_persisted_without_r
         _cleanup_messages(message_ids)
 
 
+def test_send_message_embed_texts_llm_error_returns_502_and_user_message_persisted_without_reply(
+    client: TestClient,
+) -> None:
+    message_ids: list[str] = []
+    user_content = f"doomed embed question {uuid.uuid4()}"
+    with (
+        patch(
+            "app.routers.chat.embed_texts", new=AsyncMock(side_effect=LLMError("boom"))
+        ),
+        patch(
+            "app.routers.chat.generate_reply", new=AsyncMock()
+        ) as mock_generate_reply,
+    ):
+        response = client.post("/internal/chat/messages", json={"content": user_content})
+
+    try:
+        assert response.status_code == 502
+        assert response.json()["detail"] == "chat_completion_failed"
+
+        mock_generate_reply.assert_not_awaited()
+
+        list_response = client.get("/internal/chat/messages")
+        assert list_response.status_code == 200
+        all_messages = list_response.json()
+        matching = [m for m in all_messages if m["content"] == user_content]
+        # Exactly one message with this content exists: the persisted user
+        # message. No assistant row was ever written for it, since
+        # embed_texts raised before generate_reply could even be called.
+        assert len(matching) == 1
+        assert matching[0]["role"] == "user"
+        message_ids.append(matching[0]["id"])
+    finally:
+        _cleanup_messages(message_ids)
+
+
 def test_dislike_message_is_idempotent(client: TestClient) -> None:
     message_ids: list[str] = []
     user_content = f"dislike me {uuid.uuid4()}"
