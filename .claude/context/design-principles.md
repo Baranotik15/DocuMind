@@ -390,6 +390,27 @@ keeps working - **never override `backgroundColor`/`borderColor` via the
 beat the component's internal accept/reject CSS and would silently break drag
 feedback; use a CSS Module class via `classNames` instead.
 
+### Upload: Fuzzy Filename Search
+
+A `TextInput` ("Search by filename...") sits above the document table in
+`UploadPage.tsx`, filtering the already-fetched document list client-side -
+BEFORE the sort logic runs (`filteredDocuments` feeds into `sortedDocuments`,
+never the reverse). Matching is fuzzy/typo-tolerant, not plain substring:
+`fuzzyMatchesFilename` (`frontend/src/utils/fuzzyMatch.ts`) is a small
+hand-rolled trigram (3-character n-gram) matcher using the Sørensen-Dice
+coefficient - **no fuzzy-search library dependency** (Fuse.js etc.), same
+"hand-roll a small utility instead of adding a package" precedent as
+`formatDateTime.ts`. An exact case-insensitive substring match always counts
+as a fast path; otherwise the filename is split into word tokens and the
+query's trigram set is compared against each token's trigram set separately
+(taking the best score), since comparing against the whole multi-word
+filename directly dilutes a short query's similarity - see the module's own
+comments for the full rationale and `fuzzyMatch.test.ts` for the empirically
+tuned threshold. An empty query shows every document; a search with no
+matches shows a "No documents match your search." empty state in the table
+area, consistent with the "No documents uploaded yet." empty state used when
+there's nothing to show at all.
+
 ### Upload: Status Badges + Sortable Headers
 
 The document table's Status column renders a `StatusBadge` (`UploadPage.tsx`)

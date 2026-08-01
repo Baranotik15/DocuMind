@@ -14,6 +14,7 @@ import {
   Stack,
   Table,
   Text,
+  TextInput,
   Title,
   UnstyledButton,
 } from '@mantine/core'
@@ -25,6 +26,7 @@ import { apiClient } from '../api/client'
 import { ApiConflictError } from '../api/httpClient'
 import type { DocumentSummary } from '../api/types'
 import { formatDateTime } from '../utils/formatDateTime'
+import { fuzzyMatchesFilename } from '../utils/fuzzyMatch'
 
 // While any listed document is still 'uploaded'/'chunking', re-fetch the
 // document list on this cadence so the status genuinely progresses to
@@ -254,6 +256,9 @@ export function UploadPage(): JSX.Element {
   // second breaks ties within it, and so on - see `handleSort` for how
   // clicking a header adds/updates/removes its entry.
   const [sort, setSort] = useState<SortEntry[]>([])
+  // Free-text filename search, fuzzy/typo-tolerant (see fuzzyMatch.ts) - an
+  // empty query shows every document.
+  const [nameQuery, setNameQuery] = useState('')
   const navigate = useNavigate()
 
   // Timestamp of the most recent local optimistic update (attemptUpload's
@@ -294,11 +299,20 @@ export function UploadPage(): JSX.Element {
     return () => clearInterval(intervalId)
   }, [documents])
 
-  const sortedDocuments = useMemo(() => {
-    if (sort.length === 0) {
+  // Filtering happens BEFORE sorting - the sort logic below only ever sees
+  // the already-filtered set, not the full `documents` list.
+  const filteredDocuments = useMemo(() => {
+    if (nameQuery === '') {
       return documents
     }
-    return [...documents].sort((a, b) => {
+    return documents.filter((document) => fuzzyMatchesFilename(nameQuery, document.filename))
+  }, [documents, nameQuery])
+
+  const sortedDocuments = useMemo(() => {
+    if (sort.length === 0) {
+      return filteredDocuments
+    }
+    return [...filteredDocuments].sort((a, b) => {
       // Multi-key comparator: compare by the first (highest-priority) active
       // criterion, and only fall through to the next one on a tie.
       for (const entry of sort) {
@@ -310,7 +324,7 @@ export function UploadPage(): JSX.Element {
       }
       return 0
     })
-  }, [documents, sort])
+  }, [filteredDocuments, sort])
 
   // Each column cycles through 3 states on its own clicks, independent of
   // every other column's state:
@@ -457,6 +471,17 @@ export function UploadPage(): JSX.Element {
         </Group>
       </Dropzone>
 
+      {/* Free-text filename search - filters the already-fetched document
+          list client-side (fuzzy/typo-tolerant, see fuzzyMatch.ts), applied
+          BEFORE the sort logic below. An empty query shows everything. */}
+      <TextInput
+        label="Search"
+        placeholder="Search by filename..."
+        value={nameQuery}
+        onChange={(event) => setNameQuery(event.currentTarget.value)}
+        w={320}
+      />
+
       <Table fz="md" verticalSpacing="sm">
         <Table.Thead>
           <Table.Tr>
@@ -479,7 +504,7 @@ export function UploadPage(): JSX.Element {
             <Table.Tr>
               <Table.Td colSpan={4}>
                 <Text c="dimmed" ta="center" py="md">
-                  No documents uploaded yet.
+                  {documents.length === 0 ? 'No documents uploaded yet.' : 'No documents match your search.'}
                 </Text>
               </Table.Td>
             </Table.Tr>

@@ -211,6 +211,42 @@ describe('UploadPage', () => {
     expect(screen.getByText('release-plan.md')).toBeInTheDocument()
   })
 
+  it('filters the document table by fuzzy filename search, tolerating a typo', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
+
+    renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('architecture-guide.pdf')).toBeInTheDocument()
+    expect(screen.getByText('onboarding-notes.docx')).toBeInTheDocument()
+    expect(screen.getByText('release-plan.md')).toBeInTheDocument()
+
+    // "architcture" is "architecture" with a typo (missing the 'e') - a
+    // plain substring match would miss this entirely.
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'architcture' } })
+
+    expect(screen.getByText('architecture-guide.pdf')).toBeInTheDocument()
+    expect(screen.queryByText('onboarding-notes.docx')).not.toBeInTheDocument()
+    expect(screen.queryByText('release-plan.md')).not.toBeInTheDocument()
+
+    // Clearing the search shows every row again.
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: '' } })
+    expect(screen.getByText('onboarding-notes.docx')).toBeInTheDocument()
+    expect(screen.getByText('release-plan.md')).toBeInTheDocument()
+  })
+
+  it('shows a "no documents match your search" empty state when the fuzzy search has no matches', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
+
+    renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('architecture-guide.pdf')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'totally-unrelated-query' } })
+
+    expect(await screen.findByText('No documents match your search.')).toBeInTheDocument()
+    expect(screen.queryByText('architecture-guide.pdf')).not.toBeInTheDocument()
+    expect(screen.queryByText('onboarding-notes.docx')).not.toBeInTheDocument()
+    expect(screen.queryByText('release-plan.md')).not.toBeInTheDocument()
+  })
+
   it('cycles the Filename column through ascending -> descending -> unsorted on repeated clicks', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
 
