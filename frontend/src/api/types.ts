@@ -1,7 +1,7 @@
 export interface DocumentSummary {
   id: string
   filename: string
-  status: 'uploaded' | 'chunking' | 'ready'
+  status: 'uploaded' | 'chunking' | 'ready' | 'failed'
   uploadedAt: string
 }
 
