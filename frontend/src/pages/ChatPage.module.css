@@ -1,0 +1,62 @@
+/*
+ * Typing indicator: three dots pulsing in sequence while the assistant is
+ * composing a reply (see `handleSend` in ChatPage.tsx - the indicator is
+ * shown for the span between the request firing and the reply/error
+ * resolving). Opacity + a small translateY animate rather than a layout
+ * property, consistent with the app's general "animate paint properties,
+ * not layout" convention - this is a deliberate, scoped exception to the
+ * house "no decorative motion" note for a genuine loading state, where
+ * motion is the whole point (communicating "still working", not idle).
+ */
+@keyframes typingPulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+.typingDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background-color: var(--mantine-color-signalBlue-4);
+  animation: typingPulse 1.2s ease-in-out infinite;
+}
+
+.typingDot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typingDot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typingDot {
+    animation: none;
+  }
+}
+
+/*
+ * The assistant's small identity avatar next to its messages (and the
+ * typing indicator) - a filled signalBlue circle, pairing with the user's
+ * sparkOrange bubble border. Never rendered next to the user's own
+ * messages (see ChatPage.tsx).
+ */
+.botAvatar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background-color: var(--mantine-color-signalBlue-6);
+}

@@ -187,4 +187,106 @@ describe('ChatPage', () => {
     expect(await screen.findByText('What file formats are supported?')).toBeInTheDocument()
     expect(await screen.findByText("The assistant couldn't respond - try again.")).toBeInTheDocument()
   })
+
+  it('shows a typing indicator while the assistant reply is in flight, then hides it once the reply resolves', async () => {
+    const assistantReply: ChatMessage = {
+      id: 'msg-5',
+      role: 'assistant',
+      content: 'PDF, DOCX, Markdown, and plain text.',
+      disliked: false,
+    }
+    // A send request that stays pending until the test explicitly resolves
+    // it, so the intermediate "typing" state can actually be observed
+    // (stubFetch's default mock resolves synchronously, which never gives
+    // the test a chance to see the indicator before the reply lands).
+    let resolveSend: (response: Response) => void = () => {
+      throw new Error('resolveSend called before being assigned')
+    }
+    const sendResponse = new Promise<Response>((resolve) => {
+      resolveSend = resolve
+    })
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && url.endsWith('/internal/chat/messages')) {
+        return Promise.resolve(jsonResponse(seededMessages))
+      }
+      if (method === 'POST' && url.endsWith('/internal/chat/messages')) {
+        return sendResponse
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`)
+    })
+
+    renderWithProviders(<ChatPage />)
+
+    await screen.findByText('How do I upload a new document?')
+
+    const input = screen.getByRole('textbox', { name: /message/i })
+    fireEvent.change(input, { target: { value: 'What file formats are supported?' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    expect(await screen.findByTestId('typing-indicator')).toBeInTheDocument()
+
+    resolveSend(jsonResponse(assistantReply))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument()
+    })
+    expect(await screen.findByText('PDF, DOCX, Markdown, and plain text.')).toBeInTheDocument()
+  })
+
+  it('hides the typing indicator once the assistant reply fails', async () => {
+    let resolveSend: (response: Response) => void = () => {
+      throw new Error('resolveSend called before being assigned')
+    }
+    const sendResponse = new Promise<Response>((resolve) => {
+      resolveSend = resolve
+    })
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && url.endsWith('/internal/chat/messages')) {
+        return Promise.resolve(jsonResponse(seededMessages))
+      }
+      if (method === 'POST' && url.endsWith('/internal/chat/messages')) {
+        return sendResponse
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`)
+    })
+
+    renderWithProviders(<ChatPage />)
+
+    await screen.findByText('How do I upload a new document?')
+
+    const input = screen.getByRole('textbox', { name: /message/i })
+    fireEvent.change(input, { target: { value: 'What file formats are supported?' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    expect(await screen.findByTestId('typing-indicator')).toBeInTheDocument()
+
+    resolveSend(jsonResponse({ detail: 'chat_completion_failed' }, 502))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument()
+    })
+    expect(await screen.findByText("The assistant couldn't respond - try again.")).toBeInTheDocument()
+  })
+
+  it('renders the bot avatar on assistant messages only', async () => {
+    stubFetch()
+
+    renderWithProviders(<ChatPage />)
+
+    const userMessageText = await screen.findByText('How do I upload a new document?')
+    const userContainer = userMessageText.closest('[data-message-id="msg-1"]')
+    expect(userContainer).not.toBeNull()
+    expect(within(userContainer as HTMLElement).queryByTestId('bot-avatar')).not.toBeInTheDocument()
+
+    const assistantMessageText = await screen.findByText(
+      'Go to the Upload page and choose a file to add it to the library.',
+    )
+    const assistantContainer = assistantMessageText.closest('[data-message-id="msg-2"]')
+    expect(assistantContainer).not.toBeNull()
+    expect(within(assistantContainer as HTMLElement).getByTestId('bot-avatar')).toBeInTheDocument()
+  })
 })
