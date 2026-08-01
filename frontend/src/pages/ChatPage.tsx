@@ -2,10 +2,13 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { ActionIcon, Badge, Button, Group, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Group, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
 
 import { apiClient } from '../api/client'
+import { ChatCompletionError } from '../api/httpClient'
 import type { ChatMessage } from '../api/types'
+
+const SEND_ERROR_MESSAGE = "The assistant couldn't respond - try again."
 
 /** Simple send-arrow glyph - no icon library installed (see design-principles.md). */
 function SendIcon(): JSX.Element {
@@ -20,6 +23,7 @@ function SendIcon(): JSX.Element {
 export function ChatPage(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
+  const [sendFailed, setSendFailed] = useState(false)
 
   useEffect(() => {
     void apiClient.listChatMessages().then(setMessages)
@@ -40,9 +44,34 @@ export function ChatPage(): JSX.Element {
       return
     }
 
-    const sent = await apiClient.sendChatMessage(content)
-    setMessages((current) => [...current, sent])
+    // The backend's response to a send is now the assistant's reply only
+    // (not an echo of the user's own message, per
+    // .claude/specs/phase-2-backend-integration.md's Chat requirements), so
+    // the operator's own message is appended optimistically here rather than
+    // waiting on the network round trip to see it show up at all.
+    const optimisticUserMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content,
+      disliked: false,
+    }
+    setMessages((current) => [...current, optimisticUserMessage])
     setDraft('')
+    setSendFailed(false)
+
+    try {
+      const reply = await apiClient.sendChatMessage(content)
+      setMessages((current) => [...current, reply])
+    } catch (error) {
+      if (!(error instanceof ChatCompletionError)) {
+        throw error
+      }
+      // The user's message IS persisted server-side even though the OpenAI
+      // call failed (per spec) - it stays in the list; only the assistant
+      // reply is missing, surfaced here rather than left as an unhandled
+      // rejection.
+      setSendFailed(true)
+    }
   }
 
   return (
@@ -121,6 +150,20 @@ export function ChatPage(): JSX.Element {
           </Paper>
         ))}
       </Stack>
+
+      {sendFailed ? (
+        <Alert
+          color="alertMagenta"
+          variant="light"
+          radius="lg"
+          title="Something went wrong"
+          withCloseButton
+          onClose={() => setSendFailed(false)}
+          style={{ flexShrink: 0 }}
+        >
+          {SEND_ERROR_MESSAGE}
+        </Alert>
+      ) : null}
 
       {/* Naturally pinned at the bottom: it's the last child of the
           fixed-height flex column above, after the scrollable message
