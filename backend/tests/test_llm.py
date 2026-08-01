@@ -3,7 +3,19 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from app import llm
+from app.config import Settings
 from app.llm import LLMError, embed_texts, generate_reply
+
+
+@pytest.fixture(autouse=True)
+def _clear_client_cache() -> None:
+    """get_client() is @lru_cache'd at module level. Clear before and after
+    each test so a client built against monkeypatched settings in one test
+    never leaks into another test running later in the same process."""
+    llm.get_client.cache_clear()
+    yield
+    llm.get_client.cache_clear()
 
 
 def _make_embedding_response(vectors: list[list[float]]) -> MagicMock:
@@ -96,3 +108,26 @@ def test_generate_reply_raises_llm_error_on_sdk_failure() -> None:
 
     with pytest.raises(LLMError):
         asyncio.run(generate_reply("hi", [], client=client))
+
+
+def test_embed_texts_raises_llm_error_when_api_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: get_client() calls AsyncOpenAI(api_key=...), whose
+    constructor itself raises openai.OpenAIError at construction time when
+    the key is missing/empty - not just when an API call fails. That error
+    must be wrapped as LLMError like any other SDK failure, so callers only
+    ever have to catch LLMError."""
+    monkeypatch.setattr(llm, "get_settings", lambda: Settings(openai_api_key=""))
+
+    with pytest.raises(LLMError):
+        asyncio.run(embed_texts(["a"]))
+
+
+def test_generate_reply_raises_llm_error_when_api_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(llm, "get_settings", lambda: Settings(openai_api_key=""))
+
+    with pytest.raises(LLMError):
+        asyncio.run(generate_reply("hi", []))

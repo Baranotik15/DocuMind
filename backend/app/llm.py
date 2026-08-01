@@ -22,8 +22,8 @@ async def embed_texts(
     batched API call, returning vectors in the same order as `texts`.
     Raises LLMError on any SDK failure. `client` defaults to get_client()
     - tests inject a fake."""
-    active_client = client if client is not None else get_client()
     try:
+        active_client = client if client is not None else get_client()
         response = await active_client.embeddings.create(
             model=get_settings().openai_embedding_model,
             input=texts,
@@ -41,12 +41,12 @@ async def generate_reply(
     `user_message`, returns the completion text. Raises LLMError on any
     SDK failure. Empty `context_chunks` is valid (empty-corpus case) - the
     call proceeds without retrieved context."""
-    active_client = client if client is not None else get_client()
     messages = [
         {"role": "system", "content": _build_system_prompt(context_chunks)},
         {"role": "user", "content": user_message},
     ]
     try:
+        active_client = client if client is not None else get_client()
         response = await active_client.chat.completions.create(
             model=get_settings().openai_chat_model,
             messages=messages,
