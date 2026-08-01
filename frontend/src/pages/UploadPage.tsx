@@ -473,13 +473,34 @@ export function UploadPage(): JSX.Element {
 
       {/* Free-text filename search - filters the already-fetched document
           list client-side (fuzzy/typo-tolerant, see fuzzyMatch.ts), applied
-          BEFORE the sort logic below. An empty query shows everything. */}
+          BEFORE the sort logic below. An empty query shows everything.
+          Centered and widened per request; the default TextInput variant's
+          background is Mantine's own light-scheme white (this app never
+          switches color scheme, see theme.ts's comment on that), which was
+          washing out the light theme text color to near-invisible - same
+          root cause as the Dropzone's white-background bug fixed elsewhere
+          on this page, fixed the same way: pin the input surface to the
+          app's dark `--doc-surface` token explicitly rather than fighting
+          Mantine's default stylesheet. */}
       <TextInput
         label="Search"
         placeholder="Search by filename..."
         value={nameQuery}
         onChange={(event) => setNameQuery(event.currentTarget.value)}
-        w={320}
+        radius="lg"
+        size="md"
+        w="100%"
+        maw={560}
+        mx="auto"
+        styles={{
+          root: { textAlign: 'center' },
+          label: { display: 'block', marginBottom: 'var(--mantine-spacing-xs)' },
+          input: {
+            backgroundColor: 'var(--doc-surface)',
+            color: 'var(--doc-text)',
+            border: '1px solid var(--doc-hairline)',
+          },
+        }}
       />
 
       <Table fz="md" verticalSpacing="sm">
