@@ -185,6 +185,13 @@ changing.
       messaging).
 
 ## Non-Goals
+- OCR / text extraction from scanned or image-only PDFs — confirmed live
+  that such files parse without error but yield only whitespace; they now
+  fail cleanly with a specific error (`"No extractable text found..."`)
+  instead of silently succeeding with an empty chunk. Real OCR support
+  (tesseract or similar, a real image-processing/text-recognition
+  pipeline, not a small addition) is explicitly deferred to a future
+  phase, not this one.
 - Authentication/authorization on these endpoints — `auth.md` is a separate,
   not-yet-planned feature; these endpoints ship open for this phase and get
   gated once that lands.
