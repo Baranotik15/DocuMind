@@ -29,6 +29,16 @@ const sortTestDocuments: DocumentSummary[] = [
   { id: 'doc-3', filename: 'mid.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
 ]
 
+// For the multi-column sort test: two documents share a status ('ready') so
+// a secondary "Uploaded at" sort key has something to break the tie on,
+// plus a third document in a different status group so the primary
+// "Status" grouping is visibly distinct from pure chronological order.
+const multiSortDocuments: DocumentSummary[] = [
+  { id: 'doc-1', filename: 'ready-late.pdf', status: 'ready', uploadedAt: '2026-07-25T10:00:00.000Z' },
+  { id: 'doc-2', filename: 'ready-early.pdf', status: 'ready', uploadedAt: '2026-07-20T10:00:00.000Z' },
+  { id: 'doc-3', filename: 'uploaded-mid.pdf', status: 'uploaded', uploadedAt: '2026-07-22T10:00:00.000Z' },
+]
+
 /** The table's filename column, in row order - reads the DOM directly since assertions here care about row *order*, not just presence. */
 function getFilenameOrder(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('tbody tr')).map((row) => row.querySelector('td')?.textContent ?? '')
@@ -201,7 +211,7 @@ describe('UploadPage', () => {
     expect(screen.getByText('release-plan.md')).toBeInTheDocument()
   })
 
-  it('sorts by filename when the Filename header is clicked, toggling direction on a repeat click', async () => {
+  it('cycles the Filename column through ascending -> descending -> unsorted on repeated clicks', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
 
     const { container } = renderWithProviders(<UploadPage />)
@@ -211,16 +221,74 @@ describe('UploadPage', () => {
     expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'alpha.docx', 'mid.md'])
 
     const filenameHeader = screen.getByRole('button', { name: 'Filename' })
+    const filenameTh = screen.getByRole('columnheader', { name: 'Filename' })
+
     fireEvent.click(filenameHeader)
     expect(getFilenameOrder(container)).toEqual(['alpha.docx', 'mid.md', 'zeta.pdf'])
+    expect(filenameTh).toHaveAttribute('aria-sort', 'ascending')
 
     fireEvent.click(filenameHeader)
     expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'mid.md', 'alpha.docx'])
+    expect(filenameTh).toHaveAttribute('aria-sort', 'descending')
 
-    // Switching to a different column resets to ascending on that column,
-    // rather than continuing to toggle the previous column's direction.
-    fireEvent.click(screen.getByRole('button', { name: 'Status' }))
-    expect(getFilenameOrder(container)).toEqual(['alpha.docx', 'mid.md', 'zeta.pdf']) // uploaded, chunking, ready
+    // A third click on the SAME column returns it to unsorted/neutral - the
+    // list falls back to the original fetch order, not a fourth direction.
+    fireEvent.click(filenameHeader)
+    expect(filenameTh).toHaveAttribute('aria-sort', 'none')
+    expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'alpha.docx', 'mid.md'])
+
+    // A fourth click starts the cycle over from ascending.
+    fireEvent.click(filenameHeader)
+    expect(filenameTh).toHaveAttribute('aria-sort', 'ascending')
+    expect(getFilenameOrder(container)).toEqual(['alpha.docx', 'mid.md', 'zeta.pdf'])
+  })
+
+  it('combines sort criteria across columns (multi-column sort) instead of replacing the previous column', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(multiSortDocuments)) // GET on mount
+
+    const { container } = renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('ready-late.pdf')).toBeInTheDocument()
+
+    const statusHeader = screen.getByRole('button', { name: 'Status' })
+    const statusTh = screen.getByRole('columnheader', { name: 'Status' })
+    const uploadedAtHeader = screen.getByRole('button', { name: 'Uploaded at' })
+    const uploadedAtTh = screen.getByRole('columnheader', { name: 'Uploaded at' })
+
+    // 1) Status ascending alone: the 'uploaded' group (rank 0) sorts before
+    // the 'ready' group (rank 2); the two tied 'ready' rows keep their
+    // original relative order (stable sort, no secondary key yet).
+    fireEvent.click(statusHeader)
+    expect(getFilenameOrder(container)).toEqual(['uploaded-mid.pdf', 'ready-late.pdf', 'ready-early.pdf'])
+
+    // 2) Clicking Uploaded-at while Status is still active ADDS it as a
+    // secondary key (rather than replacing Status) - the 'ready' group is
+    // now internally re-ordered by date, while the Status grouping itself
+    // (uploaded group first) is preserved. Both headers are simultaneously
+    // "active" with their own colored indicator.
+    fireEvent.click(uploadedAtHeader)
+    expect(getFilenameOrder(container)).toEqual(['uploaded-mid.pdf', 'ready-early.pdf', 'ready-late.pdf'])
+    expect(statusTh).toHaveAttribute('aria-sort', 'ascending')
+    expect(uploadedAtTh).toHaveAttribute('aria-sort', 'ascending')
+    expect(statusTh.querySelector('span')?.style.color).toBe('var(--mantine-color-signalBlue-6)')
+    expect(uploadedAtTh.querySelector('span')?.style.color).toBe('var(--mantine-color-signalBlue-6)')
+
+    // 3) Status's own second click flips it to descending - it stays the
+    // PRIMARY key (its array position is unchanged), so the 'ready' group
+    // (now higher-ranked-first) moves ahead of 'uploaded', with Uploaded-at
+    // still breaking the tie inside it.
+    fireEvent.click(statusHeader)
+    expect(getFilenameOrder(container)).toEqual(['ready-early.pdf', 'ready-late.pdf', 'uploaded-mid.pdf'])
+    expect(statusTh).toHaveAttribute('aria-sort', 'descending')
+
+    // 4) Status's third click removes it entirely (back to neutral) - only
+    // Uploaded-at ascending remains, so the list falls back to pure
+    // chronological order across all rows (no more status grouping).
+    fireEvent.click(statusHeader)
+    expect(statusTh).toHaveAttribute('aria-sort', 'none')
+    expect(statusTh.querySelector('span')?.style.color).toBe('var(--doc-text-muted)')
+    expect(getFilenameOrder(container)).toEqual(['ready-early.pdf', 'uploaded-mid.pdf', 'ready-late.pdf'])
+    // Uploaded-at's own state is untouched by Status being removed.
+    expect(uploadedAtTh).toHaveAttribute('aria-sort', 'ascending')
   })
 
   it('sorts by status in pipeline-stage order when the Status header is clicked, toggling direction on a repeat click', async () => {

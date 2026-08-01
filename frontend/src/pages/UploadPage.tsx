@@ -48,7 +48,9 @@ function isUnsettled(document: DocumentSummary): boolean {
 // separate filter inputs.
 type SortColumn = 'filename' | 'status' | 'uploadedAt'
 type SortDirection = 'asc' | 'desc'
-interface SortState {
+
+/** One active sort criterion. The overall sort state is an ORDERED array of these - see the `sort` state below for the multi-column model. */
+interface SortEntry {
   column: SortColumn
   direction: SortDirection
 }
@@ -127,23 +129,24 @@ function SortIcon({ state }: { state: SortIconState }): JSX.Element {
 interface SortableHeaderProps {
   label: string
   column: SortColumn
-  sort: SortState | null
+  sort: SortEntry[]
   onSort: (column: SortColumn) => void
 }
 
 /**
- * A clickable `Table.Th` - clicking sorts the table by this column (toggling
- * direction on a repeat click of the same column, resetting to ascending
- * when switching to a different column), with a `SortIcon` indicating this
- * column's current state (active-ascending/active-descending/neutral) via
- * both shape and color. `aria-sort` on the `<th>` itself is the standard
- * ARIA pattern for sortable table headers.
+ * A clickable `Table.Th` - clicking cycles THIS column through three states
+ * (not sorted -> ascending -> descending -> not sorted again), independent
+ * of every other column, so multiple columns can be active at once for a
+ * multi-column (spreadsheet-style) sort - see the `sort` state/`handleSort`
+ * below for the full model. A `SortIcon` indicates this column's own current
+ * state via both shape and color. `aria-sort` on the `<th>` itself is the
+ * standard ARIA pattern for sortable table headers.
  */
 function SortableHeader({ label, column, sort, onSort }: SortableHeaderProps): JSX.Element {
-  const isActive = sort?.column === column
-  const iconState: SortIconState = isActive ? sort.direction : 'neutral'
+  const entry = sort.find((candidate) => candidate.column === column)
+  const iconState: SortIconState = entry ? entry.direction : 'neutral'
   return (
-    <Table.Th aria-sort={isActive ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+    <Table.Th aria-sort={entry ? (entry.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
       <UnstyledButton onClick={() => onSort(column)} fw={700} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         {label}
         <span style={{ color: SORT_ICON_COLOR[iconState], display: 'inline-flex' }}>
@@ -245,9 +248,12 @@ export function UploadPage(): JSX.Element {
   // Set when an upload/overwrite attempt comes back 409 document_processing -
   // there's nothing to confirm in that case, just a message to dismiss.
   const [processingMessage, setProcessingMessage] = useState<string | null>(null)
-  // No sort applied until a header is clicked - the table starts in
-  // whatever order `listDocuments()` returned it in.
-  const [sort, setSort] = useState<SortState | null>(null)
+  // Ordered list of active sort criteria - empty means no sort applied (the
+  // table starts in whatever order `listDocuments()` returned it in). Array
+  // order is priority order: the first entry is the primary sort key, the
+  // second breaks ties within it, and so on - see `handleSort` for how
+  // clicking a header adds/updates/removes its entry.
+  const [sort, setSort] = useState<SortEntry[]>([])
   const navigate = useNavigate()
 
   // Timestamp of the most recent local optimistic update (attemptUpload's
@@ -289,19 +295,44 @@ export function UploadPage(): JSX.Element {
   }, [documents])
 
   const sortedDocuments = useMemo(() => {
-    if (!sort) {
+    if (sort.length === 0) {
       return documents
     }
-    const multiplier = sort.direction === 'asc' ? 1 : -1
-    return [...documents].sort((a, b) => multiplier * compareDocuments(a, b, sort.column))
+    return [...documents].sort((a, b) => {
+      // Multi-key comparator: compare by the first (highest-priority) active
+      // criterion, and only fall through to the next one on a tie.
+      for (const entry of sort) {
+        const multiplier = entry.direction === 'asc' ? 1 : -1
+        const comparison = multiplier * compareDocuments(a, b, entry.column)
+        if (comparison !== 0) {
+          return comparison
+        }
+      }
+      return 0
+    })
   }, [documents, sort])
 
+  // Each column cycles through 3 states on its own clicks, independent of
+  // every other column's state:
+  //   not active -> ascending (appended at the end, i.e. lowest priority)
+  //   ascending -> descending (same array position/priority, just flipped)
+  //   descending -> removed entirely (back to neutral/not sorted)
+  // Clicking a second column while a first is still active ADDS it as a
+  // secondary sort key rather than replacing the first - this is what makes
+  // sorting combinable across columns instead of single-column.
   function handleSort(column: SortColumn): void {
     setSort((current) => {
-      if (current?.column === column) {
-        return { column, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+      const index = current.findIndex((entry) => entry.column === column)
+      if (index === -1) {
+        return [...current, { column, direction: 'asc' }]
       }
-      return { column, direction: 'asc' }
+      const entry = current[index]
+      if (entry.direction === 'asc') {
+        const next = [...current]
+        next[index] = { column, direction: 'desc' }
+        return next
+      }
+      return current.filter((_entry, candidateIndex) => candidateIndex !== index)
     })
   }
 
@@ -431,7 +462,12 @@ export function UploadPage(): JSX.Element {
           <Table.Tr>
             {/* Sortable headers, not separate filter inputs: click a column
                 to sort the already-fetched document list by it (client-side,
-                no backend involvement) - click again to reverse direction. */}
+                no backend involvement). Each column cycles ascending ->
+                descending -> not sorted on repeated clicks of that SAME
+                column, and multiple columns can be active at once - clicking
+                a second column adds it as a secondary sort key (breaking
+                ties within the first) rather than replacing it. See
+                `handleSort` above. */}
             <SortableHeader label="Filename" column="filename" sort={sort} onSort={handleSort} />
             <SortableHeader label="Status" column="status" sort={sort} onSort={handleSort} />
             <SortableHeader label="Uploaded at" column="uploadedAt" sort={sort} onSort={handleSort} />

@@ -406,13 +406,23 @@ local optimistic update (see the effect's comments).
 
 The Filename/Status/Uploaded at column headers are clickable
 (`SortableHeader`) rather than paired with separate filter inputs: clicking
-sorts the already-fetched document list by that column client-side, toggling
-direction on a repeat click and resetting to ascending when switching
-columns (`aria-sort` is set on the `Table.Th` to match). No sort is applied
-until a header is first clicked. Status sorts in pipeline-stage order
-(`uploaded` -> `chunking` -> `ready` -> `failed`), not alphabetically, since
-that groups the two "still processing" statuses together and reads more
-usefully for an operator scanning the table.
+sorts the already-fetched document list by that column client-side
+(`aria-sort` is set on the `Table.Th` to match). Sorting is **multi-column**
+(spreadsheet-style), not single-column: the `sort` state is an ORDERED array
+of `{ column, direction }` entries, not a single nullable value. Each
+column's OWN clicks cycle it through 3 states independent of every other
+column - not sorted -> ascending (appended at the end = lowest priority) ->
+descending (same array position/priority, direction flipped) -> removed
+entirely (back to not sorted) -> ascending again, etc. Clicking a second
+column while a first is still active **adds** it as a secondary key (breaking
+ties within the first) rather than replacing it - array order is priority
+order, first entry compared first, only falling through to the next entry on
+a tie (see `sortedDocuments`'s multi-key comparator and `handleSort` in
+`UploadPage.tsx`). No sort is applied until a header is first clicked. Status
+sorts in pipeline-stage order (`uploaded` -> `chunking` -> `ready` ->
+`failed`), not alphabetically, since that groups the two "still processing"
+statuses together and reads more usefully for an operator scanning the
+table.
 
 Each header's `SortIcon` (hand-rolled SVG, no icon library) makes the
 column's current sort state unambiguous via shape **and** color, mapped to
