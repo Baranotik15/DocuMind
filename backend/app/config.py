@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     openai_chat_model: str = "gpt-4o-mini"
     chat_retrieval_top_k: int = 5
 
+    storage_base_dir: str = "./data/documents"
+
 
 @lru_cache
 def get_settings() -> Settings:
