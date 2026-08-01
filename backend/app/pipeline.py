@@ -10,10 +10,41 @@ from app.vectors import format_vector
 
 
 class DocumentProcessingError(Exception):
-    """Raised by run_pipeline when steps 2/3 fail after the document has
-    already been marked 'failed' and the failure recorded as a
-    dashboard_events row - chains the original exception so Celery still
-    logs the root cause."""
+    """Raised once a document has already been marked 'failed' and the
+    failure recorded as a dashboard_events row - chains the original
+    exception so Celery still logs the root cause. Raised both by
+    run_pipeline (chunking/embedding/DB-replace failures) and by
+    mark_document_failed's callers (e.g. tasks.run_document_pipeline's
+    storage-read/text-extraction step, which runs before run_pipeline is
+    ever reached)."""
+
+
+def mark_document_failed(document_id: str, session: Session, exc: Exception) -> None:
+    """Shared failure boundary: rolls back any partial work on `session`,
+    marks the document 'failed', records a 'document.chunking_failed'
+    dashboard event carrying `exc`'s detail, commits, then raises
+    DocumentProcessingError chained from `exc`. Always raises - never
+    returns normally - so every call site can treat it as the terminal
+    step of its except block.
+
+    Reused by run_pipeline's own except block below AND by
+    tasks.run_document_pipeline for failures that happen before
+    run_pipeline runs at all (e.g. the file is missing from storage, or
+    extract_text rejects an unsupported/corrupt file) - both cases must
+    give the same guarantee: the document never gets stuck mid-pipeline,
+    and the error is always visible as a dashboard event."""
+    session.rollback()
+    session.execute(
+        text("UPDATE documents SET status = 'failed' WHERE id = :document_id"),
+        {"document_id": document_id},
+    )
+    record_event_sync(
+        session,
+        "document.chunking_failed",
+        f"document_id={document_id}: {exc}",
+    )
+    session.commit()
+    raise DocumentProcessingError(str(exc)) from exc
 
 
 def run_pipeline(document_id: str, source_text: str, session: Session) -> None:
@@ -68,15 +99,4 @@ def run_pipeline(document_id: str, source_text: str, session: Session) -> None:
         )
         session.commit()
     except Exception as exc:
-        session.rollback()
-        session.execute(
-            text("UPDATE documents SET status = 'failed' WHERE id = :document_id"),
-            {"document_id": document_id},
-        )
-        record_event_sync(
-            session,
-            "document.chunking_failed",
-            f"document_id={document_id}: {exc}",
-        )
-        session.commit()
-        raise DocumentProcessingError(str(exc)) from exc
+        mark_document_failed(document_id, session, exc)
