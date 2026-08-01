@@ -1,7 +1,8 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Response, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,18 @@ from app.storage import StorageAdapter
 from app.tasks import run_document_pipeline
 
 router = APIRouter()
+
+
+class ChunkIn(BaseModel):
+    editedContent: str
+    # id/originalContent/isDirty are accepted-but-ignored on the frontend
+    # side of this contract - the request may include them, but a
+    # full re-chunk discards prior chunk identity/boundaries per the spec,
+    # so nothing here reads them.
+
+
+class SaveChunksRequest(BaseModel):
+    chunks: list[ChunkIn]
 
 # Mirrors app.documents.extract_text's supported extension set - kept as a
 # local constant (rather than importing that module's private set) so this
@@ -117,3 +130,89 @@ async def list_documents(session: AsyncSession = Depends(get_session)) -> list[d
         )
     ).all()
     return [_document_summary(row) for row in rows]
+
+
+def _chunk_summary(row) -> dict:
+    return {
+        "id": str(row.id),
+        "documentId": str(row.document_id),
+        "originalContent": row.original_content,
+        "editedContent": row.edited_content,
+        "isDirty": False,
+    }
+
+
+@router.get("/documents/{document_id}/chunks")
+async def get_chunks(
+    document_id: str, session: AsyncSession = Depends(get_session)
+) -> list[dict]:
+    """Returns chunks for document_id ordered by position. `isDirty` is
+    always False from the server - it's a purely client-side concept while
+    unsaved edits haven't been sent yet."""
+    rows = (
+        await session.execute(
+            text(
+                "SELECT id, document_id, original_content, edited_content "
+                "FROM chunks WHERE document_id = :document_id ORDER BY position"
+            ),
+            {"document_id": document_id},
+        )
+    ).all()
+    return [_chunk_summary(row) for row in rows]
+
+
+@router.post("/documents/{document_id}/chunks", status_code=202)
+async def save_chunks(
+    document_id: str,
+    body: SaveChunksRequest,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Atomic compare-and-swap re-chunk trigger. See
+    `.claude/plans/2026-08-01-phase-2-backend-integration.md` Task 7 for the
+    full contract. The single guarded UPDATE below is what closes the race
+    between two concurrent Saves (or a Save on a not-yet-ready document) -
+    it must stay a single statement, not a SELECT-then-UPDATE."""
+    result = await session.execute(
+        text(
+            "UPDATE documents SET status = 'chunking' "
+            "WHERE id = :document_id AND status IN ('ready', 'failed') "
+            "RETURNING id"
+        ),
+        {"document_id": document_id},
+    )
+    row = result.one_or_none()
+
+    if row is None:
+        # The CAS above already closed the race for the "own the
+        # transition" decision. This follow-up SELECT only distinguishes
+        # which error to report (404 vs 409) for a request that lost -
+        # it never decides whether to update, so it doesn't reopen the
+        # race the CAS guards against.
+        exists = (
+            await session.execute(
+                text("SELECT 1 FROM documents WHERE id = :document_id"),
+                {"document_id": document_id},
+            )
+        ).one_or_none()
+        if exists is None:
+            raise HTTPException(status_code=404, detail="document_not_found")
+        raise HTTPException(status_code=409, detail="document_processing")
+
+    await session.commit()
+
+    # Request array order IS document order, as sent by the frontend - not
+    # re-sorted here.
+    source_text = "".join(chunk.editedContent for chunk in body.chunks)
+
+    # See upload_document's comment above on why .delay() must be run via
+    # asyncio.to_thread under Celery-eager test mode: run_document_pipeline
+    # internally does asyncio.run(embed_texts(...)), which cannot be called
+    # from a thread whose event loop is already running - which this
+    # coroutine's thread's is.
+    await asyncio.to_thread(run_document_pipeline.delay, document_id, source_text)
+
+    # Returned as a bare Response (rather than `None`) so the body is
+    # truly empty, per the spec's "return 202 with no body" - FastAPI would
+    # otherwise serialize a `None` return value as a `null` JSON body,
+    # since (unlike 204) 202 doesn't forbid a response body by itself.
+    return Response(status_code=202)
