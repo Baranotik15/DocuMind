@@ -3,12 +3,13 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { ActionIcon, Button, Group, Modal, Stack, Table, Text, Title } from '@mantine/core'
+import { ActionIcon, Alert, Button, Group, Modal, Stack, Table, Text, Title } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
 import { useNavigate } from 'react-router-dom'
 
 import classes from './UploadPage.module.css'
 import { apiClient } from '../api/client'
+import { ApiConflictError } from '../api/httpClient'
 import type { DocumentSummary } from '../api/types'
 
 /** Simple cloud-upload glyph - no icon library is installed (see design-principles.md), so this is a small hand-rolled SVG rather than a new dependency. */
@@ -58,11 +59,44 @@ function TrashIcon(): JSX.Element {
 export function UploadPage(): JSX.Element {
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [deleteTarget, setDeleteTarget] = useState<DocumentSummary | null>(null)
+  // Set when an upload attempt comes back 409 duplicate_filename - holds the
+  // File so Confirm can re-issue the same upload with overwrite=true.
+  const [overwriteTarget, setOverwriteTarget] = useState<File | null>(null)
+  // Set when an upload/overwrite attempt comes back 409 document_processing -
+  // there's nothing to confirm in that case, just a message to dismiss.
+  const [processingMessage, setProcessingMessage] = useState<string | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
     void apiClient.listDocuments().then(setDocuments)
   }, [])
+
+  async function attemptUpload(file: File, overwrite: boolean): Promise<void> {
+    try {
+      const uploaded = await apiClient.uploadDocument(file, overwrite)
+      setDocuments((current) => {
+        const index = current.findIndex((document) => document.id === uploaded.id)
+        if (index === -1) {
+          return [...current, uploaded]
+        }
+        // Overwrite: the backend reuses the same id, so update the existing
+        // row in place rather than appending a duplicate.
+        const next = [...current]
+        next[index] = uploaded
+        return next
+      })
+    } catch (error) {
+      if (error instanceof ApiConflictError) {
+        if (error.reason === 'duplicate_filename') {
+          setOverwriteTarget(file)
+          return
+        }
+        setProcessingMessage(`${file.name} is still processing - please wait for it to finish before overwriting it.`)
+        return
+      }
+      throw error
+    }
+  }
 
   async function handleFilesDrop(files: FileWithPath[]): Promise<void> {
     const file = files[0]
@@ -70,13 +104,33 @@ export function UploadPage(): JSX.Element {
       return
     }
 
-    const uploaded = await apiClient.uploadDocument(file)
-    setDocuments((current) => [...current, uploaded])
+    await attemptUpload(file, false)
+  }
+
+  function handleConfirmOverwrite(): void {
+    const file = overwriteTarget
+    setOverwriteTarget(null)
+    if (file) {
+      void attemptUpload(file, true)
+    }
   }
 
   return (
     <Stack gap="xl">
       <Title order={2}>Upload</Title>
+
+      {processingMessage ? (
+        <Alert
+          color="alertMagenta"
+          variant="light"
+          radius="lg"
+          title="Still processing"
+          withCloseButton
+          onClose={() => setProcessingMessage(null)}
+        >
+          {processingMessage}
+        </Alert>
+      ) : null}
 
       <Dropzone
         onDrop={(files) => void handleFilesDrop(files)}
@@ -165,6 +219,25 @@ export function UploadPage(): JSX.Element {
             </Button>
             <Button variant="filled" color="alertMagenta" radius="xl" onClick={() => setDeleteTarget(null)}>
               Delete
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={overwriteTarget !== null}
+        onClose={() => setOverwriteTarget(null)}
+        title="Overwrite document"
+        radius="lg"
+      >
+        <Stack gap="lg">
+          <Text>A document named {overwriteTarget?.name} already exists - overwrite it?</Text>
+          <Group justify="flex-end">
+            <Button variant="subtle" color="signalBlue" radius="xl" onClick={() => setOverwriteTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="filled" color="sparkOrange" radius="xl" onClick={handleConfirmOverwrite}>
+              Overwrite
             </Button>
           </Group>
         </Stack>
