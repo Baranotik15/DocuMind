@@ -392,24 +392,69 @@ feedback; use a CSS Module class via `classNames` instead.
 
 ### Upload: Fuzzy Filename Search
 
-A `TextInput` ("Search by filename...") sits above the document table in
-`UploadPage.tsx`, filtering the already-fetched document list client-side -
-BEFORE the sort logic runs (`filteredDocuments` feeds into `sortedDocuments`,
-never the reverse). Matching is fuzzy/typo-tolerant, not plain substring:
-`fuzzyMatchesFilename` (`frontend/src/utils/fuzzyMatch.ts`) is a small
-hand-rolled trigram (3-character n-gram) matcher using the Sørensen-Dice
-coefficient - **no fuzzy-search library dependency** (Fuse.js etc.), same
-"hand-roll a small utility instead of adding a package" precedent as
-`formatDateTime.ts`. An exact case-insensitive substring match always counts
-as a fast path; otherwise the filename is split into word tokens and the
-query's trigram set is compared against each token's trigram set separately
-(taking the best score), since comparing against the whole multi-word
-filename directly dilutes a short query's similarity - see the module's own
-comments for the full rationale and `fuzzyMatch.test.ts` for the empirically
-tuned threshold. An empty query shows every document; a search with no
-matches shows a "No documents match your search." empty state in the table
-area, consistent with the "No documents uploaded yet." empty state used when
-there's nothing to show at all.
+A `TextInput` sits above the document table in `UploadPage.tsx`, filtering
+the already-fetched document list client-side - BEFORE the sort logic runs
+(`filteredDocuments` feeds into `sortedDocuments`, never the reverse).
+Matching is fuzzy/typo-tolerant, not plain substring: `fuzzyMatchesFilename`
+(`frontend/src/utils/fuzzyMatch.ts`) is a small hand-rolled trigram
+(3-character n-gram) matcher using the Sørensen-Dice coefficient - **no
+fuzzy-search library dependency** (Fuse.js etc.), same "hand-roll a small
+utility instead of adding a package" precedent as `formatDateTime.ts`. An
+exact case-insensitive substring match always counts as a fast path;
+otherwise the filename is split into word tokens and the query's trigram set
+is compared against each token's trigram set separately (taking the best
+score), since comparing against the whole multi-word filename directly
+dilutes a short query's similarity - see the module's own comments for the
+full rationale and `fuzzyMatch.test.ts` for the empirically tuned threshold.
+An empty query shows every document; a search with no matches shows a "No
+documents match your search." empty state in the table area, consistent with
+the "No documents uploaded yet." empty state used when there's nothing to
+show at all.
+
+The field itself is a deliberately designed pill, not just a centered box:
+`radius="xl"` at `size="lg"`, matching the visual weight/proportions of
+Chat's message-composer `Paper` (surface background, hairline border, pill
+shape - see `ChatPage.tsx`) as the closest established "input that should
+read as inviting/polished" precedent, even though Chat's own input is a
+`Paper`-wrapped `variant="unstyled"` field rather than a standalone
+`TextInput` - the visual characteristics (pill radius, `--doc-surface`
+background, `--doc-hairline` border) are what's being matched, not the exact
+component structure. A leading hand-rolled magnifying-glass `leftSection`
+glyph (`SearchIcon`, stroke pinned directly to `var(--doc-text-muted)` since
+it's a fixed affordance rather than a state-dependent indicator like
+`SortIcon`) gives immediate visual affordance that it's a filter field. A
+`rightSection` clear (×) action (`ClearIcon` inside a plain `UnstyledButton`,
+`currentColor`-styled via `var(--doc-text-muted)`) renders only once
+`nameQuery` is non-empty and resets it to `''` on click, so clearing no
+longer requires manually deleting every character. Centered (`mx="auto"`,
+`maw={620}`) per an earlier explicit request that still stands. **The field
+has no `label` and no visible copy containing the word "Search" anywhere**
+(placeholder: "Filter by filename...") - the leading glyph plus placeholder
+already communicate its purpose, so a separate text label was deemed
+redundant chrome; `aria-label="Filter by filename"` on the `TextInput`
+supplies the accessible name instead (and the clear button's own
+`aria-label` is "Clear filter" for the same reason/consistency). The
+dark-surface background/hairline border fix from the prior functional pass
+(Mantine's light-scheme-white input background washing out text - same root
+cause as the Dropzone's white-background bug) is preserved, just re-applied
+at the new pill radius/size.
+
+### Upload: Elevated Table Panel
+
+The document table is wrapped in a `Paper[withBorder]` (`UploadPage.tsx`)
+rather than rendering bare on the `void` page background - the standard
+Cards/Surfaces pattern (`bg="var(--doc-surface)"`, hairline border via the
+`gray.3` remap, the app's default `radius="lg"`, `p="md"` so the table
+doesn't sit flush against the panel's rounded corners - see
+`ChunkPreviewPage.tsx`'s chunk boxes / Chat's message bubbles for the same
+base pattern elsewhere). On top of that, an inline `boxShadow: '0 24px 48px
+-24px rgba(0, 0, 0, 0.55)'` gives the panel a soft, bottom-weighted neutral
+elevation shadow so it reads as genuinely lifted off the page rather than
+just outlined - a wide, soft, dark shadow biased downward, not a hard drop
+shadow. This is a **neutral depth/elevation device, not the sparkOrange
+signature mark** - Upload has no "edited/active/contextually-relevant"
+concept for the mark to attach to (see Design Philosophy above), so the
+panel uses a plain dark shadow rather than the mark's colored glow.
 
 ### Upload: Status Badges + Sortable Headers
 

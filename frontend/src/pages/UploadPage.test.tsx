@@ -221,16 +221,38 @@ describe('UploadPage', () => {
 
     // "architcture" is "architecture" with a typo (missing the 'e') - a
     // plain substring match would miss this entirely.
-    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'architcture' } })
+    fireEvent.change(screen.getByLabelText('Filter by filename'), { target: { value: 'architcture' } })
 
     expect(screen.getByText('architecture-guide.pdf')).toBeInTheDocument()
     expect(screen.queryByText('onboarding-notes.docx')).not.toBeInTheDocument()
     expect(screen.queryByText('release-plan.md')).not.toBeInTheDocument()
 
     // Clearing the search shows every row again.
-    fireEvent.change(screen.getByLabelText('Search'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('Filter by filename'), { target: { value: '' } })
     expect(screen.getByText('onboarding-notes.docx')).toBeInTheDocument()
     expect(screen.getByText('release-plan.md')).toBeInTheDocument()
+  })
+
+  it('shows a clear-filter button only once there is a query, and clicking it empties the query and restores every row', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
+
+    renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('architecture-guide.pdf')).toBeInTheDocument()
+
+    // No query yet - no clear button.
+    expect(screen.queryByRole('button', { name: 'Clear filter' })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Filter by filename'), { target: { value: 'architcture' } })
+    expect(screen.queryByText('onboarding-notes.docx')).not.toBeInTheDocument()
+
+    const clearButton = screen.getByRole('button', { name: 'Clear filter' })
+    fireEvent.click(clearButton)
+
+    expect(screen.getByLabelText('Filter by filename')).toHaveValue('')
+    expect(screen.getByText('onboarding-notes.docx')).toBeInTheDocument()
+    expect(screen.getByText('release-plan.md')).toBeInTheDocument()
+    // Clearing removes the button again.
+    expect(screen.queryByRole('button', { name: 'Clear filter' })).not.toBeInTheDocument()
   })
 
   it('shows a "no documents match your search" empty state when the fuzzy search has no matches', async () => {
@@ -239,7 +261,7 @@ describe('UploadPage', () => {
     renderWithProviders(<UploadPage />)
     expect(await screen.findByText('architecture-guide.pdf')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'totally-unrelated-query' } })
+    fireEvent.change(screen.getByLabelText('Filter by filename'), { target: { value: 'totally-unrelated-query' } })
 
     expect(await screen.findByText('No documents match your search.')).toBeInTheDocument()
     expect(screen.queryByText('architecture-guide.pdf')).not.toBeInTheDocument()

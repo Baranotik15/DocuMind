@@ -11,6 +11,7 @@ import {
   Group,
   Loader,
   Modal,
+  Paper,
   Stack,
   Table,
   Text,
@@ -237,6 +238,33 @@ function TrashIcon(): JSX.Element {
       <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
       <path d="M10 11v6" />
       <path d="M14 11v6" />
+    </svg>
+  )
+}
+
+/**
+ * Search-field leading glyph - same no-icon-library rationale as the icons
+ * above. Unlike `SortIcon` (whose color varies with sort state), this glyph
+ * is always the same neutral affordance regardless of query state, so its
+ * stroke is pinned directly to the muted text token (same fixed-color
+ * approach `UploadIcon` above uses for its sparkOrange stroke) rather than
+ * `currentColor` + a wrapping color style.
+ */
+function SearchIcon(): JSX.Element {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--doc-text-muted)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.35-4.35" />
+    </svg>
+  )
+}
+
+/** Search field's clear (x) action glyph - `currentColor`, since it sits inside an interactive button that sets its own text color (see the `ClearSearchButton` styling below). */
+function ClearIcon(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
     </svg>
   )
 }
@@ -474,27 +502,51 @@ export function UploadPage(): JSX.Element {
       {/* Free-text filename search - filters the already-fetched document
           list client-side (fuzzy/typo-tolerant, see fuzzyMatch.ts), applied
           BEFORE the sort logic below. An empty query shows everything.
-          Centered and widened per request; the default TextInput variant's
-          background is Mantine's own light-scheme white (this app never
-          switches color scheme, see theme.ts's comment on that), which was
-          washing out the light theme text color to near-invisible - same
-          root cause as the Dropzone's white-background bug fixed elsewhere
-          on this page, fixed the same way: pin the input surface to the
-          app's dark `--doc-surface` token explicitly rather than fighting
-          Mantine's default stylesheet. */}
+          Centered per prior request; this pass gives it real visual craft
+          rather than just a centered box: a full pill (`radius="xl"`)
+          matching the visual weight/proportions of Chat's message-composer
+          `Paper` (surface background, hairline border, pill shape - see
+          `ChatPage.tsx`), a leading search-glyph `leftSection` for immediate
+          affordance, and a `rightSection` clear (x) action that only renders
+          once there's a query to clear. The dark-surface background/hairline
+          border from the prior functional pass (fixing Mantine's
+          light-scheme-white input background, same root cause as the
+          Dropzone's white-background bug) is kept, just re-applied at the
+          new pill radius/size. No `label` prop (and no literal "Search"
+          copy anywhere on the field) per explicit request - the leading
+          glyph plus placeholder already make the field's purpose clear
+          without a redundant text label above it; `aria-label` supplies the
+          accessible name that the (now-absent) label would otherwise have
+          provided. */}
       <TextInput
-        label="Search"
-        placeholder="Search by filename..."
+        aria-label="Filter by filename"
+        placeholder="Filter by filename..."
         value={nameQuery}
         onChange={(event) => setNameQuery(event.currentTarget.value)}
-        radius="lg"
-        size="md"
+        leftSection={<SearchIcon />}
+        rightSection={
+          nameQuery === '' ? undefined : (
+            <UnstyledButton
+              type="button"
+              aria-label="Clear filter"
+              onClick={() => setNameQuery('')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--doc-text-muted)',
+              }}
+            >
+              <ClearIcon />
+            </UnstyledButton>
+          )
+        }
+        radius="xl"
+        size="lg"
         w="100%"
-        maw={560}
+        maw={620}
         mx="auto"
         styles={{
-          root: { textAlign: 'center' },
-          label: { display: 'block', marginBottom: 'var(--mantine-spacing-xs)' },
           input: {
             backgroundColor: 'var(--doc-surface)',
             color: 'var(--doc-text)',
@@ -503,71 +555,85 @@ export function UploadPage(): JSX.Element {
         }}
       />
 
-      <Table fz="md" verticalSpacing="sm">
-        <Table.Thead>
-          <Table.Tr>
-            {/* Sortable headers, not separate filter inputs: click a column
-                to sort the already-fetched document list by it (client-side,
-                no backend involvement). Each column cycles ascending ->
-                descending -> not sorted on repeated clicks of that SAME
-                column, and multiple columns can be active at once - clicking
-                a second column adds it as a secondary sort key (breaking
-                ties within the first) rather than replacing it. See
-                `handleSort` above. */}
-            <SortableHeader label="Filename" column="filename" sort={sort} onSort={handleSort} />
-            <SortableHeader label="Status" column="status" sort={sort} onSort={handleSort} />
-            <SortableHeader label="Uploaded at" column="uploadedAt" sort={sort} onSort={handleSort} />
-            <Table.Th>Actions</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {sortedDocuments.length === 0 ? (
+      {/* Elevated surface panel around the document table - previously the
+          bare `<Table>` rendered directly on the `void` page background with
+          no surface wrapper at all, which read as flat rather than
+          "distinguished/grounded". `Paper[withBorder]` follows this
+          codebase's established Cards/Surfaces pattern (surface background,
+          hairline border via the `gray.3` remap, the app's default `lg`
+          radius - see ChunkPreviewPage.tsx's chunk boxes / Chat's message
+          bubbles) plus a soft, bottom-weighted neutral shadow so the panel
+          reads as genuinely lifted off the page, not just outlined. This is
+          pure depth/elevation, not the sparkOrange signature mark - Upload
+          has no "edited/active" concept for the mark to attach to (see
+          design-principles.md). */}
+      <Paper radius="lg" p="md" bg="var(--doc-surface)" withBorder style={{ boxShadow: '0 24px 48px -24px rgba(0, 0, 0, 0.55)' }}>
+        <Table fz="md" verticalSpacing="sm">
+          <Table.Thead>
             <Table.Tr>
-              <Table.Td colSpan={4}>
-                <Text c="dimmed" ta="center" py="md">
-                  {documents.length === 0 ? 'No documents uploaded yet.' : 'No documents match your search.'}
-                </Text>
-              </Table.Td>
+              {/* Sortable headers, not separate filter inputs: click a column
+                  to sort the already-fetched document list by it (client-side,
+                  no backend involvement). Each column cycles ascending ->
+                  descending -> not sorted on repeated clicks of that SAME
+                  column, and multiple columns can be active at once - clicking
+                  a second column adds it as a secondary sort key (breaking
+                  ties within the first) rather than replacing it. See
+                  `handleSort` above. */}
+              <SortableHeader label="Filename" column="filename" sort={sort} onSort={handleSort} />
+              <SortableHeader label="Status" column="status" sort={sort} onSort={handleSort} />
+              <SortableHeader label="Uploaded at" column="uploadedAt" sort={sort} onSort={handleSort} />
+              <Table.Th>Actions</Table.Th>
             </Table.Tr>
-          ) : (
-            sortedDocuments.map((document) => (
-              <Table.Tr key={document.id}>
-                <Table.Td ff="monospace">{document.filename}</Table.Td>
-                <Table.Td>
-                  <StatusBadge status={document.status} />
-                </Table.Td>
-                <Table.Td ff="monospace">{formatDateTime(document.uploadedAt)}</Table.Td>
-                <Table.Td>
-                  {/* Edit navigates to the full-page chunk preview for this
-                      document (see ChunkPreviewPage.tsx) instead of a
-                      "Chunks" tab. Delete opens the confirm Modal below,
-                      which calls attemptDelete on confirm. */}
-                  <Group gap="xs" wrap="nowrap">
-                    <ActionIcon
-                      size="lg"
-                      aria-label={`Edit ${document.filename}`}
-                      variant="subtle"
-                      color="signalBlue"
-                      onClick={() => navigate(`/upload/${document.id}/chunks`)}
-                    >
-                      <PencilIcon />
-                    </ActionIcon>
-                    <ActionIcon
-                      size="lg"
-                      aria-label={`Delete ${document.filename}`}
-                      variant="subtle"
-                      color="alertMagenta"
-                      onClick={() => setDeleteTarget(document)}
-                    >
-                      <TrashIcon />
-                    </ActionIcon>
-                  </Group>
+          </Table.Thead>
+          <Table.Tbody>
+            {sortedDocuments.length === 0 ? (
+              <Table.Tr>
+                <Table.Td colSpan={4}>
+                  <Text c="dimmed" ta="center" py="md">
+                    {documents.length === 0 ? 'No documents uploaded yet.' : 'No documents match your search.'}
+                  </Text>
                 </Table.Td>
               </Table.Tr>
-            ))
-          )}
-        </Table.Tbody>
-      </Table>
+            ) : (
+              sortedDocuments.map((document) => (
+                <Table.Tr key={document.id}>
+                  <Table.Td ff="monospace">{document.filename}</Table.Td>
+                  <Table.Td>
+                    <StatusBadge status={document.status} />
+                  </Table.Td>
+                  <Table.Td ff="monospace">{formatDateTime(document.uploadedAt)}</Table.Td>
+                  <Table.Td>
+                    {/* Edit navigates to the full-page chunk preview for this
+                        document (see ChunkPreviewPage.tsx) instead of a
+                        "Chunks" tab. Delete opens the confirm Modal below,
+                        which calls attemptDelete on confirm. */}
+                    <Group gap="xs" wrap="nowrap">
+                      <ActionIcon
+                        size="lg"
+                        aria-label={`Edit ${document.filename}`}
+                        variant="subtle"
+                        color="signalBlue"
+                        onClick={() => navigate(`/upload/${document.id}/chunks`)}
+                      >
+                        <PencilIcon />
+                      </ActionIcon>
+                      <ActionIcon
+                        size="lg"
+                        aria-label={`Delete ${document.filename}`}
+                        variant="subtle"
+                        color="alertMagenta"
+                        onClick={() => setDeleteTarget(document)}
+                      >
+                        <TrashIcon />
+                      </ActionIcon>
+                    </Group>
+                  </Table.Td>
+                </Table.Tr>
+              ))
+            )}
+          </Table.Tbody>
+        </Table>
+      </Paper>
 
       <Modal opened={deleteTarget !== null} onClose={() => setDeleteTarget(null)} title="Delete document" radius="lg">
         <Stack gap="lg">
