@@ -341,6 +341,19 @@ the examples currently in the codebase (`ChunksPage.tsx`, `AppLayout.tsx`,
   state (`variant="filled"` when active, `variant="outline"` when not, same
   toggle pattern as before).
 - **Destructive**: `color="alertMagenta"`.
+- **Cancel/dismiss vs. the confirming action, in confirm dialogs and
+  page-level "leave without saving" flows**: Cancel/dismiss is quiet -
+  `variant="subtle" color="signalBlue"` - reserving the bold
+  `variant="filled" color="alertMagenta"` (or `sparkOrange` for a
+  non-destructive confirm, e.g. Overwrite) treatment for the button that
+  actually performs the confirmed/destructive action. See UploadPage.tsx's
+  Delete/Overwrite confirm `Modal`s and ChunkPreviewPage.tsx's Cancel button
+  + its own discard-changes confirm `Modal` ("Keep editing" is the quiet
+  option, "Discard changes" is the bold one) for two independent instances of
+  the same pattern. A plain top-level Cancel that has nothing to confirm
+  (nothing would be lost) should never get the bold destructive treatment
+  just because it says "Cancel" - that's reserved for buttons that are
+  themselves confirming something.
 - The sparkOrange mark is never applied to a button via `color="sparkOrange"`
   variant="filled"` as if it were "the mark" - that's just the secondary
   accent color used as an ordinary button color, not the signature device
@@ -508,6 +521,47 @@ row from local state; a 409 `document_processing` (blocked while a pipeline
 run is actively chunking that document) closes the dialog and surfaces the
 same page-level `processingMessage` `Alert` pattern already used for
 upload/overwrite conflicts, rather than a dialog-level error state.
+
+### Chunk Preview: Cancel/Discard Confirmation
+
+`ChunkPreviewPage.tsx`'s bottom-of-page Cancel button is `variant="subtle"
+color="signalBlue"` - the quiet secondary treatment (see the Buttons section
+above), not a bold destructive one, since by itself Cancel navigates straight
+back to `/upload` with nothing to confirm whenever no chunk is dirty
+(`chunks.some((chunk) => chunk.isDirty)` is `false`). When at least one chunk
+IS dirty, clicking Cancel instead opens a confirm `Modal` ("Discard
+changes?"), matching UploadPage.tsx's Delete/Overwrite `Modal` structure
+(`Modal` > `Stack` > body `Text` + `Group[justify="flex-end"]` of two
+`Button`s): a quiet "Keep editing" (`variant="subtle" color="signalBlue"`,
+just closes the dialog - the edit is untouched, still dirty, still in state)
+and a bold "Discard changes" (`variant="filled" color="alertMagenta"` - this
+is the button that's actually destructive/confirming, per the Buttons
+section) that navigates to `/upload`. No API call is made either way -
+per-chunk edits only ever live in local `chunks` state until Save calls
+`apiClient.saveChunks`, so "discarding" is just choosing not to persist them.
+
+The Escape key is wired to the exact same dirty-check logic as the Cancel
+button (a `keydown` listener on `document`, added/removed in a `useEffect`),
+with one edge case: if a chunk's `Textarea` is actively focused
+(`activeChunkId` set) when Escape is pressed, Escape exits just that chunk's
+edit mode first (the same thing its `onBlur` already does) rather than
+immediately evaluating the page-level Cancel/discard flow - an operator
+mid-edit pressing Escape is far more likely reaching for "stop editing this
+chunk" than "leave the page," and this also means Escape can't fire the
+discard confirmation out from under an unsaved keystroke the operator hasn't
+even finished typing. While the discard-confirm `Modal` is already open, the
+listener is a deliberate no-op: Mantine's `Modal` already closes itself on
+Escape, so acting on it too would fire two things from one keypress. The
+listener's dirty-check is inlined directly in the effect (rather than calling
+a shared `handleCancelClick` function) purely so its dependency array can
+list the actual state it reads instead of a plain function that's recreated
+on every render.
+
+The Previous/Next pagination buttons pass an explicit `color="signalBlue"`
+(previously relying on the implicit `primaryColor` default) so every
+`variant="subtle"` button on the page names its color explicitly, matching
+the Back `ActionIcon` and the new Cancel button above - a no-visual-change,
+consistency-only touch-up, not a behavior change.
 
 ### Dashboard: Stat Cards + Bar Visualization
 

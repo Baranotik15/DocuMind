@@ -2,7 +2,7 @@ import type { JSX, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent 
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { ActionIcon, Alert, Box, Button, Group, Stack, Text, Textarea, Title } from '@mantine/core'
+import { ActionIcon, Alert, Box, Button, Group, Modal, Stack, Text, Textarea, Title } from '@mantine/core'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import classes from './ChunkPreviewPage.module.css'
@@ -44,6 +44,7 @@ export function ChunkPreviewPage(): JSX.Element {
   const [chunks, setChunks] = useState<Chunk[]>([])
   const [activeChunkId, setActiveChunkId] = useState<string | null>(null)
   const [pageIndex, setPageIndex] = useState(0)
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const [viewport, setViewport] = useState({ topPct: 0, heightPct: 100 })
   const scrollRef = useRef<HTMLDivElement>(null)
   const minimapRef = useRef<HTMLDivElement>(null)
@@ -172,6 +173,56 @@ export function ChunkPreviewPage(): JSX.Element {
     }
     navigate('/upload')
   }
+
+  // Local edits (in `chunks` state) are never persisted until Save calls
+  // apiClient.saveChunks, so "discarding" is just a navigation away - no
+  // separate revert API call needed. Only prompt when something would
+  // actually be lost; a page with no dirty chunks navigates immediately,
+  // same as before this confirmation was added.
+  function handleCancelClick(): void {
+    if (chunks.some((chunk) => chunk.isDirty)) {
+      setShowDiscardConfirm(true)
+      return
+    }
+    navigate('/upload')
+  }
+
+  function handleDiscardConfirm(): void {
+    setShowDiscardConfirm(false)
+    navigate('/upload')
+  }
+
+  // Escape mirrors the Cancel button's own dirty-check logic (deliberately
+  // inlined here, rather than calling handleCancelClick, so this effect's
+  // dependency array can list the actual state it reads instead of a
+  // function recreated fresh every render), with one extra case: if a
+  // chunk's Textarea is actively focused, Escape exits just that chunk's
+  // edit mode first (matching its existing onBlur-closes-editing behavior)
+  // rather than jumping straight to the page-level Cancel/discard flow - an
+  // operator mid-edit pressing Escape is far more likely reaching for "stop
+  // editing this chunk" than "leave the page." While the confirm Modal is
+  // already open, this listener is a no-op: Mantine's Modal closes itself on
+  // Escape by default, so acting here too would fire two things from one
+  // keypress.
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key !== 'Escape' || showDiscardConfirm) {
+        return
+      }
+      if (activeChunkId !== null) {
+        setActiveChunkId(null)
+        return
+      }
+      if (chunks.some((chunk) => chunk.isDirty)) {
+        setShowDiscardConfirm(true)
+        return
+      }
+      navigate('/upload')
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [showDiscardConfirm, activeChunkId, chunks, navigate])
 
   return (
     <Stack gap="lg" style={{ height: 'calc(100dvh - var(--app-shell-header-height, 68px) - 2 * var(--mantine-spacing-lg))' }}>
@@ -308,7 +359,12 @@ export function ChunkPreviewPage(): JSX.Element {
 
           {pages.length > 1 ? (
             <Group justify="center" gap="md">
-              <Button variant="subtle" disabled={pageIndex === 0} onClick={() => setPageIndex((index) => index - 1)}>
+              <Button
+                variant="subtle"
+                color="signalBlue"
+                disabled={pageIndex === 0}
+                onClick={() => setPageIndex((index) => index - 1)}
+              >
                 Previous
               </Button>
               <Text size="sm" c="dimmed">
@@ -316,6 +372,7 @@ export function ChunkPreviewPage(): JSX.Element {
               </Text>
               <Button
                 variant="subtle"
+                color="signalBlue"
                 disabled={pageIndex === pages.length - 1}
                 onClick={() => setPageIndex((index) => index + 1)}
               >
@@ -327,10 +384,12 @@ export function ChunkPreviewPage(): JSX.Element {
       )}
 
       <Group justify="flex-end">
-        {/* Local edits (in `chunks` state) are never persisted until Save
-            calls apiClient.saveChunks, so discarding them is just a
-            navigation away - no separate "revert" API call needed. */}
-        <Button onClick={() => navigate('/upload')} variant="filled" color="alertMagenta" radius="xl" size="md" px="xl">
+        {/* No confirmation needed when nothing is dirty - see
+            handleCancelClick. When something is dirty, the confirm Modal
+            below (not this button) is the genuinely destructive/confirming
+            action, hence the quiet subtle/signalBlue treatment here rather
+            than a bold filled/alertMagenta one. */}
+        <Button onClick={handleCancelClick} variant="subtle" color="signalBlue" radius="xl" size="md" px="xl">
           Cancel
         </Button>
         <Button
@@ -344,6 +403,25 @@ export function ChunkPreviewPage(): JSX.Element {
           Save
         </Button>
       </Group>
+
+      <Modal
+        opened={showDiscardConfirm}
+        onClose={() => setShowDiscardConfirm(false)}
+        title="Discard changes?"
+        radius="lg"
+      >
+        <Stack gap="lg">
+          <Text>You have unsaved edits - are you sure you want to discard them?</Text>
+          <Group justify="flex-end">
+            <Button variant="subtle" color="signalBlue" radius="xl" onClick={() => setShowDiscardConfirm(false)}>
+              Keep editing
+            </Button>
+            <Button variant="filled" color="alertMagenta" radius="xl" onClick={handleDiscardConfirm}>
+              Discard changes
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Stack>
   )
 }

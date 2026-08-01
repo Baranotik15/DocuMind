@@ -38,3 +38,15 @@ Object.defineProperty(window, 'ResizeObserver', {
   writable: true,
   value: ResizeObserverStub,
 })
+
+// jsdom doesn't implement the FontFaceSet API; Mantine's autosizing Textarea
+// (used for chunk editing in ChunkPreviewPage.tsx) listens for
+// `document.fonts`'s "loadingdone" event to recalculate its height once web
+// fonts finish loading.
+Object.defineProperty(document, 'fonts', {
+  writable: true,
+  value: {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  },
+})

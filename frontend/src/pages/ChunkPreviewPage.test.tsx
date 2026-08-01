@@ -3,7 +3,7 @@ import type { Chunk, DocumentSummary } from '../api/types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MantineProvider } from '@mantine/core'
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 import { ChunkPreviewPage } from './ChunkPreviewPage'
@@ -18,6 +18,11 @@ const documentId = 'doc-1'
 const filename = 'architecture-guide.pdf'
 
 const PROCESSING_MESSAGE = 'This document is still processing - please wait for it to finish before editing.'
+
+// Stands in for the real UploadPage - navigation is asserted by checking this
+// sentinel renders (and the chunk preview's own content is gone), same
+// approach as adding a second real Route rather than mocking react-router-dom.
+const UPLOAD_PLACEHOLDER = 'Upload page placeholder'
 
 const chunks: Chunk[] = [
   { id: 'chunk-1', documentId, originalContent: 'Intro paragraph.', editedContent: 'Intro paragraph.', isDirty: false },
@@ -37,10 +42,23 @@ function renderChunkPreviewPage(): ReturnType<typeof render> {
       <MemoryRouter initialEntries={[`/upload/${documentId}/chunks`]}>
         <Routes>
           <Route path="/upload/:documentId/chunks" element={<ChunkPreviewPage />} />
+          <Route path="/upload" element={<div>{UPLOAD_PLACEHOLDER}</div>} />
         </Routes>
       </MemoryRouter>
     </MantineProvider>,
   )
+}
+
+// Clicks the first chunk to enter edit mode, types a change (making it
+// dirty), then blurs to exit edit mode - the same click-edit-blur flow an
+// operator uses, landing on a chunk that's dirty but no longer actively
+// focused (matching the state Cancel/Escape are meant to guard).
+async function makeFirstChunkDirty(): Promise<void> {
+  const [chunkText] = await screen.findAllByText('Intro paragraph.')
+  fireEvent.click(chunkText)
+  const textarea = screen.getByRole('textbox')
+  fireEvent.change(textarea, { target: { value: 'Intro paragraph edited.' } })
+  fireEvent.blur(textarea)
 }
 
 describe('ChunkPreviewPage', () => {
@@ -143,5 +161,93 @@ describe('ChunkPreviewPage', () => {
     expect(await screen.findByText(PROCESSING_MESSAGE)).toBeInTheDocument()
     expect(screen.getByText(filename)).toBeInTheDocument()
     expect(screen.getAllByText('Intro paragraph.').length).toBeGreaterThan(0)
+  })
+
+  it('navigates to Upload immediately when Cancel is clicked and no chunk is dirty', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await screen.findAllByText('Intro paragraph.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(await screen.findByText(UPLOAD_PLACEHOLDER)).toBeInTheDocument()
+    expect(screen.queryByText(filename)).not.toBeInTheDocument()
+  })
+
+  it('shows a discard-changes confirmation instead of navigating when Cancel is clicked with a dirty chunk', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await makeFirstChunkDirty()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(await screen.findByText('Discard changes?')).toBeInTheDocument()
+    expect(screen.getByText(/unsaved edits/)).toBeInTheDocument()
+    expect(screen.getByText(filename)).toBeInTheDocument()
+    expect(screen.queryByText(UPLOAD_PLACEHOLDER)).not.toBeInTheDocument()
+  })
+
+  it('"Keep editing" closes the confirmation without navigating, leaving the edit intact', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await makeFirstChunkDirty()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await screen.findByText('Discard changes?')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+
+    // Mantine's Modal unmounts via an exit transition rather than instantly,
+    // same as the confirm dialogs in UploadPage.test.tsx - wait for it.
+    await waitFor(() => expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument())
+    expect(screen.queryByText(UPLOAD_PLACEHOLDER)).not.toBeInTheDocument()
+    expect(screen.getAllByText('Intro paragraph edited.').length).toBeGreaterThan(0)
+  })
+
+  it('"Discard changes" navigates to Upload, discarding the edit', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await makeFirstChunkDirty()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await screen.findByText('Discard changes?')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+
+    expect(await screen.findByText(UPLOAD_PLACEHOLDER)).toBeInTheDocument()
+  })
+
+  it('pressing Escape with a dirty chunk shows the same discard-changes confirmation as Cancel', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await makeFirstChunkDirty()
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(await screen.findByText('Discard changes?')).toBeInTheDocument()
+    expect(screen.queryByText(UPLOAD_PLACEHOLDER)).not.toBeInTheDocument()
+  })
+
+  it('pressing Escape while a chunk is actively being edited exits that chunk\'s edit mode instead of showing the confirmation', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    const [chunkText] = await screen.findAllByText('Intro paragraph.')
+    fireEvent.click(chunkText)
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: 'Intro paragraph edited.' } })
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Intro paragraph edited.').length).toBeGreaterThan(0)
   })
 })
