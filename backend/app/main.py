@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.routers import chat, documents
+from app.routers import chat, dashboard, documents
 from app.tasks import run_smoke_job
 
 
@@ -22,6 +22,7 @@ def create_app() -> FastAPI:
 
     app.include_router(documents.router, prefix="/internal")
     app.include_router(chat.router, prefix="/internal")
+    app.include_router(dashboard.router, prefix="/internal")
 
     @app.get("/health")
     def health() -> dict[str, str]:
