@@ -17,9 +17,9 @@ import { createTheme } from '@mantine/core'
 // Color tokens (source of truth - do not hardcode these hex values elsewhere)
 // ---------------------------------------------------------------------------
 
-/** Page background. Deep navy-black, not pure black - keeps the UI from feeling like a void. */
-const voidBg = '#0A0E1A'
-/** Elevated surface background - cards, panels, the header bar, the dropzone. */
+/** Page background. Deep navy blue, per the user's reference swatch (previously read as too near-black/desaturated). */
+const voidBg = '#101B36'
+/** Elevated surface background - cards, panels, the header bar, the navbar, the dropzone. Deliberately close to `void`, just a touch lighter, not a bold contrast. */
 const surface = '#131B2E'
 /** Primary text; soft white-blue rather than pure white for comfortable reading on the dark background. */
 const text = '#E8EDFA'
@@ -31,7 +31,7 @@ const signalBlueBase = '#3D6BFF'
  * Secondary accent: active/highlighted state, secondary CTAs. Also the base
  * color of the signature "mark" - see below.
  */
-const sparkOrangeBase = '#FF8A00'
+const sparkOrangeBase = '#FFA726'
 /** Errors, the dislike-active state, destructive actions - distinct from both blue and orange. */
 const alertMagentaBase = '#FF3D71'
 /**

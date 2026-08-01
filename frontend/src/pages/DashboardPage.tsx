@@ -57,7 +57,7 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <Stack gap="xl">
-      <Title order={2}>Dashboard</Title>
+      <Title order={2}>Logs & Stats</Title>
 
       <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="lg">
         <StatCard label="Documents" value={documents.length} />
@@ -109,7 +109,7 @@ export function DashboardPage(): JSX.Element {
         )}
       </Stack>
 
-      <Table fz="md" verticalSpacing="sm" highlightOnHover>
+      <Table fz="md" verticalSpacing="sm">
         <Table.Thead>
           <Table.Tr>
             <Table.Th>Timestamp</Table.Th>
