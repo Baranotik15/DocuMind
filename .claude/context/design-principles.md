@@ -233,9 +233,13 @@ Mono only):
   - chunk `originalContent`/`editedContent` text in `ChunksPage.tsx`
     (`Textarea` `styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}`)
   - data table cells in `DashboardPage.tsx` and `UploadPage.tsx` - filenames,
-    statuses, event types, timestamps, ids (`ff="monospace"` on the relevant
+    event types, timestamps, ids (`ff="monospace"` on the relevant
     `Table.Td`s only, not the whole row/table), and the "events by type" bar
-    labels in `DashboardPage.tsx` (also data, same treatment as a table cell)
+    labels in `DashboardPage.tsx` (also data, same treatment as a table cell).
+    **Exception:** Upload's Status column renders a color-coded `Badge` (plus
+    a `Loader` for the two unsettled statuses) instead of mono text - see
+    "Upload: Status Badges" below - since combining status display with the
+    "still processing" indicator needs a component, not a text cell.
   - chat message content in `ChatPage.tsx` (`Text ff="monospace"`)
 
   Free-text/human-authored fields (e.g. a dashboard event's `detail`
@@ -386,6 +390,31 @@ keeps working - **never override `backgroundColor`/`borderColor` via the
 beat the component's internal accept/reject CSS and would silently break drag
 feedback; use a CSS Module class via `classNames` instead.
 
+### Upload: Status Badges + Sortable Headers
+
+The document table's Status column renders a `StatusBadge` (`UploadPage.tsx`)
+rather than plain mono text: a color-coded `Badge` per status (`gray` for
+`uploaded`, `signalBlue` for `chunking`, stock `teal` for `ready` - the same
+generic "ok" tone as the header's decorative status dot - and `alertMagenta`
+for `failed`), plus a small `Loader` alongside it for the two unsettled
+statuses (`uploaded`/`chunking`) so "still processing" is visually
+unmistakable rather than a static word. `UploadPage.tsx` also lightly polls
+`listDocuments()` (every `POLL_INTERVAL_MS`) while anything is unsettled, so
+the badge genuinely progresses to `ready`/`failed` on its own; polling stops
+once nothing is unsettled, and is guarded against clobbering a more recent
+local optimistic update (see the effect's comments).
+
+The Filename/Status/Uploaded at column headers are clickable
+(`SortableHeader`) rather than paired with separate filter inputs: clicking
+sorts the already-fetched document list by that column client-side (a hand-
+rolled chevron SVG, no icon library, indicates the active column + direction;
+`aria-sort` is set on the `Table.Th`), toggling direction on a repeat click
+and resetting to ascending when switching columns. No sort is applied until a
+header is first clicked. Status sorts in pipeline-stage order
+(`uploaded` -> `chunking` -> `ready` -> `failed`), not alphabetically, since
+that groups the two "still processing" statuses together and reads more
+usefully for an operator scanning the table.
+
 ### Dashboard: Stat Cards + Bar Visualization
 
 `DashboardPage.tsx` renders three `StatCard`s (Documents/Events/Event types,
@@ -467,7 +496,12 @@ than squeezing three cards into an unreadable width.
   (animating `width` there communicates the data changing, which is the
   point).
 - No decorative motion beyond the above (no bouncing, pulsing, skeleton
-  shimmer, etc.) as of this pass.
+  shimmer, etc.) as of this pass. The one addition since is Upload's
+  `StatusBadge` `Loader` spinner (Mantine's built-in spin animation) for
+  `uploaded`/`chunking` rows - this is **functional** motion (it communicates
+  a genuinely in-progress background process, not a static label) rather than
+  decorative, so it doesn't violate this rule; it's the same category as the
+  dashboard bars' `width` transition above, not a new exception to it.
 
 ---
 

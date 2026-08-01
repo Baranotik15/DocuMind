@@ -2,9 +2,11 @@ import type { DocumentSummary } from '../api/types'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fireEvent, waitFor } from '@testing-library/react'
+import { act } from 'react'
 
-import { UploadPage } from './UploadPage'
+import { fireEvent, waitFor, within } from '@testing-library/react'
+
+import { POLL_INTERVAL_MS, UploadPage } from './UploadPage'
 import { renderWithProviders, screen } from '../test-utils'
 
 // UploadPage talks to the real httpApiClient (frontend/src/api/httpClient.ts),
@@ -17,6 +19,20 @@ const seededDocuments: DocumentSummary[] = [
   { id: 'doc-2', filename: 'onboarding-notes.docx', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z' },
   { id: 'doc-3', filename: 'release-plan.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
 ]
+
+// Deliberately not already sorted by any column, so clicking a header
+// visibly changes row order (unlike `seededDocuments`, whose filenames
+// happen to already be alphabetical).
+const sortTestDocuments: DocumentSummary[] = [
+  { id: 'doc-1', filename: 'zeta.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z' },
+  { id: 'doc-2', filename: 'alpha.docx', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z' },
+  { id: 'doc-3', filename: 'mid.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
+]
+
+/** The table's filename column, in row order - reads the DOM directly since assertions here care about row *order*, not just presence. */
+function getFilenameOrder(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll('tbody tr')).map((row) => row.querySelector('td')?.textContent ?? '')
+}
 
 describe('UploadPage', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -135,5 +151,119 @@ describe('UploadPage', () => {
 
     expect(screen.queryByText(/already exists - overwrite it\?/)).not.toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('sorts by filename when the Filename header is clicked, toggling direction on a repeat click', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
+
+    const { container } = renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('zeta.pdf')).toBeInTheDocument()
+
+    // No sort applied yet - original fetch order.
+    expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'alpha.docx', 'mid.md'])
+
+    const filenameHeader = screen.getByRole('button', { name: 'Filename' })
+    fireEvent.click(filenameHeader)
+    expect(getFilenameOrder(container)).toEqual(['alpha.docx', 'mid.md', 'zeta.pdf'])
+
+    fireEvent.click(filenameHeader)
+    expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'mid.md', 'alpha.docx'])
+
+    // Switching to a different column resets to ascending on that column,
+    // rather than continuing to toggle the previous column's direction.
+    fireEvent.click(screen.getByRole('button', { name: 'Status' }))
+    expect(getFilenameOrder(container)).toEqual(['alpha.docx', 'mid.md', 'zeta.pdf']) // uploaded, chunking, ready
+  })
+
+  it('sorts by status in pipeline-stage order when the Status header is clicked, toggling direction on a repeat click', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
+
+    const { container } = renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('zeta.pdf')).toBeInTheDocument()
+
+    const statusHeader = screen.getByRole('button', { name: 'Status' })
+    fireEvent.click(statusHeader)
+    // uploaded (alpha) -> chunking (mid) -> ready (zeta)
+    expect(getFilenameOrder(container)).toEqual(['alpha.docx', 'mid.md', 'zeta.pdf'])
+
+    fireEvent.click(statusHeader)
+    expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'mid.md', 'alpha.docx'])
+  })
+
+  it('sorts chronologically by uploaded date when the Uploaded at header is clicked, toggling direction on a repeat click', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
+
+    const { container } = renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('zeta.pdf')).toBeInTheDocument()
+
+    const uploadedAtHeader = screen.getByRole('button', { name: 'Uploaded at' })
+    fireEvent.click(uploadedAtHeader)
+    // zeta (07-20, oldest) -> alpha (07-28) -> mid (07-30, newest)
+    expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'alpha.docx', 'mid.md'])
+
+    fireEvent.click(uploadedAtHeader)
+    expect(getFilenameOrder(container)).toEqual(['mid.md', 'alpha.docx', 'zeta.pdf'])
+  })
+
+  it('shows an in-progress indicator for uploaded/chunking documents but not for ready/failed', async () => {
+    const documents: DocumentSummary[] = [
+      { id: 'doc-1', filename: 'ready-doc.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z' },
+      { id: 'doc-2', filename: 'uploaded-doc.pdf', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z' },
+      { id: 'doc-3', filename: 'chunking-doc.pdf', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
+      { id: 'doc-4', filename: 'failed-doc.pdf', status: 'failed', uploadedAt: '2026-07-31T08:00:00.000Z' },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(documents)) // GET on mount
+    // Polling is active (doc-2/doc-3 are unsettled) - keep it satisfied with
+    // the same snapshot so it doesn't affect this test's assertions.
+    fetchMock.mockResolvedValue(jsonResponse(documents))
+
+    renderWithProviders(<UploadPage />)
+
+    const readyRow = (await screen.findByText('ready-doc.pdf')).closest('tr') as HTMLElement
+    const uploadedRow = screen.getByText('uploaded-doc.pdf').closest('tr') as HTMLElement
+    const chunkingRow = screen.getByText('chunking-doc.pdf').closest('tr') as HTMLElement
+    const failedRow = screen.getByText('failed-doc.pdf').closest('tr') as HTMLElement
+
+    expect(within(readyRow).queryByRole('status')).not.toBeInTheDocument()
+    expect(within(uploadedRow).getByRole('status')).toBeInTheDocument()
+    expect(within(chunkingRow).getByRole('status')).toBeInTheDocument()
+    expect(within(failedRow).queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('polls the document list again while a document is unsettled, and stops once everything settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const unsettled: DocumentSummary[] = [
+        { id: 'doc-1', filename: 'release-plan.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
+      ]
+      const settled: DocumentSummary[] = [{ ...unsettled[0], status: 'ready' }]
+
+      fetchMock.mockResolvedValueOnce(jsonResponse(unsettled)) // GET on mount
+      fetchMock.mockResolvedValueOnce(jsonResponse(settled)) // first poll: settles
+
+      renderWithProviders(<UploadPage />)
+
+      // Flush the mount effect's fetch + resulting state update before
+      // asserting anything about the poll interval it schedules.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      // Advancing by the poll interval should trigger exactly one more GET.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+
+      // The document is now 'ready' (settled) - polling should have stopped,
+      // so advancing well past another interval triggers no further calls.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
