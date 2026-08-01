@@ -9,6 +9,17 @@ from app.llm import embed_texts
 from app.vectors import format_vector
 
 
+class NoExtractableTextError(Exception):
+    """Raised by run_pipeline when `source_text` is empty or whitespace-only
+    (e.g. a scanned/image-only PDF with no text layer, where pypdf parses
+    the page structure without error but extracts nothing). Caught by
+    run_pipeline's own except block below and turned into a normal
+    mark_document_failed call, exactly like any other pipeline failure -
+    this covers both the initial-upload path (extraction produced only
+    whitespace) and the Save/re-chunk path (an operator edits a chunk set
+    down to nothing) with the same check."""
+
+
 class DocumentProcessingError(Exception):
     """Raised once a document has already been marked 'failed' and the
     failure recorded as a dashboard_events row - chains the original
@@ -64,6 +75,13 @@ def run_pipeline(document_id: str, source_text: str, session: Session) -> None:
     session.commit()
 
     try:
+        if not source_text.strip():
+            raise NoExtractableTextError(
+                "No extractable text found in this document - it may be a "
+                "scanned/image-only file with no text layer (OCR is not "
+                "supported)"
+            )
+
         chunks = split_into_chunks(source_text)
         embeddings = asyncio.run(embed_texts(chunks))
 

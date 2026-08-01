@@ -110,6 +110,37 @@ def test_run_pipeline_success_leaves_document_ready_with_exact_reconstruction() 
         _cleanup(document_id)
 
 
+def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -> None:
+    # Reproduces the scanned-PDF bug: pypdf/extract_text can "succeed" (no
+    # exception) while returning nothing but newlines - e.g. one \n per page
+    # of an image-only PDF with no text layer. That must be treated as a
+    # pipeline failure, not silently chunked/embedded into a useless
+    # whitespace-only chunk that lands the document at 'ready'.
+    with SyncSessionLocal() as session:
+        document_id = _insert_document(session)
+
+    try:
+        with patch(
+            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            with SyncSessionLocal() as session:
+                with pytest.raises(DocumentProcessingError):
+                    run_pipeline(document_id, "\n\n\n", session)
+
+        with SyncSessionLocal() as session:
+            assert _document_status(session, document_id) == "failed"
+
+            failure_details = _event_details(session, "document.chunking_failed")
+            matching = [detail for detail in failure_details if document_id in detail]
+            assert matching
+            assert all(len(detail) > 0 for detail in matching)
+
+            rows = _chunk_rows(session, document_id)
+            assert len(rows) == 0
+    finally:
+        _cleanup(document_id)
+
+
 def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouched() -> None:
     with SyncSessionLocal() as session:
         document_id = _insert_document(session, status="ready")
