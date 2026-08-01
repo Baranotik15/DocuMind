@@ -6,7 +6,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 
 import { AppLayout } from './layout/AppLayout'
 import { ChatPage } from './pages/ChatPage'
-import { ChunksPage } from './pages/ChunksPage'
+import { ChunkPreviewPage } from './pages/ChunkPreviewPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { UploadPage } from './pages/UploadPage'
 import { cssVariablesResolver, theme } from './theme'
@@ -19,7 +19,9 @@ export function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/upload" replace />} />
             <Route path="/upload" element={<UploadPage />} />
-            <Route path="/chunks" element={<ChunksPage />} />
+            {/* Not in the sidebar nav - only reachable via a document's edit
+                (pencil) action on the Upload page. */}
+            <Route path="/upload/:documentId/chunks" element={<ChunkPreviewPage />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
           </Routes>

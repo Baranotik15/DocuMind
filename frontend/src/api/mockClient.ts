@@ -27,29 +27,26 @@ const documents: DocumentSummary[] = [
   },
 ]
 
-let chunks: Chunk[] = [
-  {
-    id: 'chunk-1',
-    documentId: 'doc-1',
-    originalContent: 'Section 1: Introduction to the system architecture.',
-    editedContent: 'Section 1: Introduction to the system architecture.',
-    isDirty: false,
-  },
-  {
-    id: 'chunk-2',
-    documentId: 'doc-1',
-    originalContent: 'Section 2: Data flow between services.',
-    editedContent: 'Section 2: Data flow between services.',
-    isDirty: false,
-  },
-  {
-    id: 'chunk-3',
-    documentId: 'doc-1',
-    originalContent: 'Section 3: Deployment topology.',
-    editedContent: 'Section 3: Deployment topology.',
-    isDirty: false,
-  },
+// Long, realistic-length seed text (~4000 characters across 7 chunks) so the
+// chunk-preview page (ChunkPreviewPage.tsx) can be evaluated with something
+// closer to a real document instead of three one-line placeholders.
+const ARCHITECTURE_GUIDE_SECTIONS = [
+  'Section 1: Introduction to the system architecture. DocuMind is composed of four cooperating services: a FastAPI backend that exposes the REST API, a Celery worker that handles asynchronous document processing, a PostgreSQL database extended with the pgvector extension for similarity search, and a React frontend served independently. Each service runs in its own container and communicates over a private Docker network, with only the backend and frontend exposing ports to the host machine during local development.',
+  'Section 2: Data flow between services. When a user uploads a document through the frontend, the backend stores the raw file via the storage adapter and creates a database record with status set to uploaded. A background job is then enqueued on the Celery broker, which the worker picks up to parse the document, split it into chunks, and generate embeddings for each chunk using the configured embedding model before writing the vectors back into Postgres alongside the chunk text.',
+  'Section 3: Deployment topology. In production, each service maps to its own deployable unit: the backend and worker run as separate ECS Fargate services behind an internal load balancer, Postgres is provisioned through RDS with the pgvector extension enabled, and the message broker runs on Amazon MQ. The frontend is built as a static bundle and served through S3 and CloudFront, decoupling its release cycle entirely from the backend and worker deployments.',
+  'Section 4: Authentication and session handling. Access to the admin panel is gated by short-lived server-side sessions rather than issued tokens. A session row is created in Postgres at login time with a fixed expiry, and every subsequent request is validated against that row. There is no self-registration flow; accounts are provisioned manually, and a session that has expired requires the operator to sign in again regardless of how recently they were active.',
+  'Section 5: Chunking strategy. Documents are split using a recursive character-based splitter that respects paragraph and sentence boundaries wherever possible, aiming for chunks that are large enough to carry meaningful context but small enough to embed efficiently. Each chunk retains a reference to its source document and its position within that document, so the original text can always be reconstructed by concatenating chunks in order, which is exactly what the chunk review screen does.',
+  'Section 6: Manual review and editing. Because automated chunking is not always perfect, operators can open any document from the Upload page and review how it was split before the chunks are embedded. Edits made in the review screen are held locally until the operator explicitly saves them, at which point the edited content replaces the original for that chunk and the document becomes eligible for re-embedding on the next processing pass.',
+  'Section 7: Observability. Every significant event in the pipeline - a document being uploaded, a chunking job starting or finishing, a chat message being sent - is recorded as a structured event in Postgres. The Logs & Stats page reads directly from that table to show operators a live view of system activity without requiring a separate logging stack, which keeps the local development setup simple while still giving a realistic picture of what a production dashboard would need to surface.',
 ]
+
+let chunks: Chunk[] = ARCHITECTURE_GUIDE_SECTIONS.map((section, index) => ({
+  id: `chunk-${index + 1}`,
+  documentId: 'doc-1',
+  originalContent: section,
+  editedContent: section,
+  isDirty: false,
+}))
 
 const chatMessages: ChatMessage[] = [
   {

@@ -26,6 +26,6 @@
 /* Solid blue-shaded navbar - no decorative texture (removed per feedback:
    the dot-grid pattern read as visual noise rather than ambient texture). */
 .navbar {
-  background-color: var(--mantine-color-signalBlue-8);
+  background-color: var(--doc-surface);
   border-right: 1px solid var(--doc-hairline);
 }

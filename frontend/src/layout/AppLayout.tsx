@@ -10,11 +10,12 @@ interface NavItem {
   label: string
 }
 
+// No standalone "Chunks" tab - chunk review/editing opens per-document from
+// the Upload page's edit (pencil) action instead, see UploadPage.tsx.
 const NAV_ITEMS: NavItem[] = [
   { to: '/upload', label: 'Upload' },
-  { to: '/chunks', label: 'Chunks' },
   { to: '/chat', label: 'Chat' },
-  { to: '/dashboard', label: 'Dashboard' },
+  { to: '/dashboard', label: 'Logs & Stats' },
 ]
 
 /**

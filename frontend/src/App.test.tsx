@@ -9,13 +9,12 @@ import { render, screen } from './test-utils'
 // Router inside another Router" invariant. `renderWithProviders` remains for
 // page-level component tests that don't bring their own router (Tasks 3-6).
 describe('App', () => {
-  it('renders the DocuMind brand and navigation links to all four pages', () => {
+  it('renders the DocuMind brand and navigation links to all pages', () => {
     render(<App />)
 
     expect(screen.getByText('DocuMind')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /upload/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /chunks/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /chat/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /dashboard/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /logs & stats/i })).toBeInTheDocument()
   })
 })
