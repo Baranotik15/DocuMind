@@ -255,7 +255,7 @@ describe('UploadPage', () => {
     expect(screen.queryByRole('button', { name: 'Clear filter' })).not.toBeInTheDocument()
   })
 
-  it('shows a "no documents match your search" empty state when the fuzzy search has no matches', async () => {
+  it('shows a "no documents match your filter" empty state when the fuzzy search has no matches', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
 
     renderWithProviders(<UploadPage />)
@@ -263,7 +263,7 @@ describe('UploadPage', () => {
 
     fireEvent.change(screen.getByLabelText('Filter by filename'), { target: { value: 'totally-unrelated-query' } })
 
-    expect(await screen.findByText('No documents match your search.')).toBeInTheDocument()
+    expect(await screen.findByText('No documents match your filter.')).toBeInTheDocument()
     expect(screen.queryByText('architecture-guide.pdf')).not.toBeInTheDocument()
     expect(screen.queryByText('onboarding-notes.docx')).not.toBeInTheDocument()
     expect(screen.queryByText('release-plan.md')).not.toBeInTheDocument()

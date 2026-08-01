@@ -590,7 +590,7 @@ export function UploadPage(): JSX.Element {
               <Table.Tr>
                 <Table.Td colSpan={4}>
                   <Text c="dimmed" ta="center" py="md">
-                    {documents.length === 0 ? 'No documents uploaded yet.' : 'No documents match your search.'}
+                    {documents.length === 0 ? 'No documents uploaded yet.' : 'No documents match your filter.'}
                   </Text>
                 </Table.Td>
               </Table.Tr>
