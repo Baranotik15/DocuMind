@@ -406,14 +406,32 @@ local optimistic update (see the effect's comments).
 
 The Filename/Status/Uploaded at column headers are clickable
 (`SortableHeader`) rather than paired with separate filter inputs: clicking
-sorts the already-fetched document list by that column client-side (a hand-
-rolled chevron SVG, no icon library, indicates the active column + direction;
-`aria-sort` is set on the `Table.Th`), toggling direction on a repeat click
-and resetting to ascending when switching columns. No sort is applied until a
-header is first clicked. Status sorts in pipeline-stage order
+sorts the already-fetched document list by that column client-side, toggling
+direction on a repeat click and resetting to ascending when switching
+columns (`aria-sort` is set on the `Table.Th` to match). No sort is applied
+until a header is first clicked. Status sorts in pipeline-stage order
 (`uploaded` -> `chunking` -> `ready` -> `failed`), not alphabetically, since
 that groups the two "still processing" statuses together and reads more
 usefully for an operator scanning the table.
+
+Each header's `SortIcon` (hand-rolled SVG, no icon library) makes the
+column's current sort state unambiguous via shape **and** color, mapped to
+existing theme tokens rather than new hardcoded hex values: a single chevron
+pointing up in `signalBlue` for ascending, pointing down in `alertMagenta`
+for descending, and a neutral stacked double-chevron in the standard muted/
+dimmed text token (`var(--doc-text-muted)`) on every non-active column. The
+icon is colored via a wrapping `<span style={{ color }}>` around an SVG using
+`stroke="currentColor"` - the same `currentColor`-inherits-from-parent
+pattern `PencilIcon`/`TrashIcon` rely on via `ActionIcon`'s `color` prop,
+just applied with a plain `span` here since there's no `ActionIcon` wrapper.
+
+Delete (the same Actions-column `TrashIcon` `ActionIcon`) opens the existing
+confirm `Modal`, whose Delete button calls `DELETE
+/internal/documents/{id}` (`apiClient.deleteDocument`) - a 204 removes the
+row from local state; a 409 `document_processing` (blocked while a pipeline
+run is actively chunking that document) closes the dialog and surfaces the
+same page-level `processingMessage` `Alert` pattern already used for
+upload/overwrite conflicts, rather than a dialog-level error state.
 
 ### Dashboard: Stat Cards + Bar Visualization
 

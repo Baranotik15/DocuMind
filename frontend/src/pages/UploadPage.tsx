@@ -73,8 +73,38 @@ function compareDocuments(a: DocumentSummary, b: DocumentSummary, column: SortCo
   return new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime()
 }
 
-/** Hand-rolled chevron glyph - no icon library installed (see design-principles.md). Points down for 'desc', rotated to point up for 'asc'. */
-function ChevronIcon({ direction }: { direction: SortDirection }): JSX.Element {
+// Which of the three visual states a header's sort indicator is currently
+// in - 'neutral' when this column isn't the active sort at all, distinct
+// from either active direction.
+type SortIconState = SortDirection | 'neutral'
+
+// Maps each sort-indicator state to an existing theme token (never a new
+// hardcoded hex - see design-principles.md's Color & Theming section):
+// signalBlue for ascending, alertMagenta for descending, and the standard
+// muted/dimmed text token for the inactive/neutral state on non-active
+// columns, so the three states read unambiguously at a glance.
+const SORT_ICON_COLOR: Record<SortIconState, string> = {
+  asc: 'var(--mantine-color-signalBlue-6)',
+  desc: 'var(--mantine-color-alertMagenta-6)',
+  neutral: 'var(--doc-text-muted)',
+}
+
+/**
+ * Hand-rolled sort-indicator glyph - no icon library installed (see
+ * design-principles.md). A single chevron (pointing up for 'asc', down for
+ * 'desc') once a direction is active; a small stacked double-chevron for
+ * 'neutral' (sortable, but not the current sort) so the shape itself - not
+ * just the color - distinguishes "not sorted" from "actively sorted".
+ */
+function SortIcon({ state }: { state: SortIconState }): JSX.Element {
+  if (state === 'neutral') {
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+        <polyline points="7 8 12 3 17 8" />
+        <polyline points="7 16 12 21 17 16" />
+      </svg>
+    )
+  }
   return (
     <svg
       width="14"
@@ -87,7 +117,7 @@ function ChevronIcon({ direction }: { direction: SortDirection }): JSX.Element {
       strokeLinejoin="round"
       aria-hidden="true"
       focusable="false"
-      style={{ transform: direction === 'asc' ? 'rotate(180deg)' : undefined }}
+      style={{ transform: state === 'asc' ? 'rotate(180deg)' : undefined }}
     >
       <polyline points="6 9 12 15 18 9" />
     </svg>
@@ -104,17 +134,21 @@ interface SortableHeaderProps {
 /**
  * A clickable `Table.Th` - clicking sorts the table by this column (toggling
  * direction on a repeat click of the same column, resetting to ascending
- * when switching to a different column), with a chevron indicating the
- * active column's current direction. `aria-sort` on the `<th>` itself is the
- * standard ARIA pattern for sortable table headers.
+ * when switching to a different column), with a `SortIcon` indicating this
+ * column's current state (active-ascending/active-descending/neutral) via
+ * both shape and color. `aria-sort` on the `<th>` itself is the standard
+ * ARIA pattern for sortable table headers.
  */
 function SortableHeader({ label, column, sort, onSort }: SortableHeaderProps): JSX.Element {
   const isActive = sort?.column === column
+  const iconState: SortIconState = isActive ? sort.direction : 'neutral'
   return (
     <Table.Th aria-sort={isActive ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
       <UnstyledButton onClick={() => onSort(column)} fw={700} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         {label}
-        {isActive ? <ChevronIcon direction={sort.direction} /> : null}
+        <span style={{ color: SORT_ICON_COLOR[iconState], display: 'inline-flex' }}>
+          <SortIcon state={iconState} />
+        </span>
       </UnstyledButton>
     </Table.Th>
   )
@@ -316,6 +350,35 @@ export function UploadPage(): JSX.Element {
     }
   }
 
+  // DELETE /internal/documents/{id}: 204 on success, 404 if it doesn't
+  // exist, or 409 document_processing if a pipeline run (chunking) is
+  // currently writing to it - same busy-guard reasoning as the
+  // upload/overwrite/save conflicts handled elsewhere on this page.
+  async function attemptDelete(document: DocumentSummary): Promise<void> {
+    try {
+      await apiClient.deleteDocument(document.id)
+      setDeleteTarget(null)
+      setDocuments((current) => current.filter((candidate) => candidate.id !== document.id))
+    } catch (error) {
+      if (error instanceof ApiConflictError && error.reason === 'document_processing') {
+        // Close the confirm dialog and fall back to the same page-level
+        // "still processing" message pattern used for upload/overwrite
+        // conflicts, rather than leaving the dialog open on a failure it
+        // can't retry from.
+        setDeleteTarget(null)
+        setProcessingMessage(`${document.filename} is still processing - please wait for it to finish before deleting it.`)
+        return
+      }
+      throw error
+    }
+  }
+
+  function handleConfirmDelete(): void {
+    if (deleteTarget) {
+      void attemptDelete(deleteTarget)
+    }
+  }
+
   return (
     <Stack gap="xl">
       <Title order={2}>Upload</Title>
@@ -393,9 +456,10 @@ export function UploadPage(): JSX.Element {
                 </Table.Td>
                 <Table.Td ff="monospace">{formatDateTime(document.uploadedAt)}</Table.Td>
                 <Table.Td>
-                  {/* Delete is still a stub - not yet designed. Edit navigates
-                      to the full-page chunk preview for this document (see
-                      ChunkPreviewPage.tsx) instead of a "Chunks" tab. */}
+                  {/* Edit navigates to the full-page chunk preview for this
+                      document (see ChunkPreviewPage.tsx) instead of a
+                      "Chunks" tab. Delete opens the confirm Modal below,
+                      which calls attemptDelete on confirm. */}
                   <Group gap="xs" wrap="nowrap">
                     <ActionIcon
                       size="lg"
@@ -423,9 +487,6 @@ export function UploadPage(): JSX.Element {
         </Table.Tbody>
       </Table>
 
-      {/* Delete itself is still a stub (see the Actions column comment
-          above) - Confirm here intentionally does nothing yet beyond
-          closing the dialog, until deletion is actually designed. */}
       <Modal opened={deleteTarget !== null} onClose={() => setDeleteTarget(null)} title="Delete document" radius="lg">
         <Stack gap="lg">
           <Text>Are you sure you want to delete {deleteTarget?.filename}?</Text>
@@ -433,7 +494,7 @@ export function UploadPage(): JSX.Element {
             <Button variant="subtle" color="signalBlue" radius="xl" onClick={() => setDeleteTarget(null)}>
               Cancel
             </Button>
-            <Button variant="filled" color="alertMagenta" radius="xl" onClick={() => setDeleteTarget(null)}>
+            <Button variant="filled" color="alertMagenta" radius="xl" onClick={handleConfirmDelete}>
               Delete
             </Button>
           </Group>

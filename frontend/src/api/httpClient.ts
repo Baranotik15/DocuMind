@@ -89,6 +89,10 @@ export const httpApiClient: ApiClient = {
     return requestJson('/internal/documents', { method: 'POST', body: formData })
   },
 
+  deleteDocument(documentId) {
+    return requestVoid(`/internal/documents/${documentId}`, { method: 'DELETE' })
+  },
+
   getChunks(documentId) {
     return requestJson(`/internal/documents/${documentId}/chunks`, { method: 'GET' })
   },

@@ -113,6 +113,38 @@ describe('httpApiClient', () => {
     await expect(promise).rejects.not.toBeInstanceOf(ApiConflictError)
   })
 
+  it('deleteDocument DELETEs /internal/documents/{id} and resolves on 204', async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(204))
+
+    const { httpApiClient } = await import('./httpClient')
+    await httpApiClient.deleteDocument('doc-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/documents/doc-1',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+
+  it('deleteDocument rejects with ApiConflictError(document_processing) on a 409', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'document_processing' }, 409))
+
+    const { httpApiClient, ApiConflictError } = await import('./httpClient')
+
+    const promise = httpApiClient.deleteDocument('doc-1')
+    await expect(promise).rejects.toBeInstanceOf(ApiConflictError)
+    await expect(promise).rejects.toMatchObject({ reason: 'document_processing' })
+  })
+
+  it('deleteDocument rejects with a plain Error on a 404', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'document_not_found' }, 404))
+
+    const { httpApiClient, ApiConflictError } = await import('./httpClient')
+
+    const promise = httpApiClient.deleteDocument('doc-1')
+    await expect(promise).rejects.toThrow(Error)
+    await expect(promise).rejects.not.toBeInstanceOf(ApiConflictError)
+  })
+
   it('getChunks GETs /internal/documents/{id}/chunks and returns the parsed array', async () => {
     const chunks: Chunk[] = [
       { id: 'chunk-1', documentId: 'doc-1', originalContent: 'a', editedContent: 'a', isDirty: false },

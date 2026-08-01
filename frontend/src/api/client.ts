@@ -5,6 +5,7 @@ import { httpApiClient } from './httpClient'
 export interface ApiClient {
   listDocuments(): Promise<DocumentSummary[]>
   uploadDocument(file: File, overwrite?: boolean): Promise<DocumentSummary>
+  deleteDocument(documentId: string): Promise<void>
   getChunks(documentId: string): Promise<Chunk[]>
   saveChunks(documentId: string, chunks: Chunk[]): Promise<void>
   listChatMessages(): Promise<ChatMessage[]>

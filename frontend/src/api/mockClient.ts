@@ -123,6 +123,15 @@ export const mockApiClient: ApiClient = {
     return { ...document }
   },
 
+  async deleteDocument(documentId) {
+    const index = documents.findIndex((document) => document.id === documentId)
+    if (index === -1) {
+      throw new Error(`deleteDocument: no document found with id "${documentId}"`)
+    }
+    documents.splice(index, 1)
+    chunks = chunks.filter((chunk) => chunk.documentId !== documentId)
+  },
+
   async getChunks(documentId) {
     return chunks.filter((chunk) => chunk.documentId === documentId).map((chunk) => ({ ...chunk }))
   },

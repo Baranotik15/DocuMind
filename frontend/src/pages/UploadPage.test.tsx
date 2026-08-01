@@ -153,6 +153,54 @@ describe('UploadPage', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it('deletes a document when Delete is confirmed, calling the DELETE endpoint and removing the row', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
+    fetchMock.mockResolvedValueOnce(jsonResponse(null, 204)) // DELETE
+
+    renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('architecture-guide.pdf')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete architecture-guide.pdf' }))
+    expect(
+      await screen.findByText('Are you sure you want to delete architecture-guide.pdf?'),
+    ).toBeInTheDocument()
+
+    // The modal's own "Delete" button (distinct from the row-level
+    // "Delete architecture-guide.pdf" ActionIcon queried above).
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(url).toBe('http://localhost:8000/internal/documents/doc-1')
+    expect(init.method).toBe('DELETE')
+
+    await waitFor(() => expect(screen.queryByText('architecture-guide.pdf')).not.toBeInTheDocument())
+    // Other rows are untouched.
+    expect(screen.getByText('onboarding-notes.docx')).toBeInTheDocument()
+    expect(screen.queryByText('Are you sure you want to delete architecture-guide.pdf?')).not.toBeInTheDocument()
+  })
+
+  it('shows a "still processing" message and keeps the row when Delete conflicts with an in-progress pipeline run', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'document_processing' }, 409)) // DELETE
+
+    renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('release-plan.md')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete release-plan.md' }))
+    expect(await screen.findByText('Are you sure you want to delete release-plan.md?')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+    expect(
+      await screen.findByText('release-plan.md is still processing - please wait for it to finish before deleting it.'),
+    ).toBeInTheDocument()
+
+    // Dialog closes, but the row itself is still there (deletion didn't happen).
+    expect(screen.queryByText('Are you sure you want to delete release-plan.md?')).not.toBeInTheDocument()
+    expect(screen.getByText('release-plan.md')).toBeInTheDocument()
+  })
+
   it('sorts by filename when the Filename header is clicked, toggling direction on a repeat click', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
 
@@ -203,6 +251,32 @@ describe('UploadPage', () => {
 
     fireEvent.click(uploadedAtHeader)
     expect(getFilenameOrder(container)).toEqual(['mid.md', 'alpha.docx', 'zeta.pdf'])
+  })
+
+  it('shows a colored ascending/descending sort indicator on the active column and a neutral one elsewhere', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
+
+    renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('zeta.pdf')).toBeInTheDocument()
+
+    const filenameTh = screen.getByRole('columnheader', { name: 'Filename' })
+    const statusTh = screen.getByRole('columnheader', { name: 'Status' })
+
+    // Nothing sorted yet - both columns show the neutral (muted) indicator.
+    expect(filenameTh).toHaveAttribute('aria-sort', 'none')
+    expect(statusTh).toHaveAttribute('aria-sort', 'none')
+    expect(filenameTh.querySelector('span')?.style.color).toBe('var(--doc-text-muted)')
+
+    fireEvent.click(within(filenameTh).getByRole('button'))
+    expect(filenameTh).toHaveAttribute('aria-sort', 'ascending')
+    expect(filenameTh.querySelector('span')?.style.color).toBe('var(--mantine-color-signalBlue-6)')
+    // The non-active column stays neutral, not just the active one changing.
+    expect(statusTh).toHaveAttribute('aria-sort', 'none')
+    expect(statusTh.querySelector('span')?.style.color).toBe('var(--doc-text-muted)')
+
+    fireEvent.click(within(filenameTh).getByRole('button'))
+    expect(filenameTh).toHaveAttribute('aria-sort', 'descending')
+    expect(filenameTh.querySelector('span')?.style.color).toBe('var(--mantine-color-alertMagenta-6)')
   })
 
   it('shows an in-progress indicator for uploaded/chunking documents but not for ready/failed', async () => {
