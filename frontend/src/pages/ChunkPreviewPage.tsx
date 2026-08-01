@@ -2,12 +2,15 @@ import type { JSX, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent 
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { ActionIcon, Box, Button, Group, Stack, Text, Textarea, Title } from '@mantine/core'
+import { ActionIcon, Alert, Box, Button, Group, Stack, Text, Textarea, Title } from '@mantine/core'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import classes from './ChunkPreviewPage.module.css'
 import { apiClient } from '../api/client'
-import type { Chunk } from '../api/types'
+import { ApiConflictError } from '../api/httpClient'
+import type { Chunk, DocumentSummary } from '../api/types'
+
+const PROCESSING_MESSAGE = 'This document is still processing - please wait for it to finish before editing.'
 
 // Cycles through the three brand accents at low opacity so each chunk reads
 // as a distinct highlighted rectangle within the reconstructed document, per
@@ -37,6 +40,7 @@ export function ChunkPreviewPage(): JSX.Element {
   const { documentId } = useParams<{ documentId: string }>()
   const navigate = useNavigate()
   const [filename, setFilename] = useState('')
+  const [status, setStatus] = useState<DocumentSummary['status'] | null>(null)
   const [chunks, setChunks] = useState<Chunk[]>([])
   const [activeChunkId, setActiveChunkId] = useState<string | null>(null)
   const [pageIndex, setPageIndex] = useState(0)
@@ -49,7 +53,9 @@ export function ChunkPreviewPage(): JSX.Element {
       return
     }
     void apiClient.listDocuments().then((documents) => {
-      setFilename(documents.find((document) => document.id === documentId)?.filename ?? '')
+      const match = documents.find((document) => document.id === documentId)
+      setFilename(match?.filename ?? '')
+      setStatus(match?.status ?? null)
     })
     void apiClient.getChunks(documentId).then(setChunks)
     setPageIndex(0)
@@ -141,11 +147,29 @@ export function ChunkPreviewPage(): JSX.Element {
     )
   }
 
+  // Save is only reachable when the document is 'ready' or 'failed' - a
+  // fresh upload still 'uploaded', or a re-chunk already 'chunking', has no
+  // settled chunk set to reconstruct from (see the spec's Chunk retrieval &
+  // save requirements).
+  const isBusy = status === 'uploaded' || status === 'chunking'
+
   async function handleSave(): Promise<void> {
     if (!documentId) {
       return
     }
-    await apiClient.saveChunks(documentId, chunks)
+    try {
+      await apiClient.saveChunks(documentId, chunks)
+    } catch (error) {
+      if (error instanceof ApiConflictError && error.reason === 'document_processing') {
+        // Race: status flipped to busy after the page loaded, before this
+        // click reached the backend's CAS guard. Reflect that locally (this
+        // also disables Save and surfaces the same message below) instead
+        // of navigating away or letting the rejection go unhandled.
+        setStatus('chunking')
+        return
+      }
+      throw error
+    }
     navigate('/upload')
   }
 
@@ -161,6 +185,12 @@ export function ChunkPreviewPage(): JSX.Element {
       <Text size="sm" c="dimmed">
         This is the document as it was split into chunks. Click a highlighted rectangle to edit it.
       </Text>
+
+      {isBusy ? (
+        <Alert color="alertMagenta" variant="light" radius="lg" title="Still processing">
+          {PROCESSING_MESSAGE}
+        </Alert>
+      ) : null}
 
       {chunks.length === 0 ? (
         <Text c="dimmed">No chunks yet for this document.</Text>
@@ -303,7 +333,14 @@ export function ChunkPreviewPage(): JSX.Element {
         <Button onClick={() => navigate('/upload')} variant="filled" color="alertMagenta" radius="xl" size="md" px="xl">
           Cancel
         </Button>
-        <Button onClick={() => void handleSave()} color="sparkOrange" radius="xl" size="md" px="xl">
+        <Button
+          onClick={() => void handleSave()}
+          disabled={isBusy}
+          color="sparkOrange"
+          radius="xl"
+          size="md"
+          px="xl"
+        >
           Save
         </Button>
       </Group>
