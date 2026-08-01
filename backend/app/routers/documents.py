@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.deps import get_storage
 from app.events import record_event_async
-from app.storage import StorageAdapter
+from app.storage import StorageAdapter, StorageKeyNotFoundError
 from app.tasks import run_document_pipeline
 
 router = APIRouter()
@@ -130,6 +130,56 @@ async def list_documents(session: AsyncSession = Depends(get_session)) -> list[d
         )
     ).all()
     return [_document_summary(row) for row in rows]
+
+
+@router.delete("/documents/{document_id}", status_code=204)
+async def delete_document(
+    document_id: str,
+    session: AsyncSession = Depends(get_session),
+    storage: StorageAdapter = Depends(get_storage),
+) -> None:
+    """Deletes a document's stored file and its `documents` row. Its
+    `chunks` rows are removed automatically by Postgres via the
+    `chunks.document_id REFERENCES documents(id) ON DELETE CASCADE` FK
+    from the 0003 migration - not deleted explicitly here.
+
+    Blocked (409) while a pipeline run is actively writing to the
+    document (status == 'chunking'), mirroring the same busy-guard
+    reasoning used for Save/overwrite elsewhere in this router."""
+    row = (
+        await session.execute(
+            text(
+                "SELECT filename, storage_key, status FROM documents "
+                "WHERE id = :document_id"
+            ),
+            {"document_id": document_id},
+        )
+    ).one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="document_not_found")
+
+    if row.status == "chunking":
+        raise HTTPException(status_code=409, detail="document_processing")
+
+    try:
+        storage.delete(row.storage_key)
+    except StorageKeyNotFoundError:
+        # The file is already missing from disk (e.g. manually removed, or
+        # an orphaned row from some prior partial failure) - don't let that
+        # block cleaning up the DB row.
+        pass
+
+    await session.execute(
+        text("DELETE FROM documents WHERE id = :document_id"),
+        {"document_id": document_id},
+    )
+    await record_event_async(
+        session,
+        "document.deleted",
+        f"document_id={document_id}, filename={row.filename}",
+    )
+    await session.commit()
 
 
 def _chunk_summary(row) -> dict:

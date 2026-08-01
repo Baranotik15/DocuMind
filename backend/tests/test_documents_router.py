@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.db_sync import SyncSessionLocal
+from app.deps import get_storage
+from app.storage import StorageKeyNotFoundError
 
 
 @pytest.fixture(autouse=True)
@@ -183,5 +185,120 @@ def test_upload_overwrite_while_chunking_returns_409_document_processing(
 
         assert second.status_code == 409
         assert second.json()["detail"] == "document_processing"
+    finally:
+        _cleanup(filename)
+
+
+def test_delete_ready_document_returns_204_and_removes_document_chunks_and_file(
+    client: TestClient,
+) -> None:
+    filename = _unique_filename()
+    try:
+        with patch(
+            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            upload = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(b"Delete me please."), "text/plain")},
+            )
+        assert upload.status_code == 200
+        document_id = upload.json()["id"]
+
+        with SyncSessionLocal() as session:
+            storage_key = session.execute(
+                text("SELECT storage_key FROM documents WHERE id = :id"),
+                {"id": document_id},
+            ).scalar_one()
+
+        response = client.delete(f"/internal/documents/{document_id}")
+
+        assert response.status_code == 204
+        assert response.content == b""
+
+        list_response = client.get("/internal/documents")
+        filenames = [doc["filename"] for doc in list_response.json()]
+        assert filename not in filenames
+
+        # The `chunks.document_id REFERENCES documents(id) ON DELETE CASCADE`
+        # FK (0003 migration) means chunks are removed automatically by
+        # Postgres once the document row is gone - verified here via the
+        # chunks endpoint rather than a direct DB check.
+        chunks_response = client.get(f"/internal/documents/{document_id}/chunks")
+        assert chunks_response.status_code == 200
+        assert chunks_response.json() == []
+
+        storage = get_storage()
+        with pytest.raises(StorageKeyNotFoundError):
+            storage.read(storage_key)
+    finally:
+        _cleanup(filename)
+
+
+def test_delete_chunking_document_returns_409_and_leaves_it_and_chunks_intact(
+    client: TestClient,
+) -> None:
+    filename = _unique_filename()
+    try:
+        with patch(
+            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            upload = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(b"Busy document."), "text/plain")},
+            )
+        assert upload.status_code == 200
+        document_id = upload.json()["id"]
+
+        _force_status(filename, "chunking")
+
+        response = client.delete(f"/internal/documents/{document_id}")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "document_processing"
+
+        list_response = client.get("/internal/documents")
+        filenames = [doc["filename"] for doc in list_response.json()]
+        assert filename in filenames
+
+        chunks_response = client.get(f"/internal/documents/{document_id}/chunks")
+        assert chunks_response.status_code == 200
+        assert len(chunks_response.json()) > 0
+    finally:
+        _cleanup(filename)
+
+
+def test_delete_nonexistent_document_returns_404(client: TestClient) -> None:
+    response = client.delete(f"/internal/documents/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "document_not_found"
+
+
+def test_delete_document_records_document_deleted_dashboard_event(
+    client: TestClient,
+) -> None:
+    filename = _unique_filename()
+    try:
+        with patch(
+            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            upload = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(b"Event check."), "text/plain")},
+            )
+        assert upload.status_code == 200
+        document_id = upload.json()["id"]
+
+        delete_response = client.delete(f"/internal/documents/{document_id}")
+        assert delete_response.status_code == 204
+
+        events_response = client.get("/internal/dashboard/events")
+        assert events_response.status_code == 200
+        matching = [
+            event
+            for event in events_response.json()
+            if event["type"] == "document.deleted" and filename in event["detail"]
+        ]
+        assert len(matching) == 1
     finally:
         _cleanup(filename)
