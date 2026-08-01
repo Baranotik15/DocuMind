@@ -13,3 +13,4 @@ pgvector
 openai
 pypdf
 python-docx
+python-multipart
