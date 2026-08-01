@@ -11,3 +11,5 @@ celery
 redis
 pgvector
 openai
+pypdf
+python-docx
