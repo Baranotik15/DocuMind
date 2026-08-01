@@ -867,6 +867,50 @@ git commit -m "feat: add real HTTP api client and bind apiClient to it"
 
 ---
 
+## Task 10b: Dashboard page test — stub fetch for the real HTTP client
+
+*(Gap found while executing Task 10: binding `apiClient` to `httpApiClient`
+broke `DashboardPage.test.tsx`, which asserted on `mockClient.ts`'s seeded
+data with no fetch stub of its own. `DashboardPage.tsx` itself needs no
+behavior change — Dashboard has no new interaction in this phase, unlike
+Upload/Chunks/Chat — so this is test-only.)*
+
+**Agent:** `web-frontend`
+
+**Files:**
+- Modify: `frontend/src/pages/DashboardPage.test.tsx`
+- Reference: `frontend/src/api/httpClient.test.ts` (Task 10 — same
+  `vi.stubGlobal('fetch', ...)` approach) for how a `GET
+  /internal/dashboard/events` response should be shaped/mocked
+
+**Step 1: Write the failing test**
+
+Update `DashboardPage.test.tsx` to stub `fetch` so a
+`GET http://localhost:8000/internal/dashboard/events` call resolves with a
+small fixed array of `DashboardEvent`s, and assert those (not the old mock
+rows) render.
+
+Run: `npm test`
+Expected: FAIL (still calling the real, unstubbed fetch)
+
+**Step 2: Implement**
+
+Add the fetch stub; no production code changes expected.
+
+**Step 3: Verify**
+
+Run: `npm test`
+Expected: PASS, full suite green again
+
+**Step 4: Commit**
+
+```bash
+git add frontend/src/pages/DashboardPage.test.tsx
+git commit -m "fix: stub fetch in DashboardPage test for the real http client"
+```
+
+---
+
 ## Task 11: Upload page — duplicate-filename overwrite confirmation
 
 **Agent:** `web-frontend`
