@@ -29,6 +29,17 @@ services:
     build: ./frontend
     ports:
       - "5173:5173"
+    environment:
+      # Docker Desktop on Windows doesn't always forward inotify events for
+      # bind-mounted files, so Vite's file watcher needs polling to reliably
+      # pick up host-side edits.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume shadows the bind mount for node_modules only, so
+      # the container keeps its own Linux-installed packages instead of
+      # whatever (possibly Windows-native) node_modules exists on the host.
+      - /app/node_modules
   backend:
     build: ./backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000

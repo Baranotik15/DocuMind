@@ -1,0 +1,12 @@
+/* Hides the native scrollbar on the text column - scrolling still works via
+   mouse wheel/keyboard/touch, only the visible track+thumb are hidden,
+   since the minimap on the right is the intended visual scroll indicator/
+   control instead. */
+.scrollArea {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollArea::-webkit-scrollbar {
+  display: none;
+}

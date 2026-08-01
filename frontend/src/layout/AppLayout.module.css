@@ -1,0 +1,31 @@
+/*
+ * Base nav item treatment. The active/inactive color and the signature
+ * sparkOrange mark (border + glow) are applied per-item via inline style
+ * (they depend on react-router's `isActive`) - this stylesheet only owns the
+ * structural shape and the hover state, which inline styles can't express.
+ */
+.navLink {
+  display: block;
+  padding: 12px 16px;
+  border-radius: var(--mantine-radius-md);
+  border: 1px solid transparent;
+  text-decoration: none;
+  font-size: var(--mantine-font-size-md);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.navLink:hover {
+  background-color: rgba(232, 237, 250, 0.08);
+  border-color: var(--mantine-color-sparkOrange-7);
+}
+
+/* Solid blue-shaded navbar - no decorative texture (removed per feedback:
+   the dot-grid pattern read as visual noise rather than ambient texture). */
+.navbar {
+  background-color: var(--doc-surface);
+  border-right: 1px solid var(--doc-hairline);
+}

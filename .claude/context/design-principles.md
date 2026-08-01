@@ -18,22 +18,98 @@
 
 ## Design Philosophy
 
-This project targets S-Tier SaaS design quality inspired by **Linear, Stripe, Vercel, and Airbnb**. Every interface should feel professional, polished, and intentional.
+DocuMind is a working tool for admin operators curating a RAG knowledge base -
+uploading documents, manually reviewing/editing machine-generated chunks
+before they're embedded, testing the chat pipeline, and monitoring system
+activity. This pass is a full pivot away from the previous restrained
+editorial look: DocuMind now reads as a **bold, dark, "neon" operator
+console** - a saturated blue+orange pairing on a deep navy background,
+rounded/glowing surfaces, and noticeably bigger type. Decorative, not
+minimal - this replaces (not extends) the earlier paper/ink/amber system.
 
 ### Core Tenets
 
-- **Clarity over decoration** — every element serves a purpose; remove anything that doesn't communicate
-- **Consistency over novelty** — use established patterns from the design system before inventing new ones
-- **Subtlety over loudness** — rely on spacing, typography weight, and muted color to create hierarchy rather than bold borders or heavy shadows
-- **Data density without clutter** — present information-rich views that remain scannable through whitespace and type scale
+- **Energy over restraint** - this is a deliberate reversal of the previous
+  pass's "restraint as a feature" tenet. Saturated color, glow, and rounded
+  pill shapes are used throughout, not reserved for a single signature
+  device.
+- **Legibility at scale** - the base type scale is noticeably bigger than a
+  typical admin tool (see Typography). Don't undo this by reaching for small
+  text out of old habit.
+- **Consistency in the signature device** - the mark (see below) keeps the
+  exact same meaning and placement rules as before, just re-expressed for the
+  new palette. Everything else about the visual language is new.
+- **Data density without clutter** - tables and editing surfaces stay
+  scannable through whitespace and a clear mono/sans typographic split
+  between "data being inspected" and "UI chrome" - this rule is unchanged
+  from the previous pass.
+
+### The Signature Element: the sparkOrange Mark
+
+A **3px solid left border in `sparkOrange` (`#FF7A29`), paired with a soft
+outer glow** (`box-shadow: var(--doc-mark-glow)`, currently
+`0 0 12px rgba(255, 122, 41, 0.55)`), is DocuMind's one signature visual
+device - the direct successor to the previous pass's flat amber mark. A flat
+line doesn't read as "neon"; the glow is what makes the same underlying idea
+fit this palette. It appears **only** on elements that are currently active,
+edited, or contextually relevant - identical placement rules to before:
+
+- the active nav item (`AppLayout.tsx`)
+- a chunk with unsaved edits, i.e. `chunk.isDirty === true` (`ChunksPage.tsx`)
+- the chat `context-indicator` badge - the one place the mark appears outside
+  an "edited" state, because the context indicator is inherently about
+  relevance/highlighting (`ChatPage.tsx`)
+
+**Rules for the mark:**
+
+- Always a left border **plus** the glow - never a background fill, and never
+  the border without the glow (a flat orange line alone reads as an accent
+  color choice, not "the mark").
+- Applied conditionally (transparent border + no shadow when inactive,
+  reserving the same 3px of space so nothing shifts layout when state
+  toggles) - see the `chunk.isDirty` treatment in `ChunksPage.tsx`.
+- On elements with a large border-radius (e.g. a pill), a straight
+  `border-left` clips awkwardly against the curve. Where the mark needs to
+  appear on a rounded element (the chat context-indicator), keep that
+  specific element at a small/medium radius rather than a full pill so the
+  mark reads cleanly - this is why the context-indicator badge is
+  `radius="sm"` while buttons elsewhere are pills.
+- Dashboard and Upload pages do **not** use the mark anywhere - they have no
+  "edited/active" concept it would meaningfully apply to. Don't force it in
+  just for visual consistency.
+- Before adding a new `sparkOrange` mark usage anywhere in the app, ask: "is
+  this thing currently active, being edited, or the currently-relevant
+  context?" If not, it doesn't get the mark - plain `sparkOrange` fills/text
+  (buttons, bar-chart bars, the brand mark) are NOT the signature mark, they're
+  just the secondary accent color used on its own terms.
+
+### Network/Graph Texture
+
+DocuMind is fundamentally a graph of connected documents and chunks feeding a
+RAG pipeline - this pass leans into that visual metaphor in two small,
+decorative places (never in working/data-dense surfaces, where it would be
+clutter):
+
+- **`AppLayout.tsx`'s navbar** has a very low-opacity dot-grid background
+  (`radial-gradient` in `AppLayout.module.css`'s `.navbar` rule) - an ambient
+  texture behind the nav links, not a focal element.
+- **The brand wordmark** is preceded by a small inline SVG of three connected
+  nodes in the two brand accents (`BrandMark` in `AppLayout.tsx`) - a literal,
+  tiny illustration of "documents/chunks as a connected graph."
+
+Resist adding this pattern to tables, forms, or any other data-bearing
+surface - it's a header/nav-level flourish, not a global background texture.
 
 ### Distinctiveness
 
-Avoid generic AI-generated aesthetics. The UI should feel **crafted**, not templated:
-- Use the brand color palette (brand, accent, indigo) with intention
-- Prefer light mode for the professional/business context
-- Use subtle contrast over harsh blacks/whites
-- Design for the operator (facility managers) — efficient, task-oriented, trustworthy
+- Fully embraces a "generic AI SaaS neon" aesthetic on purpose this time -
+  saturated blue+orange, glow, pill buttons, rounded panels. This is an
+  explicit, deliberate choice for this pass (reversing the previous pass's
+  "avoid glossy/pill-everything" guidance), not an accidental drift.
+- Dark mode only (no light-mode support currently, same as before - just a
+  different single mode).
+- Rely on saturated fills, glow, and generous rounding rather than borders and
+  neutral contrast for depth.
 
 ---
 
@@ -41,95 +117,159 @@ Avoid generic AI-generated aesthetics. The UI should feel **crafted**, not templ
 
 ### Information Ordering
 
-1. **Primary** — key metrics, page titles, action buttons. Use `fw={600}`, larger font sizes, `color="gray.9"`
-2. **Secondary** — body text, descriptions, supporting data. Use `fw={400}`, standard sizes, `color="gray.6"`
-3. **Tertiary** — labels, timestamps, metadata. Use smaller sizes, `color="gray.5"` or `c="dimmed"`
-4. **Disabled/placeholder** — `color="gray.4"`
+1. **Primary** - page titles, primary actions, dashboard stat numbers. `Title`
+   at `fw={700}` (theme default), or explicit large `fw={700}` `Text` for stat
+   numbers.
+2. **Secondary** - body text, descriptions, supporting data - `text` token at
+   regular/medium weight.
+3. **Tertiary** - labels, timestamps, metadata - `textMuted`
+   (`c="dimmed"` resolves to `textMuted` globally, see Color & Theming).
+4. **Structural/contextual emphasis** - the sparkOrange mark + glow (see
+   above), used instead of color-coded text weight for "this needs your
+   attention."
 
 ### Depth
 
-- Rely on **borders and background contrast** rather than heavy shadows
-- Cards: `border: 1px solid gray.2`, `bg="white"` on a `gray.0` page background
-- Use shadows sparingly (elevation levels 0-2 for most elements)
-- Focus states: change border color, not shadow
+- Rely on **saturated fills, translucent tints, and glow** rather than flat
+  borders/warm-neutral contrast (the previous pass's approach).
+- Page background is `void` (`#0A0E1A`); elevated surfaces (cards, panels,
+  the header, chat message bubbles, the dropzone) use `surface` (`#131B2E`)
+  or a translucent brand-color tint (e.g. `rgba(61, 107, 255, 0.16)` for the
+  user's own chat messages), generally with a 1px hairline or brand-tinted
+  border and a generous border-radius (`defaultRadius: 'lg'` app-wide).
+- Borders throughout the app (`Table`, `Paper[withBorder]`, `AppShell`
+  dividers, input borders) resolve through Mantine's `gray.3` slot, which is
+  globally remapped to the `hairline` token
+  (`rgba(232, 237, 250, 0.12)` - translucent light-on-dark, not a flat hex)
+  in `theme.ts`. The app intentionally stays in Mantine's default "light"
+  color-scheme data-attribute (no dark-mode toggle) - "light" here just means
+  "the one scheme in use"; the resolver repoints its variables to the dark
+  palette above. Don't hardcode a separate border color unless you have a
+  specific reason to deviate.
 
 ---
 
 ## Color & Theming
 
-All colors come from `frontend/src/theme.ts`. Never use hardcoded hex values.
+All colors are defined once in `frontend/src/theme.ts`. **Never hardcode
+these hex values in component files** - reference them via the mechanisms
+below.
 
-### Brand Palette
+### Tokens
 
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `brand[5]` | `#ec322b` | Active navigation, brand accents |
-| `brand[9]` | `#aa0a0a` | Primary buttons, CTAs |
-| `accent[5]` | `#20f0d0` | Accent highlights, secondary metrics |
-| `indigo[5]` | `#6366f1` | Interactive elements, links |
+| Token | Hex | Role | How to use it |
+|-------|-----|------|----------------|
+| `void` | `#0A0E1A` | Page background | Applied globally via `--mantine-color-body`; also `var(--doc-void)` |
+| `surface` | `#131B2E` | Elevated cards/panels/header/dropzone background | `var(--doc-surface)` |
+| `text` | `#E8EDFA` | Primary text | Applied globally via `--mantine-color-text`; also `var(--doc-text)` |
+| `textMuted` | `#7C8AAD` | Secondary text/labels | `c="dimmed"` (remapped globally); also `var(--doc-text-muted)` |
+| `signalBlue` | `#3D6BFF` | Primary accent: structure/connections/trust, default interactive color | `theme.primaryColor` - use Mantine's default `color`/`variant` props, or explicit `color="signalBlue"` / `var(--mantine-color-signalBlue-6)` |
+| `sparkOrange` | `#FF7A29` | Secondary accent: active/highlighted state, secondary CTAs, **and** the signature mark (border+glow) - see Design Philosophy | `color="sparkOrange"` for CTAs/fills; `var(--mantine-color-sparkOrange-6)` + `var(--doc-mark-glow)` for the mark specifically |
+| `alertMagenta` | `#FF3D71` | Errors, the dislike-active state, destructive actions - distinct from both blue and orange | `color="alertMagenta"` on `Button`/`Badge`, or `var(--mantine-color-alertMagenta-6)` |
+| `hairline` | `rgba(232, 237, 250, 0.12)` | Borders/dividers | Default via the global `gray.3` remap (see Visual Hierarchy); `var(--doc-hairline)` when you need the raw value outside a bordered component |
 
-### Neutral Grays
+`signalBlue`, `sparkOrange`, and `alertMagenta` are registered as full
+10-shade Mantine color ramps (`buildShades()` in `theme.ts` derives the ramp
+from the single approved hex, placing it at shade index 6) so they work with
+Mantine's normal `variant`/hover/active color system. `void`, `surface`,
+`text`, `textMuted`, and `hairline` are flat tokens exposed via `theme.other`
+and wired into Mantine's own CSS variables through a `cssVariablesResolver`
+(see `theme.ts`), rather than being registered as ramps.
 
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `gray[0]` | `#f9fafb` | Page background, hover states |
-| `gray[1]` | `#f3f4f6` | Light borders |
-| `gray[2]` | `#e5e7eb` | Card borders, dividers |
-| `gray[3]` | `#d1d5db` | Input borders |
-| `gray[5]` | `#6b7280` | Tertiary text, labels |
-| `gray[6]` | `#4b5563` | Secondary text |
-| `gray[9]` | `#111827` | Primary text, headings |
+`theme.other.markGlow` (`var(--doc-mark-glow)`) holds the exact glow
+`box-shadow` value used by the signature mark - defined once so the three
+call sites (nav, chunks, chat) never drift apart.
 
-### Semantic Colors
+### Contrast note: `autoContrast` + `black`
 
-- **Success**: bg `#ecfed7`, text `#228403`
-- **Warning**: bg `#fff4e6`, text `#f97316`
-- **Error**: bg `#ffe7f2`, text `#e11d48`
-- **Info**: bg `rgba(99,102,241,0.1)`, text `indigo[5]`
+All three brand accents are bright/saturated enough that white text on a
+filled button/badge falls short of WCAG AA (as low as ~2.6:1 for
+`sparkOrange`). Rather than hand-picking a text color per call site, the
+theme sets `autoContrast: true` and points `theme.black` at `void` (instead
+of pure `#000`) - Mantine then automatically uses near-black (`void`) text on
+any filled `signalBlue`/`sparkOrange`/`alertMagenta` surface, which clears
+AA comfortably (4.75:1 / 8.07:1 / 6.16:1 respectively) and keeps "dark text on
+a bright pill" in-palette instead of introducing pure black. **Don't override
+a filled button/badge's text color manually** - `autoContrast` already
+handles it correctly for every registered color.
 
 ### Rules
 
-- Backgrounds: white for content surfaces, `gray[0]` for page chrome
-- Text on white: `gray[9]` for primary, `gray[6]` for secondary
-- Maintain **4.5:1** minimum contrast ratio (WCAG AA)
-- Use Mantine theme props (`c="gray.6"`, `bg="gray.0"`), not inline hex
+- Do not add new hardcoded hex colors in page/component files - extend
+  `theme.ts` instead if a new token is genuinely needed, and update this
+  document.
+- The sparkOrange mark (border + glow together) is never a background/fill
+  color anywhere in the app (see Design Philosophy) - plain `sparkOrange`
+  fills (buttons, bar-chart bars, the brand mark icon) are fine, just don't
+  call that usage "the mark."
+- Mantine's built-in color names (`gray`, `blue`, `red`, `teal`, etc.) are
+  still available and fine to use for anything that isn't one of the roles
+  above (e.g. the header's decorative "system ok" status dot uses Mantine's
+  stock `teal`, since it's not a branded token, just a generic "ok"
+  indicator).
+- Maintain WCAG AA contrast (4.5:1 normal text, 3:1 large text) for **text**
+  usage of a color; `text`/`textMuted` on `void`/`surface` and the brand
+  ramps' base shade used as *text* directly on `void`/`surface` all clear
+  this (verified in `theme.ts`'s comments) - if you introduce a new
+  text-on-dark combination, check it against the same background colors.
 
 ---
 
 ## Typography
 
-### Font Stack
+### Font Families
 
-```
-Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif
-```
+Two self-hosted (offline-safe, no CDN) type families, imported in
+`frontend/src/main.tsx` via `@fontsource/ibm-plex-sans` and
+`@fontsource/ibm-plex-mono` (weights 400/500/600/700 for Sans - 700 added in
+this pass for page titles and the dashboard's big stat numbers - 400/500 for
+Mono only):
 
-Defined in `theme.ts` — never override the font family in components.
+- **IBM Plex Sans** (`theme.fontFamily` / `theme.headings.fontFamily`) - all
+  UI chrome: navigation, headings, buttons, labels, non-data body text. This
+  is the default; you don't need to set it explicitly.
+- **IBM Plex Mono** (`theme.fontFamilyMonospace`) - anything that is
+  **content/data being curated or inspected**, not UI chrome:
+  - chunk `originalContent`/`editedContent` text in `ChunksPage.tsx`
+    (`Textarea` `styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}`)
+  - data table cells in `DashboardPage.tsx` and `UploadPage.tsx` - filenames,
+    statuses, event types, timestamps, ids (`ff="monospace"` on the relevant
+    `Table.Td`s only, not the whole row/table), and the "events by type" bar
+    labels in `DashboardPage.tsx` (also data, same treatment as a table cell)
+  - chat message content in `ChatPage.tsx` (`Text ff="monospace"`)
 
-### Scale (from theme.ts)
+  Free-text/human-authored fields (e.g. a dashboard event's `detail`
+  sentence) stay in Plex Sans - the mono treatment is for structured/data
+  fields, not prose.
 
-| Token | Size | Usage |
-|-------|------|-------|
-| `xs` | 12px | Metadata, timestamps, small labels |
-| `sm` | 14px | Body text, nav items, primary content |
-| `md` | 16px | Emphasized body, form labels |
-| `lg` | 18px | Section headings |
-| `xl` | 20px | Page section titles |
+### Scale
 
-For large metrics/numbers, use inline `fz={28}` or `fz={32}` with `fw={600}`.
+This pass raises the base type scale noticeably - the brief explicitly asked
+for "clearly bigger," not a marginal bump:
+
+| Mantine size | Previous | Now |
+|---|---|---|
+| `xs` | 12px | 14px |
+| `sm` | 14px | 16px |
+| `md` | 16px | 18px |
+| `lg` | 18px | 22px |
+| `xl` | 20px | 26px |
+
+Headings (`theme.headings.sizes`) are similarly bumped (h1 44px, h2 36px, h3
+30px, h4 24px, h5 20px, h6 18px) and default to `fontWeight: 700` (vs. the
+previous pass's 600 - see the `autoContrast`/`black` note above for why 700
+is now loaded). Dashboard stat-card numbers go further still, at an explicit
+`3rem` (48px) `fw={700}` - the one place a large-number treatment beyond the
+heading scale is explicitly wanted (see `StatCard` in `DashboardPage.tsx`).
 
 ### Weight Rules
 
-- **400 (Regular)** — body text, descriptions, default
-- **500 (Medium)** — buttons, active nav, emphasis
-- **600 (Semibold)** — card titles, section headers, metric values, page titles
-- **700 (Bold)** — avoid; use 600 instead for a cleaner look
-
-### Letter Spacing
-
-- Large numbers (28px+): `-0.01em` for tighter feel
-- Uppercase labels: `0.5px` wider for readability
-- Body text: default (no modification)
+- **400 (Regular)** - body text, descriptions, default
+- **500 (Medium)** - emphasis where 600 is too heavy; default nav-link weight
+- **600 (Semibold)** - section labels (e.g. stat-card uppercase labels)
+- **700 (Bold)** - page titles/headings (theme default), active nav item,
+  dashboard stat numbers, dropzone copy - loaded and used freely in this pass
+  (unlike the previous pass, where it wasn't imported)
 
 ---
 
@@ -137,42 +277,30 @@ For large metrics/numbers, use inline `fz={28}` or `fz={32}` with `fw={600}`.
 
 ### Base Grid
 
-All spacing follows a **4px base unit** via Mantine's spacing tokens:
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| `xs` | 10px | Tight gaps, inline spacing |
-| `sm` | 12px | Small padding, icon margins |
-| `md` | 16px | Standard padding, card spacing |
-| `lg` | 20px | Section padding, large gaps |
-| `xl` | 32px | Page section spacing |
+Mantine's default spacing tokens (`xs`/`sm`/`md`/`lg`/`xl`), used via the
+`gap`/`p`/`m` props - no custom spacing scale is defined in `theme.ts`.
 
 ### Layout Structure
 
-- **Sidebar**: 240px fixed width (Mantine AppShell.Navbar), hidden on mobile
-- **Header**: 60px fixed height
-- **Content area**: flexible, padding `xl` (32px)
-- **Card grid**: `SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}` with `spacing="lg"`
-
-### Border Radius (from theme.ts)
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| `xs` | 2px | Micro elements |
-| `sm` | 4px | Badges, small elements |
-| `md` | 6px | Buttons, inputs, nav items |
-| `lg` | 8px | Cards |
-| `xl` | 12px | Large containers |
-
-### Shadows (from theme.ts)
-
-| Token | Usage |
-|-------|-------|
-| `xs` | Subtle, barely visible |
-| `sm` | Cards at rest |
-| `md` | Elevated cards, dropdowns |
-| `lg` | Modals |
-| `xl` | Overlays |
+- **Header**: 68px fixed height (bumped from 60px to comfortably fit the
+  bigger brand wordmark), `surface` background with a `hairline` bottom
+  border, `text`-toned content (see `AppLayout.tsx` - the header locally
+  overrides the `--mantine-color-text` CSS variable for its own subtree).
+  Includes the brand wordmark + the decorative connected-node `BrandMark` SVG,
+  and a static decorative "system ok" status indicator (no real health-check
+  wiring yet).
+- **Navbar**: 240px fixed width, `void` background (blends with the page) with
+  a low-opacity dot-grid texture and a `hairline` right border, hidden below
+  the `sm` breakpoint. Nav items get the sparkOrange mark (border + glow)
+  when active (`AppLayout.module.css` + inline style in `AppLayout.tsx`).
+- **Content max-width**: Chunks and Chat are editing/reading surfaces and
+  use `maw={900}` on their outer `Stack` for a comfortable line length.
+  Dashboard and Upload are tables that benefit from the extra width and stay
+  full-bleed (no `maw`).
+- **`defaultRadius: 'lg'`** is set app-wide in `theme.ts`, so Paper/Card/
+  inputs/etc. are rounded by default without per-component overrides. Buttons
+  that need a full pill shape (Send, the dislike control) explicitly pass
+  `radius="xl"`.
 
 ---
 
@@ -183,47 +311,102 @@ All spacing follows a **4px base unit** via Mantine's spacing tokens:
 ```tsx
 // Correct
 <Stack gap="md">
-  <Text size="xl" fw={600}>Title</Text>
+  <Text size="xl" fw={700}>Title</Text>
   <Group justify="space-between">
-    <Button variant="filled">Primary</Button>
-    <Button variant="outline">Secondary</Button>
+    <Button variant="filled" radius="xl">Primary</Button>
+    <Button variant="outline" radius="xl">Secondary</Button>
   </Group>
 </Stack>
 
-// Wrong — no raw divs with inline styles
+// Wrong - no raw divs with inline styles for things Mantine already models
 ```
+
+Reach for a plain `Box`/inline `style` only for the small number of things
+Mantine's props don't cover - the mark's conditional `border-left` +
+`box-shadow`, the dashboard's bar-chart bars, and CSS-variable scoping are
+the examples currently in the codebase (`ChunksPage.tsx`, `AppLayout.tsx`,
+`DashboardPage.tsx`).
 
 ### Buttons
 
-- **Primary** (`variant="filled"`): `brand[9]` bg, white text — one per view
-- **Secondary** (`variant="outline"`): white bg, `gray[3]` border
-- **Subtle** (`variant="subtle"`): transparent bg, text-colored
-- Sizing: `size="sm"` (compact), `size="md"` (standard)
+- **Primary** (`variant="filled"`, default): resolves to `signalBlue` (the
+  default `primaryColor`) - don't pass an explicit `color` unless you
+  specifically need a different one (e.g. Chunks' Save button).
+- **Bold pill CTAs** (Chat's Send/dislike): `radius="xl"` with an explicit
+  brand color - `sparkOrange` for Send, `alertMagenta` for the dislike-active
+  state (`variant="filled"` when active, `variant="outline"` when not, same
+  toggle pattern as before).
+- **Destructive**: `color="alertMagenta"`.
+- The sparkOrange mark is never applied to a button via `color="sparkOrange"`
+  variant="filled"` as if it were "the mark" - that's just the secondary
+  accent color used as an ordinary button color, not the signature device
+  (see Design Philosophy).
 
-### Cards
+### Cards / Surfaces
 
-- `bg="white"`, `radius="lg"` (8px), `p="lg"` (20px)
-- Border: `1px solid var(--mantine-color-gray-2)`
-- Footer divider: top border only with `pt="md"` and `mt="lg"`
+- `Paper`/`Box` surfaces sitting on the `void` page background use `surface`
+  (`var(--doc-surface)`, e.g. `bg="var(--doc-surface)"`) or a translucent
+  brand tint (e.g. `rgba(61, 107, 255, 0.16)` for the user's own chat
+  messages) to differentiate from the page, generally paired with a 1px
+  `hairline` or brand-tinted border and the app's default `lg` radius.
 
-### Forms
+### The sparkOrange Mark, Concretely
 
-- Use `useForm` from `@mantine/form` for validation
-- Use `useDisclosure` for modal state
-- Show loading with `<Skeleton />` components, not spinners
-- User feedback via `notifications.show()`
+Reference implementation (from `ChunksPage.tsx`):
+
+```tsx
+<Box
+  p="md"
+  bg="var(--doc-surface)"
+  bdrs="lg"
+  style={{
+    borderLeft: `3px solid ${chunk.isDirty ? 'var(--mantine-color-sparkOrange-6)' : 'transparent'}`,
+    boxShadow: chunk.isDirty ? 'var(--doc-mark-glow)' : 'none',
+  }}
+>
+  <Textarea ... />
+</Box>
+```
+
+Always reserve the 3px of space with a `transparent` border (and no shadow)
+when inactive, so toggling the state doesn't shift layout.
+
+### Upload: the Dropzone
+
+`UploadPage.tsx` uses `@mantine/dropzone`'s `Dropzone` (not a plain
+`FileInput`) for a large, prominent drop target above the document table:
+dashed `sparkOrange` border, `surface` background, `radius="lg"`, a small
+hand-rolled cloud-upload SVG (no icon library dependency - see Icons below),
+and "Drop a document here or click to browse" copy. Idle-state styling lives
+in `UploadPage.module.css`, scoped to `:where([data-idle])` (zero-specificity,
+matching Mantine's own convention) so the component's built-in `acceptColor`/
+`rejectColor` drag-feedback (set to `sparkOrange`/`alertMagenta` via props)
+keeps working - **never override `backgroundColor`/`borderColor` via the
+`style`/`styles` prop on `Dropzone`**, since inline styles unconditionally
+beat the component's internal accept/reject CSS and would silently break drag
+feedback; use a CSS Module class via `classNames` instead.
+
+### Dashboard: Stat Cards + Bar Visualization
+
+`DashboardPage.tsx` renders three `StatCard`s (Documents/Events/Event types,
+counts derived from `apiClient.listDocuments()`/`getDashboardEvents()`) above
+a simple "events by type" bar visualization - plain styled `Box`/`Group`
+elements with `width` proportional to count, alternating `signalBlue`/
+`sparkOrange` fills with a matching glow. **No charting library dependency**
+(recharts/visx/chart.js/...) - this mirrors the original Task 6 rationale in
+`.claude/plans/2026-07-31-phase-1-frontend-shell.md`: a small, fixed number
+of categories doesn't justify the dependency. If dashboard visualization needs
+grow materially (many categories, multiple chart types, tooltips/legends),
+that's a deliberate future decision, not a default.
 
 ### Icons
 
-- Source: `@tabler/icons-react`
-- Sizes: 16px (small actions), 20px (medium), 24px (large headers)
-- Always inherit color via `currentColor`
-
-### Data Fetching
-
-- Use Apollo Client hooks (`useQuery`, `useMutation`)
-- Loading: `<Skeleton />` placeholders matching content shape
-- Errors: `<Text c="red">`
+- No icon library is currently installed - the two icons in the app (the
+  dropzone's upload glyph, the header's `BrandMark`) are small hand-rolled
+  inline SVGs rather than a new dependency, consistent with this project's
+  YAGNI stance on adding libraries for a handful of static shapes. If broader
+  icon needs come up later, prefer `@tabler/icons-react` and update this
+  section.
 
 ---
 
@@ -231,25 +414,23 @@ All spacing follows a **4px base unit** via Mantine's spacing tokens:
 
 ### WCAG 2.1 AA Compliance
 
-- **Color contrast**: 4.5:1 for normal text, 3:1 for large text
-- **Keyboard navigation**: all interactive elements must be focusable and operable
-- **Focus indicators**: visible outline on `:focus-visible`, suppressed on mouse click
-- **Semantic HTML**: use `<nav>`, `<main>`, `<button>` vs generic `<div>`
-- **ARIA labels**: required on icon-only buttons (`aria-label="Settings"`)
-- **Decorative icons**: `aria-hidden="true"` on icons next to text labels
-
-### Focus Style
-
-```tsx
-// Mantine handles this by default, but for custom elements:
-// outline: 2px solid rgba(99, 102, 241, 0.3), outline-offset: 2px
-```
-
-### Screen Readers
-
-- Use `VisuallyHidden` from Mantine for screen-reader-only text
-- Dynamic content: `role="status"` with `aria-live="polite"`
-- Progress indicators: `role="progressbar"` with `aria-valuenow`
+- **Color contrast**: 4.5:1 for normal text, 3:1 for large text - see the
+  `autoContrast`/`black` note under Color & Theming for how filled-button/
+  badge text stays compliant automatically. Verify any new **text**-on-dark
+  combination you introduce against `void`/`surface`.
+- **Keyboard navigation**: all interactive elements must be focusable and
+  operable. Focus rings use `signalBlue` automatically (Mantine's
+  `--mantine-primary-color-filled`, driven by `theme.primaryColor`) - don't
+  override focus-ring color to orange or magenta.
+- **Semantic HTML**: use `<nav>` (`AppShell.Navbar aria-label="Main
+  navigation"`), `<main>`, `<button>` vs generic `<div>`.
+- **ARIA labels**: required on icon-only/emoji-only buttons (e.g. the
+  dislike pill in `ChatPage.tsx` toggles its `aria-label`/`aria-pressed`
+  between "Dislike message" and "Message disliked").
+- **Decorative content**: the header's status dot + "system ok" text, the
+  `BrandMark` SVG, the navbar's dot-grid texture, and the dropzone's upload
+  icon are all `aria-hidden="true"` (or, for the SVGs, `aria-hidden` +
+  `focusable="false"`) since they convey no real information.
 
 ---
 
@@ -257,50 +438,36 @@ All spacing follows a **4px base unit** via Mantine's spacing tokens:
 
 ### Breakpoints
 
-| Name | Width | Target |
-|------|-------|--------|
-| `base` | 0px+ | Mobile (375px reference) |
-| `sm` | 768px+ | Tablet |
-| `md` | 992px+ | Small desktop |
-| `lg` | 1200px+ | Desktop (1440px reference) |
-| `xl` | 1408px+ | Large desktop |
-
-### Responsive Props
-
-```tsx
-<SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing={{ base: "sm", md: "lg" }}>
-<Box p={{ base: "md", lg: "xl" }}>
-```
+Mantine's default breakpoints; the only one in active use today is `sm`
+(`AppShell navbar={{ breakpoint: 'sm' }}`), which collapses the sidebar on
+narrow viewports. The dashboard's stat-card row uses `SimpleGrid cols={{
+base: 1, sm: 3 }}` so it stacks to a single column on narrow viewports rather
+than squeezing three cards into an unreadable width.
 
 ### Mobile Adaptations
 
-- Sidebar collapses via AppShell `breakpoint="sm"`
-- Card grid stacks to single column
-- Reduce padding (`xl` to `md`)
-- Scale down heading sizes
+- Sidebar collapses via `AppShell`'s built-in `breakpoint="sm"` behavior - no
+  custom CSS needed.
+- Chunks/Chat's `maw={900}` naturally becomes full-width on narrow viewports
+  since `max-width` only constrains, never forces, width.
 
 ---
 
 ## Motion & Interaction
 
-### Transitions
-
-- **Duration**: 150-200ms for hover/focus, 300ms for layout changes
-- **Easing**: browser default (`ease`)
-- **Properties**: `background`, `border-color`, `opacity` — avoid animating `width`/`height`
-
-### Philosophy
-
-Motion should be **subtle and purposeful**:
-- Hover: background color shift to `gray[0]`
-- Active nav: tinted background with brand color at 10% opacity
-- Toggle switches: smooth slide (200ms)
-- No bouncing, pulsing, or decorative animation
-
-### Micro-Interactions (Optional)
-
-- Button press: `transform: scale(0.98)` on `:active` (100ms)
-- Card entrance: `opacity 0→1, translateY 8px→0` (300ms, ease-out)
+- **Duration**: ~150ms for hover/focus transitions (nav-link hover, the mark's
+  border/glow toggle, the dropzone's hover glow); dashboard bars transition
+  `width` at 200ms since they represent a value change, not an instantaneous
+  state toggle (contrast with the mark, which is intentionally instantaneous
+  - see below).
+- **Properties**: prefer `background-color`, `color`, `border-color`,
+  `box-shadow` - avoid animating layout properties (`width`/`height`) for
+  state toggles like the mark, which are meant to read as instantaneous, not
+  an animated reveal. The dashboard bars are the one deliberate exception
+  (animating `width` there communicates the data changing, which is the
+  point).
+- No decorative motion beyond the above (no bouncing, pulsing, skeleton
+  shimmer, etc.) as of this pass.
 
 ---
 
@@ -308,30 +475,21 @@ Motion should be **subtle and purposeful**:
 
 ### Files
 
-- Components: `PascalCase.tsx` (`SiteCard.tsx`, `CallMetrics.tsx`)
-- Hooks: `camelCase.ts` prefixed with `use` (`useSiteData.ts`)
-- Utilities: `camelCase.ts` (`formatCurrency.ts`)
-- CSS modules: `ComponentName.module.css`
-
-### Component Props
-
-- Boolean props: `is`/`has` prefix (`isLoading`, `hasError`)
-- Callbacks: `on` prefix (`onSubmit`, `onClose`)
-- Children slots: descriptive names (`leftSection`, `rightSection`)
+- Components: `PascalCase.tsx` (`ChunksPage.tsx`, `AppLayout.tsx`)
+- CSS Modules: `ComponentName.module.css` (`AppLayout.module.css`,
+  `UploadPage.module.css`)
+- Theme: single source of truth at `frontend/src/theme.ts`
 
 ### Theme Tokens
 
-Always reference via Mantine's token system:
-
 ```tsx
-// Colors: "colorName.shade"
-c="gray.9"  bg="gray.0"  color="brand.5"
+// Ramp colors (signalBlue / sparkOrange / alertMagenta): Mantine token syntax
+color="alertMagenta"  bg="signalBlue.0"  var(--mantine-color-sparkOrange-6)
 
-// Spacing: named tokens
-p="md"  gap="lg"  m="sm"
-
-// Radius and shadow: named tokens
-radius="lg"  shadow="sm"
+// Flat tokens (void / surface / text / textMuted / hairline): CSS custom
+// properties, or rely on the global remap
+// (--mantine-color-body/text/dimmed/gray-3)
+var(--doc-void)  var(--doc-surface)  var(--doc-mark-glow)
 ```
 
 ---
@@ -341,36 +499,44 @@ radius="lg"  shadow="sm"
 Use this before finalizing any UI implementation:
 
 ### Visual Quality
-- [ ] Uses Mantine components (not raw HTML/divs with inline styles)
-- [ ] Uses theme tokens (not hardcoded colors, spacing, or font sizes)
-- [ ] Visual hierarchy: clear primary/secondary/tertiary text levels
-- [ ] Consistent spacing following the 4px grid
-- [ ] Font weights: 500 or 600 only (no 700)
-- [ ] Border radius proportional to element size
+- [ ] Uses Mantine components (not raw HTML/divs with inline styles), except
+      where the mark, a CSS-variable scoping, or the dashboard bar
+      visualization genuinely requires it
+- [ ] Uses theme tokens (`theme.ts`), never a new hardcoded hex value
+- [ ] The sparkOrange mark, if used, is a left border **plus** glow, applied
+      only to an active/edited/contextually-relevant element, and reserves
+      its 3px of space even when inactive
+- [ ] Mono font applied to data/content being inspected, not to UI chrome
+- [ ] Text is noticeably bigger than a typical admin-tool default - don't
+      default back to small text out of old habit
 
 ### Functionality
-- [ ] Loading states with `<Skeleton />`
-- [ ] Error states with clear messaging
-- [ ] Empty states with helpful guidance
-- [ ] Form validation with `useForm`
-- [ ] Modal state with `useDisclosure`
-- [ ] User feedback with `notifications`
+- [ ] Loading/empty/error states considered
+- [ ] Existing tests (`npm test`) still pass unchanged (or, where a
+      structural change like the Dropzone swap genuinely requires it, the
+      test is adjusted to keep testing the same behavior/assertion, scoped
+      more precisely rather than weakened) - don't restructure DOM in ways
+      that silently break `getByRole`/`getByText`/`data-testid` queries
 
 ### Responsiveness
-- [ ] Works at mobile (375px), tablet (768px), desktop (1440px)
-- [ ] Responsive props on grid/layout components
-- [ ] Sidebar collapses on mobile
+- [ ] Works with the sidebar collapsed (`sm` breakpoint and below)
+- [ ] Chunks/Chat `maw={900}` respected for new editing/reading surfaces
+- [ ] Multi-card layouts (e.g. dashboard stat cards) collapse sensibly on
+      narrow viewports (`SimpleGrid` `cols` responsive object)
 
 ### Accessibility
 - [ ] Keyboard navigable (Tab, Enter, Escape)
-- [ ] Focus indicators visible on `:focus-visible`
-- [ ] Color contrast >= 4.5:1 for text
-- [ ] Icon-only buttons have `aria-label`
-- [ ] Semantic HTML elements used
+- [ ] Focus indicators visible (`signalBlue`, Mantine's default - don't
+      override)
+- [ ] Color contrast >= 4.5:1 for text, including anything on `void`/`surface`
+      backgrounds - filled buttons/badges get this for free via
+      `autoContrast`, but check any new **text** usage yourself
+- [ ] Icon-only/emoji-only buttons have `aria-label`
+- [ ] Purely decorative elements (dot-grid texture, `BrandMark`, dropzone
+      icon) are `aria-hidden`
 
 ### Polish
-- [ ] Hover states on all interactive elements
-- [ ] Transitions are 150-300ms, subtle
+- [ ] Hover states on interactive elements (~150ms transitions)
 - [ ] No console errors
-- [ ] Icons from `@tabler/icons-react` with consistent sizing
-- [ ] Original design respected (if mockup provided)
+- [ ] `npm run lint` (oxlint) and `npm run build` (`tsc -b && vite build`)
+      both pass

@@ -1,0 +1,22 @@
+/*
+ * Mantine's Dropzone root already ships a dashed border and idle/hover/
+ * accept/reject states (see @mantine/dropzone/styles.css) - this module only
+ * re-tints the IDLE state to DocuMind's palette. Rules are scoped to
+ * `:where([data-idle])` (zero-specificity, same convention Mantine itself
+ * uses) so the built-in accept/reject color-swap (driven by the `acceptColor`
+ * /`rejectColor` props) keeps working untouched while a file is being
+ * dragged over the zone.
+ */
+.dropzone:where([data-idle]) {
+  background-color: var(--doc-surface);
+  border-style: dashed;
+  border-width: calc(0.125rem * var(--mantine-scale));
+  border-color: var(--mantine-color-sparkOrange-6);
+}
+
+@media (hover: hover) {
+  .dropzone:hover:where([data-idle]):where([data-activate-on-click]) {
+    border-color: var(--mantine-color-sparkOrange-4);
+    box-shadow: var(--doc-mark-glow);
+  }
+}
