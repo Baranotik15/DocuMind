@@ -2,10 +2,20 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { Badge, Button, Group, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
+import { ActionIcon, Badge, Button, Group, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
 
 import { apiClient } from '../api/client'
 import type { ChatMessage } from '../api/types'
+
+/** Simple send-arrow glyph - no icon library installed (see design-principles.md). */
+function SendIcon(): JSX.Element {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M12 19V5" />
+      <path d="m5 12 7-7 7 7" />
+    </svg>
+  )
+}
 
 export function ChatPage(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -36,7 +46,16 @@ export function ChatPage(): JSX.Element {
   }
 
   return (
-    <Stack gap="lg" maw={900}>
+    <Stack
+      gap="lg"
+      // Fills the remaining viewport height below the AppShell header, so
+      // the message list can scroll internally while the input stays
+      // pinned at the true bottom of the screen regardless of how many
+      // messages there are (position: sticky alone doesn't do this when
+      // content is shorter than the viewport - there's nothing to scroll
+      // against yet, so it never reaches its stuck position).
+      style={{ height: 'calc(100dvh - var(--app-shell-header-height, 68px) - 2 * var(--mantine-spacing-lg))' }}
+    >
       <Group justify="space-between">
         <Title order={2}>Chat</Title>
         {/* Placeholder slot for the future context-switch indicator feature -
@@ -64,19 +83,19 @@ export function ChatPage(): JSX.Element {
         </Badge>
       </Group>
 
-      <Stack gap="md">
+      <Stack gap="md" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }} py="md">
         {messages.map((message) => (
           <Paper
             key={message.id}
             data-message-id={message.id}
             radius="xl"
             p="lg"
-            bg={message.role === 'user' ? 'rgba(61, 107, 255, 0.16)' : 'var(--doc-surface)'}
+            bg={message.role === 'user' ? 'rgba(255, 167, 38, 0.16)' : 'var(--doc-surface)'}
             style={{
               marginLeft: message.role === 'user' ? '15%' : 0,
               marginRight: message.role === 'assistant' ? '15%' : 0,
               border: `1px solid ${
-                message.role === 'user' ? 'var(--mantine-color-signalBlue-7)' : 'var(--doc-hairline)'
+                message.role === 'user' ? 'var(--mantine-color-sparkOrange-6)' : 'var(--doc-hairline)'
               }`,
             }}
           >
@@ -103,19 +122,49 @@ export function ChatPage(): JSX.Element {
         ))}
       </Stack>
 
-      <Group align="flex-end">
-        <TextInput
-          label="Message"
-          placeholder="Type a message"
-          value={draft}
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          size="md"
-          style={{ flex: 1 }}
-        />
-        <Button onClick={() => void handleSend()} color="sparkOrange" radius="xl" size="md" px="xl">
-          Send
-        </Button>
-      </Group>
+      {/* Naturally pinned at the bottom: it's the last child of the
+          fixed-height flex column above, after the scrollable message
+          list - not `position: sticky`, which only engages once there's
+          overflow to stick against. Single rounded pill (ChatGPT-style)
+          rather than a separate input + button, re-colored to our palette:
+          surface background, sparkOrange circular send action. */}
+      <Paper
+        radius="xl"
+        p="xs"
+        bg="var(--doc-surface)"
+        maw="50%"
+        mx="auto"
+        style={{ border: '1px solid var(--doc-hairline)', flexShrink: 0, width: '100%' }}
+        my="md"
+      >
+        <Group gap="xs" wrap="nowrap">
+          <TextInput
+            aria-label="Message"
+            placeholder="Message DocuMind"
+            value={draft}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                void handleSend()
+              }
+            }}
+            variant="unstyled"
+            size="lg"
+            style={{ flex: 1 }}
+            styles={{ input: { paddingLeft: 'var(--mantine-spacing-md)' } }}
+          />
+          <ActionIcon
+            aria-label="Send"
+            onClick={() => void handleSend()}
+            color="sparkOrange"
+            radius="xl"
+            size="xl"
+            variant="filled"
+          >
+            <SendIcon />
+          </ActionIcon>
+        </Group>
+      </Paper>
     </Stack>
   )
 }
