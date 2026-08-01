@@ -1,0 +1,15 @@
+# Force binary handling (no LF<->CRLF normalization) for file types that
+# are byte-exact by construction. Without this, `core.autocrlf=true` on
+# Windows silently rewrites embedded `\n` bytes to `\r\n` on checkout for
+# any file it doesn't detect as binary via its NUL-byte heuristic - which
+# corrupts hand-crafted / structurally-precise binary formats like PDF
+# (byte offsets in the xref table and stream /Length values go stale)
+# without `git status` ever reporting the file as modified.
+*.pdf binary
+*.docx binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
