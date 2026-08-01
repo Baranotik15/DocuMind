@@ -10,3 +10,4 @@ alembic
 celery
 redis
 pgvector
+openai
