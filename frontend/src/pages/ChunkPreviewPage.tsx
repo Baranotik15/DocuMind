@@ -40,6 +40,30 @@ const PAGE_CHAR_LIMIT = 15000
 const BOUNDARY_DRAG_LINE_HEIGHT_PX = 28
 
 /**
+ * Pure math for the Split tool's hover preview: given where the mouse sits
+ * (in px, relative to the top of the hovered chunk's own box), the actual
+ * rendered height of one line in THAT chunk right now, and how many lines
+ * its text has, returns which line index the cut would land on if clicked
+ * right now - clamped to `[1, totalLines - 1]` so a split always leaves at
+ * least one line on each side (never produces an empty chunk). Kept as a
+ * plain, DOM-free function so the line-picking logic itself is exercisable
+ * without a real browser layout engine, even though the caller
+ * (onMouseMove below) does need two real measurements to get its
+ * arguments: `getBoundingClientRect()` for `relativeY`, and the chunk
+ * box's own total height ÷ totalLines for `lineHeightPx` - deliberately
+ * NOT the fixed BOUNDARY_DRAG_LINE_HEIGHT_PX estimate the boundary-drag
+ * handle uses (that one only ever needs a *relative* pixel delta, so a
+ * rough estimate is fine there; this needs an *absolute* mouse-to-line
+ * mapping, where the same estimate being a few px off from the font's
+ * real line-height was compounding into a visibly-wrong split point the
+ * further down a chunk the operator clicked).
+ */
+function computeSplitLineIndex(relativeY: number, lineHeightPx: number, totalLines: number): number {
+  const rawIndex = Math.round(relativeY / lineHeightPx)
+  return Math.min(Math.max(rawIndex, 1), Math.max(totalLines - 1, 1))
+}
+
+/**
  * Commits a completed boundary-drag gesture: redistributes lines between the
  * two chunks the dragged handle sits between, in the FULL `chunks` array (not
  * just the current page's slice - chunk objects carry no page information of
@@ -96,6 +120,36 @@ function GripIcon(): JSX.Element {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <line x1="4" y1="9" x2="20" y2="9" />
       <line x1="4" y1="15" x2="20" y2="15" />
+    </svg>
+  )
+}
+
+/** Hand-rolled scissors glyph for the Split-chunk tool button (and its
+ * floating cursor replacement while the tool is active) - no icon library
+ * installed (see design-principles.md). */
+function ScissorsIcon(): JSX.Element {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <line x1="20" y1="4" x2="8.12" y2="15.88" />
+      <line x1="14.47" y1="14.48" x2="20" y2="20" />
+      <line x1="8.12" y1="8.12" x2="12" y2="12" />
+    </svg>
+  )
+}
+
+/** Hand-rolled trash-can glyph for the Delete-chunk tool button (and its
+ * floating cursor replacement while the tool is active) - no icon library
+ * installed (see design-principles.md). */
+function TrashIcon(): JSX.Element {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <line x1="10" y1="11" x2="10" y2="17" />
+      <line x1="14" y1="11" x2="14" y2="17" />
     </svg>
   )
 }
@@ -161,6 +215,33 @@ export function ChunkPreviewPage(): JSX.Element {
   // session, not silently fall back to a fresh algorithmic re-chunk. See
   // handleSave and .claude/specs/manual-chunk-boundaries.md.
   const [boundariesManuallyAdjusted, setBoundariesManuallyAdjusted] = useState(false)
+  // Which tool (if any) is currently "armed" - persists across multiple
+  // uses (cut one chunk, then another) until explicitly toggled off, Escape
+  // is pressed, or the other tool is picked instead, rather than
+  // auto-deactivating after one use. While armed, the page tracks the mouse
+  // itself (cursorPosition) to draw a floating replacement cursor (native
+  // cursor is hidden - see the page root's style below) and, for whichever
+  // chunk is currently under it (hoveredChunkId), a live preview of what a
+  // click would do right now: a line indicator for cut (cutLineIndex), or a
+  // whole-chunk highlight for delete.
+  const [activeTool, setActiveTool] = useState<'cut' | 'delete' | null>(null)
+  const [hoveredChunkId, setHoveredChunkId] = useState<string | null>(null)
+  const [cutLineIndex, setCutLineIndex] = useState<number | null>(null)
+  // The hovered chunk's OWN actual rendered line height (its box's total
+  // height ÷ its line count), measured fresh on every mousemove alongside
+  // cutLineIndex - see computeSplitLineIndex's comment for why this can't
+  // be a fixed constant. Kept in state (not just a local variable in
+  // handleChunkMouseMove) so the indicator's render below can position
+  // itself using the exact same value the index was computed from, rather
+  // than re-deriving it (or guessing) separately.
+  const [cutLineHeightPx, setCutLineHeightPx] = useState<number | null>(null)
+  const [cursorPosition, setCursorPosition] = useState<{ x: number; y: number } | null>(null)
+  // A brief, self-dismissing message - currently only used to explain why
+  // the Delete tool just silently did nothing (tried to act on the last
+  // chunk on the page). No toast/notification library installed for this
+  // one message - a plain Alert, fixed-positioned, timed out via the
+  // effect below.
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [viewport, setViewport] = useState({ topPct: 0, heightPct: 100 })
   const scrollRef = useRef<HTMLDivElement>(null)
   const minimapRef = useRef<HTMLDivElement>(null)
@@ -256,6 +337,18 @@ export function ChunkPreviewPage(): JSX.Element {
   useEffect(() => {
     updateViewport()
   }, [pageChunks])
+
+  // Auto-dismisses the toast a few seconds after it's shown - a fresh timer
+  // per message (the effect re-runs whenever toastMessage changes), so
+  // triggering the same warning again while one's already showing restarts
+  // the countdown instead of having it disappear early.
+  useEffect(() => {
+    if (!toastMessage) {
+      return
+    }
+    const timer = setTimeout(() => setToastMessage(null), 3000)
+    return () => clearTimeout(timer)
+  }, [toastMessage])
 
   // Clicking the minimap jumps the text column to the corresponding
   // position: the click's fraction of the minimap's own height maps
@@ -383,6 +476,155 @@ export function ChunkPreviewPage(): JSX.Element {
     } else if (event.key === 'ArrowRight' && selectionStart === value.length && index < pageChunks.length - 1) {
       event.preventDefault()
       focusChunkCaret(pageChunks[index + 1].id, { mode: 'documentStart' })
+    }
+  }
+
+  // Toggles a tool on/off - clicking the already-active tool's own button
+  // (or Escape, see the page-wide keydown effect below) disarms it;
+  // clicking the OTHER tool's button switches directly to it. Leaving a
+  // tool always clears whatever hover state it was showing, so switching
+  // tools (or turning one off) never leaves a stale line/highlight behind.
+  function handleToolButtonClick(tool: 'cut' | 'delete'): void {
+    setActiveTool((current) => (current === tool ? null : tool))
+    setHoveredChunkId(null)
+    setCutLineIndex(null)
+    setCutLineHeightPx(null)
+  }
+
+  // Tracks the mouse across the whole page while a tool is armed, purely to
+  // position the floating cursor replacement (see the page root's onMouseMove
+  // below, and the native-cursor-hiding style next to it) - the per-chunk
+  // hover preview (cutLineIndex/hoveredChunkId) is computed separately, by
+  // each chunk's own onMouseMove, since that needs a position relative to
+  // THAT chunk's box, not the page.
+  function handlePageMouseMove(event: ReactMouseEvent<HTMLDivElement>): void {
+    if (!activeTool) {
+      return
+    }
+    setCursorPosition({ x: event.clientX, y: event.clientY })
+  }
+
+  function handleChunkMouseEnter(chunkId: string): void {
+    if (activeTool) {
+      setHoveredChunkId(chunkId)
+    }
+  }
+
+  function handleChunkMouseLeave(chunkId: string): void {
+    setHoveredChunkId((current) => (current === chunkId ? null : current))
+    if (hoveredChunkId === chunkId) {
+      setCutLineIndex(null)
+      setCutLineHeightPx(null)
+    }
+  }
+
+  // Recomputes the cut-tool's line-indicator position on every mousemove
+  // over a chunk while the cut tool is armed - see computeSplitLineIndex's
+  // own comment for why this is the one place on this page that actually
+  // reads real DOM layout (getBoundingClientRect), unlike the delta-only
+  // boundary-drag handle. lineHeightPx is derived from THIS chunk's own
+  // current rendered height (not a fixed constant) specifically so it
+  // stays correct however many lines the chunk actually has right now -
+  // recomputed every move rather than once on hover-enter, since editing
+  // a chunk's text while the tool is armed (rare, but possible) could
+  // change its line count/height mid-hover.
+  function handleChunkMouseMove(event: ReactMouseEvent<HTMLDivElement>, chunk: Chunk): void {
+    if (activeTool !== 'cut') {
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    const totalLines = chunk.editedContent === '' ? 1 : chunk.editedContent.split('\n').length
+    const lineHeightPx = rect.height / totalLines
+    setCutLineHeightPx(lineHeightPx)
+    setCutLineIndex(computeSplitLineIndex(event.clientY - rect.top, lineHeightPx, totalLines))
+  }
+
+  // Splits `chunkId` into two chunks at `lineIndex` (everything before that
+  // line stays in the original chunk, everything from it onward becomes a
+  // brand-new chunk immediately after it) - the click-to-commit half of the
+  // Split tool, `lineIndex` having already been computed live by
+  // handleChunkMouseMove/computeSplitLineIndex as the operator moved the
+  // mouse over this chunk. Chunk count changes, so this always counts as a
+  // manual boundary adjustment for Save (see boundariesManuallyAdjusted).
+  function commitSplit(chunkId: string, lineIndex: number): void {
+    const chunk = chunks.find((candidate) => candidate.id === chunkId)
+    if (!chunk) {
+      return
+    }
+    const lines = chunk.editedContent.split('\n')
+    if (lineIndex <= 0 || lineIndex >= lines.length) {
+      return
+    }
+    const firstText = lines.slice(0, lineIndex).join('\n')
+    const secondText = lines.slice(lineIndex).join('\n')
+    const newChunkId = crypto.randomUUID()
+
+    setChunks((current) => {
+      const index = current.findIndex((candidate) => candidate.id === chunkId)
+      if (index === -1) {
+        return current
+      }
+      const newChunk: Chunk = {
+        id: newChunkId,
+        documentId: chunk.documentId,
+        // No prior "original" exists for a chunk that didn't exist before
+        // this session - always dirty from the moment it's created.
+        originalContent: '',
+        editedContent: secondText,
+        isDirty: true,
+      }
+      const next = [...current]
+      next[index] = { ...chunk, editedContent: firstText, isDirty: true }
+      next.splice(index + 1, 0, newChunk)
+      return next
+    })
+    setBoundariesManuallyAdjusted(true)
+  }
+
+  // Removes `chunkId`'s own box, but NOT its text - the click-to-commit
+  // half of the Delete tool merges it into the NEXT chunk on this page
+  // (deleted chunk's text first, so overall reading order is preserved),
+  // per explicit user correction: this reads as "delete the boundary
+  // between this chunk and the next one", not "destroy this text". Refuses
+  // to act on the last chunk on the page (nothing to merge into) - this
+  // also covers a single-remaining-chunk document as a special case, so
+  // Save can never end up with an empty chunk array (see
+  // EmptyManualChunkError/backend/app/pipeline.py) without a separate
+  // count check.
+  function commitDelete(chunkId: string): void {
+    const index = pageChunks.findIndex((candidate) => candidate.id === chunkId)
+    if (index === -1) {
+      return
+    }
+    if (index >= pageChunks.length - 1) {
+      setToastMessage('A document needs at least one chunk - this is the last one, so there is nothing to merge it into.')
+      return
+    }
+    const current = pageChunks[index]
+    const next = pageChunks[index + 1]
+    const mergedText = [current.editedContent, next.editedContent].filter((text) => text !== '').join('\n')
+
+    setChunks((allChunks) => {
+      const withoutCurrent = allChunks.filter((candidate) => candidate.id !== current.id)
+      const nextIndex = withoutCurrent.findIndex((candidate) => candidate.id === next.id)
+      if (nextIndex === -1) {
+        return allChunks
+      }
+      const merged = [...withoutCurrent]
+      merged[nextIndex] = { ...merged[nextIndex], editedContent: mergedText, isDirty: true }
+      return merged
+    })
+    setBoundariesManuallyAdjusted(true)
+    setHoveredChunkId(null)
+    setCutLineIndex(null)
+    setCutLineHeightPx(null)
+  }
+
+  function handleChunkToolClick(chunk: Chunk): void {
+    if (activeTool === 'cut' && cutLineIndex !== null) {
+      commitSplit(chunk.id, cutLineIndex)
+    } else if (activeTool === 'delete') {
+      commitDelete(chunk.id)
     }
   }
 
@@ -515,7 +757,10 @@ export function ChunkPreviewPage(): JSX.Element {
     navigate('/upload')
   }
 
-  // Escape mirrors the Cancel button's own dirty-check logic (deliberately
+  // Escape's first priority is disarming an active cut/delete tool (if
+  // one's armed, this is ALL Escape does - it never also triggers the
+  // discard-confirmation check in the same keypress). Below that, it
+  // mirrors the Cancel button's own dirty-check logic (deliberately
   // inlined here, rather than calling handleCancelClick, so this effect's
   // dependency array can list the actual state it reads instead of a
   // function recreated fresh every render). While the confirm Modal is
@@ -527,6 +772,13 @@ export function ChunkPreviewPage(): JSX.Element {
       if (event.key !== 'Escape' || showDiscardConfirm) {
         return
       }
+      if (activeTool) {
+        setActiveTool(null)
+        setHoveredChunkId(null)
+        setCutLineIndex(null)
+        setCutLineHeightPx(null)
+        return
+      }
       if (chunks.some((chunk) => chunk.isDirty)) {
         setShowDiscardConfirm(true)
         return
@@ -536,7 +788,7 @@ export function ChunkPreviewPage(): JSX.Element {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [showDiscardConfirm, chunks, navigate])
+  }, [showDiscardConfirm, chunks, navigate, activeTool])
 
   return (
     // userSelect 'none' at this page-wide scope (rather than one-off fixes on
@@ -549,9 +801,16 @@ export function ChunkPreviewPage(): JSX.Element {
     // everything else on the page.
     <Stack
       gap="lg"
+      onMouseMove={handlePageMouseMove}
       style={{
         height: 'calc(100dvh - var(--app-shell-header-height, 68px) - 2 * var(--mantine-spacing-lg))',
         userSelect: 'none',
+        // Native cursor is hidden page-wide while a tool is armed - the
+        // floating ScissorsIcon/TrashIcon at the bottom of this component
+        // (tracking cursorPosition) stands in for it everywhere on the
+        // page, not just over chunks, so the operator never sees the
+        // ordinary text-select cursor flash back in between chunks.
+        cursor: activeTool ? 'none' : undefined,
       }}
     >
       <Group gap="sm">
@@ -565,6 +824,36 @@ export function ChunkPreviewPage(): JSX.Element {
         This is the document as it was split into chunks. Edit any chunk's text directly, or drag a boundary to
         resize the chunks on either side of it.
       </Text>
+
+      <Group gap="xs">
+        {/* Split/Delete tools: click to arm (persists across multiple uses -
+            see handleToolButtonClick), then click a chunk to commit. Bold/
+            filled while armed so it's obvious which tool (if any) is
+            currently active, matching the pressed-state convention Save/
+            Cancel already use for their own states elsewhere on this page. */}
+        <ActionIcon
+          aria-label="Split chunk"
+          aria-pressed={activeTool === 'cut'}
+          title="Split chunk - click a chunk to cut it in two"
+          variant={activeTool === 'cut' ? 'filled' : 'subtle'}
+          color="signalBlue"
+          size="lg"
+          onClick={() => handleToolButtonClick('cut')}
+        >
+          <ScissorsIcon />
+        </ActionIcon>
+        <ActionIcon
+          aria-label="Delete chunk"
+          aria-pressed={activeTool === 'delete'}
+          title="Delete chunk - click a chunk to merge it into the next one"
+          variant={activeTool === 'delete' ? 'filled' : 'subtle'}
+          color="alertMagenta"
+          size="lg"
+          onClick={() => handleToolButtonClick('delete')}
+        >
+          <TrashIcon />
+        </ActionIcon>
+      </Group>
 
       {isBusy ? (
         <Alert color="alertMagenta" variant="light" radius="lg" title="Still processing">
@@ -592,8 +881,24 @@ export function ChunkPreviewPage(): JSX.Element {
                       variant="unstyled" plus a transparent background keeps
                       the Textarea visually identical to plain text sitting
                       directly on the colored Box - no border, no separate
-                      "edit mode" chrome. */}
-                  <Box p={0} bg={colorByChunkId.get(chunk.id) ?? HIGHLIGHT_COLORS[0]} style={{ boxShadow: chunk.isDirty ? 'var(--doc-mark-glow)' : 'none' }}>
+                      "edit mode" chrome.
+
+                      While a tool is armed, this Box itself takes over
+                      hover/click (the Textarea gets pointer-events: none so
+                      clicks/moves fall through to it instead of placing a
+                      text cursor or getting swallowed) - position:
+                      'relative' so the cut-line indicator/delete overlay
+                      below can be absolutely positioned within it. */}
+                  <Box
+                    p={0}
+                    pos="relative"
+                    bg={colorByChunkId.get(chunk.id) ?? HIGHLIGHT_COLORS[0]}
+                    style={{ boxShadow: chunk.isDirty ? 'var(--doc-mark-glow)' : 'none' }}
+                    onMouseEnter={() => handleChunkMouseEnter(chunk.id)}
+                    onMouseLeave={() => handleChunkMouseLeave(chunk.id)}
+                    onMouseMove={(event) => handleChunkMouseMove(event, chunk)}
+                    onClick={() => handleChunkToolClick(chunk)}
+                  >
                     <Textarea
                       ref={(el) => {
                         if (el) {
@@ -608,6 +913,7 @@ export function ChunkPreviewPage(): JSX.Element {
                       autosize
                       minRows={1}
                       variant="unstyled"
+                      style={{ pointerEvents: activeTool ? 'none' : undefined }}
                       styles={{
                         input: {
                           fontFamily: 'var(--mantine-font-family-monospace)',
@@ -620,6 +926,12 @@ export function ChunkPreviewPage(): JSX.Element {
                         },
                       }}
                     />
+                    {activeTool === 'cut' && hoveredChunkId === chunk.id && cutLineIndex !== null && cutLineHeightPx !== null ? (
+                      <Box className={classes.cutLineIndicator} style={{ top: cutLineIndex * cutLineHeightPx }} />
+                    ) : null}
+                    {activeTool === 'delete' && hoveredChunkId === chunk.id ? (
+                      <Box className={classes.deleteOverlay} />
+                    ) : null}
                   </Box>
                   {index < pageChunks.length - 1 ? (
                     <BoundaryHandle
@@ -788,6 +1100,37 @@ export function ChunkPreviewPage(): JSX.Element {
           </Group>
         </Stack>
       </Modal>
+
+      {/* Floating replacement for the native cursor (hidden page-wide above
+          via `cursor: 'none'`) while a tool is armed - offset down-right of
+          the real pointer position so the icon doesn't sit directly under
+          it and obscure what's being pointed at. pointerEvents: 'none' so
+          it never itself becomes the hover/click target. */}
+      {activeTool && cursorPosition ? (
+        <Box
+          style={{
+            position: 'fixed',
+            left: cursorPosition.x + 12,
+            top: cursorPosition.y + 12,
+            pointerEvents: 'none',
+            zIndex: 1000,
+            color: activeTool === 'cut' ? 'var(--mantine-color-signalBlue-6)' : 'var(--mantine-color-alertMagenta-6)',
+          }}
+        >
+          {activeTool === 'cut' ? <ScissorsIcon /> : <TrashIcon />}
+        </Box>
+      ) : null}
+
+      {toastMessage ? (
+        <Alert
+          color="alertMagenta"
+          variant="filled"
+          radius="lg"
+          style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 1000 }}
+        >
+          {toastMessage}
+        </Alert>
+      ) : null}
     </Stack>
   )
 }

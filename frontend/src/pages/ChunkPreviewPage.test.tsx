@@ -355,4 +355,276 @@ describe('ChunkPreviewPage', () => {
     const body = JSON.parse(saveInit.body as string) as { manualBoundaries?: boolean }
     expect(body.manualBoundaries).toBeFalsy()
   })
+
+  describe('Split/Delete tools', () => {
+    it('clicking Split arms it (aria-pressed), clicking it again disarms it', async () => {
+      stubFetch({ status: 'ready' })
+
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      const splitButton = screen.getByRole('button', { name: 'Split chunk' })
+      expect(splitButton).toHaveAttribute('aria-pressed', 'false')
+
+      fireEvent.click(splitButton)
+      expect(splitButton).toHaveAttribute('aria-pressed', 'true')
+
+      fireEvent.click(splitButton)
+      expect(splitButton).toHaveAttribute('aria-pressed', 'false')
+    })
+
+    it('clicking Delete while Split is armed switches tools instead of both being active', async () => {
+      stubFetch({ status: 'ready' })
+
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      const splitButton = screen.getByRole('button', { name: 'Split chunk' })
+      const deleteButton = screen.getByRole('button', { name: 'Delete chunk' })
+
+      fireEvent.click(splitButton)
+      expect(splitButton).toHaveAttribute('aria-pressed', 'true')
+
+      fireEvent.click(deleteButton)
+      expect(splitButton).toHaveAttribute('aria-pressed', 'false')
+      expect(deleteButton).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('pressing Escape disarms an active tool without triggering the discard-changes confirmation', async () => {
+      stubFetch({ status: 'ready' })
+
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      const splitButton = screen.getByRole('button', { name: 'Split chunk' })
+      fireEvent.click(splitButton)
+      expect(splitButton).toHaveAttribute('aria-pressed', 'true')
+
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      expect(splitButton).toHaveAttribute('aria-pressed', 'false')
+      expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
+    })
+
+    it('clicking a chunk with Split armed cuts it into two at the hovered line, and Save includes manualBoundaries: true', async () => {
+      stubFetch({ status: 'ready' })
+      // jsdom's getBoundingClientRect always returns an all-zero rect by
+      // default - pinning top: 0 and height: 84 here makes the hover math
+      // predictable: relativeY = event.clientY - rect.top = clientY
+      // directly, and lineHeightPx = rect.height / totalLines = 84 / 3 =
+      // 28 for this fixture's 3-line chunk (height can't be left at the
+      // jsdom default of 0 - computeSplitLineIndex divides by it).
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 84,
+        width: 0,
+        height: 84,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect)
+
+      const multiLineChunks: Chunk[] = [
+        {
+          id: 'chunk-1',
+          documentId,
+          originalContent: 'Line one\nLine two\nLine three',
+          editedContent: 'Line one\nLine two\nLine three',
+          isDirty: false,
+        },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(multiLineChunks))
+        }
+        if (method === 'POST' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(emptyResponse(202))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage()
+      const [textbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Split chunk' }))
+      // clientY 56 = 2 line-heights (28px each) down from the (mocked)
+      // top: 0 - lands the cut between "Line two" and "Line three".
+      fireEvent.mouseEnter(textbox)
+      fireEvent.mouseMove(textbox, { clientY: 56 })
+      fireEvent.click(textbox)
+
+      const textboxesAfter = screen.getAllByRole('textbox')
+      expect(textboxesAfter).toHaveLength(2)
+      expect(textboxesAfter[0]).toHaveValue('Line one\nLine two')
+      expect(textboxesAfter[1]).toHaveValue('Line three')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+      const [, saveInit] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit]
+      const body = JSON.parse(saveInit.body as string) as { manualBoundaries?: boolean }
+      expect(body.manualBoundaries).toBe(true)
+    })
+
+    it('splits at the line actually under the cursor even when the real rendered line height is not 28px', async () => {
+      // Regression test: this page used to assume every line is exactly
+      // BOUNDARY_DRAG_LINE_HEIGHT_PX (28px) tall for the Split tool's hover
+      // math, not just the boundary-drag handle's relative-delta math -
+      // wrong whenever the chunk's actual font/line-height renders taller
+      // or shorter than that, and the error compounds the further down a
+      // chunk you click. A 4-line, 160px-tall chunk (40px/line) clicked
+      // dead center (clientY 80, i.e. exactly 2 line-heights down) must
+      // split 2-and-2, matching the earlier "clicked in the middle"
+      // reproduction. The old hardcoded-28px math would have computed
+      // round(80 / 28) = 3, splitting 3-and-1 - one line lower than
+      // clicked, exactly the reported symptom.
+      stubFetch({ status: 'ready' })
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 160,
+        width: 0,
+        height: 160,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect)
+
+      const fourLineChunks: Chunk[] = [
+        {
+          id: 'chunk-1',
+          documentId,
+          originalContent: 'Alpha\nBravo\nCharlie\nDelta',
+          editedContent: 'Alpha\nBravo\nCharlie\nDelta',
+          isDirty: false,
+        },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(fourLineChunks))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage()
+      const [textbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Split chunk' }))
+      fireEvent.mouseEnter(textbox)
+      fireEvent.mouseMove(textbox, { clientY: 80 })
+      fireEvent.click(textbox)
+
+      const textboxesAfter = screen.getAllByRole('textbox')
+      expect(textboxesAfter).toHaveLength(2)
+      expect(textboxesAfter[0]).toHaveValue('Alpha\nBravo')
+      expect(textboxesAfter[1]).toHaveValue('Charlie\nDelta')
+    })
+
+    it('clicking a chunk with Delete armed merges its text into the NEXT chunk, rather than destroying it', async () => {
+      stubFetch({ status: 'ready' })
+
+      renderChunkPreviewPage()
+      const [firstTextbox] = await screen.findAllByRole('textbox')
+      expect(screen.getAllByRole('textbox')).toHaveLength(2)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Delete chunk' }))
+      fireEvent.mouseEnter(firstTextbox)
+      fireEvent.click(firstTextbox)
+
+      // The first chunk's own box is gone, but its text survives, merged
+      // into the front of what's left - deleting a chunk removes a
+      // boundary, it doesn't destroy content.
+      const remaining = screen.getAllByRole('textbox')
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0]).toHaveValue('Intro paragraph.\nSecond paragraph.')
+    })
+
+    it('refuses to act on the last chunk on the page - there is no next chunk to merge into', async () => {
+      stubFetch({ status: 'ready' })
+      const singleChunk: Chunk[] = [
+        { id: 'chunk-1', documentId, originalContent: 'Only chunk.', editedContent: 'Only chunk.', isDirty: false },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(singleChunk))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage()
+      const [textbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Delete chunk' }))
+      fireEvent.mouseEnter(textbox)
+      fireEvent.click(textbox)
+
+      expect(screen.getAllByRole('textbox')).toHaveLength(1)
+      expect(textbox).toHaveValue('Only chunk.')
+      expect(await screen.findByText(/needs at least one chunk/i)).toBeInTheDocument()
+    })
+
+    it('the "needs at least one chunk" toast disappears on its own after a few seconds', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      stubFetch({ status: 'ready' })
+      const singleChunk: Chunk[] = [
+        { id: 'chunk-1', documentId, originalContent: 'Only chunk.', editedContent: 'Only chunk.', isDirty: false },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(singleChunk))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      try {
+        renderChunkPreviewPage()
+        const [textbox] = await screen.findAllByRole('textbox')
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete chunk' }))
+        fireEvent.mouseEnter(textbox)
+        fireEvent.click(textbox)
+        expect(await screen.findByText(/needs at least one chunk/i)).toBeInTheDocument()
+
+        vi.advanceTimersByTime(3000)
+
+        await waitFor(() => expect(screen.queryByText(/needs at least one chunk/i)).not.toBeInTheDocument())
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('refuses to act on the last chunk even with more than one chunk total, since it still has no next neighbor', async () => {
+      stubFetch({ status: 'ready' })
+
+      renderChunkPreviewPage()
+      const [, secondTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Delete chunk' }))
+      fireEvent.mouseEnter(secondTextbox)
+      fireEvent.click(secondTextbox)
+
+      const unchanged = screen.getAllByRole('textbox')
+      expect(unchanged).toHaveLength(2)
+      expect(unchanged[0]).toHaveValue('Intro paragraph.')
+      expect(unchanged[1]).toHaveValue('Second paragraph.')
+    })
+  })
 })

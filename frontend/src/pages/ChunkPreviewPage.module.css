@@ -49,3 +49,29 @@
   background-color: rgba(61, 107, 255, 0.08);
   outline: none;
 }
+
+/* Split tool's live hover preview: a thin line at the exact height a click
+   would cut this chunk at right now (top set inline per-render from
+   cutLineIndex - see ChunkPreviewPage.tsx). pointer-events: none so the
+   indicator itself is never what a mouseenter/click actually lands on -
+   the chunk's own Box handles all of that underneath it. */
+.cutLineIndicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-color: var(--mantine-color-signalBlue-6);
+  box-shadow: 0 0 6px var(--mantine-color-signalBlue-6);
+  pointer-events: none;
+}
+
+/* Delete tool's live hover preview: tints the whole chunk red-ish to read
+   as "this is what a click removes right now" - covers the chunk's own
+   Box entirely (inset 0) but stays click-through (pointer-events: none)
+   for the same reason cutLineIndicator is. */
+.deleteOverlay {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(255, 61, 113, 0.25);
+  pointer-events: none;
+}
