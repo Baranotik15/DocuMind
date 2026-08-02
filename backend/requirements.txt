@@ -9,3 +9,8 @@ psycopg[binary]
 alembic
 celery
 redis
+pgvector
+openai
+pypdf
+python-docx
+python-multipart

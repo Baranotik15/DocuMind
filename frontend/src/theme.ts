@@ -3,7 +3,7 @@
  *
  * See `.claude/context/design-principles.md` for the full rationale. In
  * short: DocuMind reads as a bold, dark, "neon" operator console for curating
- * a RAG knowledge base - a saturated blue+orange pairing on a deep navy
+ * a RAG knowledge base - a saturated blue+gold pairing on a deep navy
  * background, generous type, rounded/glowing surfaces. The signature device
  * carried over from the previous pass is the "mark" - now a `sparkOrange`
  * left border WITH an outer glow - used ONLY on elements that are actively
@@ -30,8 +30,16 @@ const signalBlueBase = '#3D6BFF'
 /**
  * Secondary accent: active/highlighted state, secondary CTAs. Also the base
  * color of the signature "mark" - see below.
+ *
+ * Hue 45.2°, ~100% saturation, ~58% lightness - a vivid yellow-gold
+ * (Material "Amber 400"), shifted noticeably off the previous amber-orange
+ * (`#FFA726`, hue ~35.7°) toward true yellow per explicit design feedback
+ * ("более жёлтый, а не такой тусклый как сейчас"). Contrast against
+ * `theme.black` (`voidBg`, used for filled-button/badge text via
+ * `autoContrast`) is ~11.1:1 - comfortably clears WCAG AA (and AAA) for
+ * normal text, better than the previous hex's ~8.07:1.
  */
-const sparkOrangeBase = '#FFA726'
+const sparkOrangeBase = '#FFCA28'
 /** Errors, the dislike-active state, destructive actions - distinct from both blue and orange. */
 const alertMagentaBase = '#FF3D71'
 /**
@@ -162,9 +170,12 @@ export const theme = createTheme({
      * the active nav item / a dirty chunk / the chat context-indicator (the
      * same three spots as the previous amber-mark pass, see
      * design-principles.md). Exposed once here so the exact glow never
-     * drifts between the three call sites.
+     * drifts between the three call sites. Hue shifted to match the new
+     * `sparkOrangeBase` (yellow-gold, hue ~45°) - same alpha/blur as before,
+     * just re-hued so the glow doesn't read as leftover orange next to a
+     * yellow border.
      */
-    markGlow: '0 0 16px rgba(255, 138, 0, 0.75)',
+    markGlow: '0 0 16px rgba(255, 193, 7, 0.75)',
   },
 })
 

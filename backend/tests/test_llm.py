@@ -1,0 +1,133 @@
+import asyncio
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from app import llm
+from app.config import Settings
+from app.llm import LLMError, embed_texts, generate_reply
+
+
+@pytest.fixture(autouse=True)
+def _clear_client_cache() -> None:
+    """get_client() is @lru_cache'd at module level. Clear before and after
+    each test so a client built against monkeypatched settings in one test
+    never leaks into another test running later in the same process."""
+    llm.get_client.cache_clear()
+    yield
+    llm.get_client.cache_clear()
+
+
+def _make_embedding_response(vectors: list[list[float]]) -> MagicMock:
+    data = [MagicMock(embedding=vector) for vector in vectors]
+    return MagicMock(data=data)
+
+
+def _make_chat_response(content: str) -> MagicMock:
+    message = MagicMock(content=content)
+    choice = MagicMock(message=message)
+    return MagicMock(choices=[choice])
+
+
+def test_embed_texts_returns_vectors_in_input_order() -> None:
+    client = MagicMock()
+    client.embeddings.create = AsyncMock(
+        return_value=_make_embedding_response([[0.1, 0.2], [0.3, 0.4]])
+    )
+
+    result = asyncio.run(embed_texts(["first", "second"], client=client))
+
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+
+
+def test_embed_texts_calls_client_once_with_all_texts() -> None:
+    client = MagicMock()
+    client.embeddings.create = AsyncMock(
+        return_value=_make_embedding_response([[0.1], [0.2], [0.3]])
+    )
+
+    asyncio.run(embed_texts(["a", "b", "c"], client=client))
+
+    client.embeddings.create.assert_awaited_once()
+    _, kwargs = client.embeddings.create.call_args
+    assert kwargs["input"] == ["a", "b", "c"]
+
+
+def test_embed_texts_raises_llm_error_on_sdk_failure() -> None:
+    client = MagicMock()
+    client.embeddings.create = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with pytest.raises(LLMError):
+        asyncio.run(embed_texts(["a"], client=client))
+
+
+def test_generate_reply_returns_completion_text_content() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response("the answer")
+    )
+
+    result = asyncio.run(
+        generate_reply("what is x?", ["chunk one", "chunk two"], client=client)
+    )
+
+    assert result == "the answer"
+
+
+def test_generate_reply_request_includes_context_chunks_and_message() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response("the answer")
+    )
+
+    asyncio.run(generate_reply("what is x?", ["chunk one", "chunk two"], client=client))
+
+    client.chat.completions.create.assert_awaited_once()
+    _, kwargs = client.chat.completions.create.call_args
+    joined = " ".join(message["content"] for message in kwargs["messages"])
+    assert "chunk one" in joined
+    assert "chunk two" in joined
+    assert "what is x?" in joined
+
+
+def test_generate_reply_allows_empty_context_chunks() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response("fallback answer")
+    )
+
+    result = asyncio.run(generate_reply("hello", [], client=client))
+
+    assert result == "fallback answer"
+    client.chat.completions.create.assert_awaited_once()
+
+
+def test_generate_reply_raises_llm_error_on_sdk_failure() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with pytest.raises(LLMError):
+        asyncio.run(generate_reply("hi", [], client=client))
+
+
+def test_embed_texts_raises_llm_error_when_api_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: get_client() calls AsyncOpenAI(api_key=...), whose
+    constructor itself raises openai.OpenAIError at construction time when
+    the key is missing/empty - not just when an API call fails. That error
+    must be wrapped as LLMError like any other SDK failure, so callers only
+    ever have to catch LLMError."""
+    monkeypatch.setattr(llm, "get_settings", lambda: Settings(openai_api_key=""))
+
+    with pytest.raises(LLMError):
+        asyncio.run(embed_texts(["a"]))
+
+
+def test_generate_reply_raises_llm_error_when_api_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(llm, "get_settings", lambda: Settings(openai_api_key=""))
+
+    with pytest.raises(LLMError):
+        asyncio.run(generate_reply("hi", []))
