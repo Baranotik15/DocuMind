@@ -611,7 +611,7 @@ describe('ChunkPreviewPage', () => {
       }
     })
 
-    it('refuses to act on the last chunk even with more than one chunk total, since it still has no next neighbor', async () => {
+    it('clicking the last chunk with Delete armed merges its text into the chunk ABOVE it, since there is no next neighbor', async () => {
       stubFetch({ status: 'ready' })
 
       renderChunkPreviewPage()
@@ -621,10 +621,236 @@ describe('ChunkPreviewPage', () => {
       fireEvent.mouseEnter(secondTextbox)
       fireEvent.click(secondTextbox)
 
-      const unchanged = screen.getAllByRole('textbox')
-      expect(unchanged).toHaveLength(2)
-      expect(unchanged[0]).toHaveValue('Intro paragraph.')
-      expect(unchanged[1]).toHaveValue('Second paragraph.')
+      const remaining = screen.getAllByRole('textbox')
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0]).toHaveValue('Intro paragraph.\nSecond paragraph.')
+    })
+
+    it('deleting the last chunk of three merges it into the chunk above, leaving the first chunk untouched', async () => {
+      stubFetch({ status: 'ready' })
+      const threeChunks: Chunk[] = [
+        { id: 'chunk-1', documentId, originalContent: 'Intro.', editedContent: 'Intro.', isDirty: false },
+        { id: 'chunk-2', documentId, originalContent: 'Middle.', editedContent: 'Middle.', isDirty: false },
+        { id: 'chunk-3', documentId, originalContent: 'End.', editedContent: 'End.', isDirty: false },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(threeChunks))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage()
+      const [, , thirdTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Delete chunk' }))
+      fireEvent.mouseEnter(thirdTextbox)
+      fireEvent.click(thirdTextbox)
+
+      const remaining = screen.getAllByRole('textbox')
+      expect(remaining).toHaveLength(2)
+      expect(remaining[0]).toHaveValue('Intro.')
+      expect(remaining[1]).toHaveValue('Middle.\nEnd.')
+    })
+  })
+
+  describe('Undo/Redo', () => {
+    it('Undo and Redo start disabled - there is no history yet on first load', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+    })
+
+    it('typing in a chunk enables Undo; clicking it reverts the edit and enables Redo', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const [firstTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.change(firstTextbox, { target: { value: 'Intro paragraph edited.' } })
+      expect(firstTextbox).toHaveValue('Intro paragraph edited.')
+
+      const undoButton = screen.getByRole('button', { name: 'Undo' })
+      expect(undoButton).toBeEnabled()
+      fireEvent.click(undoButton)
+
+      expect(firstTextbox).toHaveValue('Intro paragraph.')
+      expect(undoButton).toBeDisabled()
+
+      const redoButton = screen.getByRole('button', { name: 'Redo' })
+      expect(redoButton).toBeEnabled()
+      fireEvent.click(redoButton)
+
+      expect(firstTextbox).toHaveValue('Intro paragraph edited.')
+      expect(redoButton).toBeDisabled()
+    })
+
+    it('consecutive keystrokes in the same chunk coalesce into a single undo step', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const [firstTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.change(firstTextbox, { target: { value: 'Intro paragraph A.' } })
+      fireEvent.change(firstTextbox, { target: { value: 'Intro paragraph AB.' } })
+      fireEvent.change(firstTextbox, { target: { value: 'Intro paragraph ABC.' } })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+      // One Undo click jumps straight back past all three keystrokes, not
+      // just the last one - typing without switching away is one continuous
+      // undo step, so it doesn't take three clicks to get back to the start.
+      expect(firstTextbox).toHaveValue('Intro paragraph.')
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
+    })
+
+    it('switching to a different chunk starts a new undo step, so undo only reverts the most recent one', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const [firstTextbox, secondTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.change(firstTextbox, { target: { value: 'Intro paragraph edited.' } })
+      fireEvent.change(secondTextbox, { target: { value: 'Second paragraph edited.' } })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      expect(firstTextbox).toHaveValue('Intro paragraph edited.')
+      expect(secondTextbox).toHaveValue('Second paragraph.')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      expect(firstTextbox).toHaveValue('Intro paragraph.')
+      expect(secondTextbox).toHaveValue('Second paragraph.')
+    })
+
+    it('making a new edit after Undo discards the redo stack', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const [firstTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.change(firstTextbox, { target: { value: 'Intro paragraph edited.' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      expect(screen.getByRole('button', { name: 'Redo' })).toBeEnabled()
+
+      fireEvent.change(firstTextbox, { target: { value: 'A completely different edit.' } })
+
+      expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+    })
+
+    it('Undo reverses a Split, Redo reapplies it', async () => {
+      stubFetch({ status: 'ready' })
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 84,
+        width: 0,
+        height: 84,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect)
+
+      const multiLineChunks: Chunk[] = [
+        {
+          id: 'chunk-1',
+          documentId,
+          originalContent: 'Line one\nLine two\nLine three',
+          editedContent: 'Line one\nLine two\nLine three',
+          isDirty: false,
+        },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(multiLineChunks))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage()
+      const [textbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Split chunk' }))
+      fireEvent.mouseEnter(textbox)
+      fireEvent.mouseMove(textbox, { clientY: 56 })
+      fireEvent.click(textbox)
+
+      expect(screen.getAllByRole('textbox')).toHaveLength(2)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      const afterUndo = screen.getAllByRole('textbox')
+      expect(afterUndo).toHaveLength(1)
+      expect(afterUndo[0]).toHaveValue('Line one\nLine two\nLine three')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+      const afterRedo = screen.getAllByRole('textbox')
+      expect(afterRedo).toHaveLength(2)
+      expect(afterRedo[0]).toHaveValue('Line one\nLine two')
+      expect(afterRedo[1]).toHaveValue('Line three')
+    })
+
+    it('Undo reverses a Delete/merge, Redo reapplies it', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const [firstTextbox] = await screen.findAllByRole('textbox')
+      expect(screen.getAllByRole('textbox')).toHaveLength(2)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Delete chunk' }))
+      fireEvent.mouseEnter(firstTextbox)
+      fireEvent.click(firstTextbox)
+
+      expect(screen.getAllByRole('textbox')).toHaveLength(1)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      const afterUndo = screen.getAllByRole('textbox')
+      expect(afterUndo).toHaveLength(2)
+      expect(afterUndo[0]).toHaveValue('Intro paragraph.')
+      expect(afterUndo[1]).toHaveValue('Second paragraph.')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+      const afterRedo = screen.getAllByRole('textbox')
+      expect(afterRedo).toHaveLength(1)
+      expect(afterRedo[0]).toHaveValue('Intro paragraph.\nSecond paragraph.')
+    })
+
+    it('Undo reverses a dragged boundary', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+      const handle = screen.getByRole('separator')
+
+      fireEvent.mouseDown(handle, { clientY: 0 })
+      fireEvent.mouseUp(document, { clientY: 500 })
+
+      const [firstTextarea, secondTextarea] = screen.getAllByRole('textbox')
+      expect(firstTextarea).toHaveValue('Intro paragraph.\nSecond paragraph.')
+      expect(secondTextarea).toHaveValue('')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+      expect(firstTextarea).toHaveValue('Intro paragraph.')
+      expect(secondTextarea).toHaveValue('Second paragraph.')
+    })
+
+    it('Ctrl+Z and Ctrl+Shift+Z trigger Undo/Redo the same as the buttons', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const [firstTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.change(firstTextbox, { target: { value: 'Intro paragraph edited.' } })
+
+      fireEvent.keyDown(document, { key: 'z', ctrlKey: true })
+      expect(firstTextbox).toHaveValue('Intro paragraph.')
+
+      fireEvent.keyDown(document, { key: 'z', ctrlKey: true, shiftKey: true })
+      expect(firstTextbox).toHaveValue('Intro paragraph edited.')
     })
   })
 })

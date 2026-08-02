@@ -2,7 +2,7 @@ import type { JSX, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouse
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { ActionIcon, Alert, Box, Button, Group, Modal, Stack, Text, Textarea, Title } from '@mantine/core'
+import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, Textarea, Title } from '@mantine/core'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import classes from './ChunkPreviewPage.module.css'
@@ -154,6 +154,26 @@ function TrashIcon(): JSX.Element {
   )
 }
 
+/** Hand-rolled "undo" (curved back-arrow) glyph for the Undo button - no icon library installed (see design-principles.md). */
+function UndoIcon(): JSX.Element {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <polyline points="9 14 4 9 9 4" />
+      <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+    </svg>
+  )
+}
+
+/** Hand-rolled "redo" (curved forward-arrow) glyph for the Redo button - no icon library installed (see design-principles.md). */
+function RedoIcon(): JSX.Element {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <polyline points="15 14 20 9 15 4" />
+      <path d="M4 20v-7a4 4 0 0 1 4-4h12" />
+    </svg>
+  )
+}
+
 interface BoundaryHandleProps {
   upperChunkId: string
   lowerChunkId: string
@@ -242,6 +262,22 @@ export function ChunkPreviewPage(): JSX.Element {
   // one message - a plain Alert, fixed-positioned, timed out via the
   // effect below.
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  // Undo/Redo history for `chunks`, covering every kind of edit on this page
+  // (typing, Split, Delete, boundary drag/keyboard-nudge) - since chunk
+  // objects/arrays are always replaced wholesale, never mutated in place (see
+  // every setChunks call below), a past snapshot is safe to hold onto and
+  // restore later by reference, no deep-cloning needed. `past` holds
+  // snapshots from oldest to most recent; `future` holds undone snapshots
+  // from soonest-to-redo to furthest, ready to restore in order.
+  const [past, setPast] = useState<Chunk[][]>([])
+  const [future, setFuture] = useState<Chunk[][]>([])
+  // Which chunk (if any) is mid-typing-run: consecutive keystrokes in the
+  // SAME chunk reuse the one history entry already pushed for this run
+  // instead of pushing a fresh one per character, so "typed a word" undoes
+  // in one click, not one per keystroke. The run ends (reset to null, so the
+  // next keystroke anywhere starts a fresh entry) on blur or on switching to
+  // a different chunk - see handleChunkTextChange and the Textarea's onBlur.
+  const typingRunChunkIdRef = useRef<string | null>(null)
   const [viewport, setViewport] = useState({ topPct: 0, heightPct: 100 })
   const scrollRef = useRef<HTMLDivElement>(null)
   const minimapRef = useRef<HTMLDivElement>(null)
@@ -265,6 +301,15 @@ export function ChunkPreviewPage(): JSX.Element {
     baseUpperText: string
     baseLowerText: string
     lastLineDelta: number
+    // The full chunks array as it stood right before this drag gesture
+    // began, and whether it's already been pushed onto the undo stack -
+    // pushed lazily, once, the first time the drag actually redistributes a
+    // line (see applyDragLineDelta below), so a click-without-moving drag
+    // never pollutes the undo stack with a no-op entry, and a drag that
+    // crosses several line thresholds while the mouse moves still counts as
+    // ONE undo step for the whole gesture, not one per threshold crossed.
+    chunksBeforeDrag: Chunk[]
+    historyPushed: boolean
   } | null>(null)
   // Native <textarea> elements keyed by chunk id, so ArrowUp/Down/Left/Right
   // at a chunk's edge can hand focus + caret off to the neighboring chunk's
@@ -285,6 +330,9 @@ export function ChunkPreviewPage(): JSX.Element {
     })
     void apiClient.getChunks(documentId).then(setChunks)
     setPageIndex(0)
+    setPast([])
+    setFuture([])
+    typingRunChunkIdRef.current = null
   }, [documentId])
 
   // Groups chunks into pages so no single page holds more than
@@ -377,12 +425,50 @@ export function ChunkPreviewPage(): JSX.Element {
     updateViewport()
   }
 
+  // Records `previousChunks` (chunks as they stood right before a change
+  // about to be applied) onto the undo stack, and clears the redo stack -
+  // the standard "a new edit invalidates whatever was undone" rule. Every
+  // mutating handler on this page calls this once, right before its own
+  // setChunks call.
+  function pushHistory(previousChunks: Chunk[]): void {
+    setPast((current) => [...current, previousChunks])
+    setFuture([])
+  }
+
+  function handleUndo(): void {
+    if (past.length === 0) {
+      return
+    }
+    const previous = past[past.length - 1]
+    setPast((current) => current.slice(0, -1))
+    setFuture((current) => [chunks, ...current])
+    setChunks(previous)
+    typingRunChunkIdRef.current = null
+  }
+
+  function handleRedo(): void {
+    if (future.length === 0) {
+      return
+    }
+    const next = future[0]
+    setFuture((current) => current.slice(1))
+    setPast((current) => [...current, chunks])
+    setChunks(next)
+    typingRunChunkIdRef.current = null
+  }
+
   // Every chunk's Textarea is always mounted (see the component-level
   // comment on HIGHLIGHT_COLORS) - typing in one updates its own
   // editedContent/isDirty directly and immediately, exactly like a normal
   // text file, with no separate "commit" step and nothing else on the page
-  // changing appearance.
+  // changing appearance. Only the FIRST keystroke of a run in a given chunk
+  // pushes an undo entry (see typingRunChunkIdRef) - the rest of the run
+  // reuses it, so the whole run undoes in one step.
   function handleChunkTextChange(chunkId: string, value: string): void {
+    if (typingRunChunkIdRef.current !== chunkId) {
+      pushHistory(chunks)
+      typingRunChunkIdRef.current = chunkId
+    }
     setChunks((current) =>
       current.map((chunk) =>
         chunk.id === chunkId ? { ...chunk, editedContent: value, isDirty: value !== chunk.originalContent } : chunk,
@@ -559,6 +645,8 @@ export function ChunkPreviewPage(): JSX.Element {
     const secondText = lines.slice(lineIndex).join('\n')
     const newChunkId = crypto.randomUUID()
 
+    pushHistory(chunks)
+    typingRunChunkIdRef.current = null
     setChunks((current) => {
       const index = current.findIndex((candidate) => candidate.id === chunkId)
       if (index === -1) {
@@ -582,36 +670,41 @@ export function ChunkPreviewPage(): JSX.Element {
   }
 
   // Removes `chunkId`'s own box, but NOT its text - the click-to-commit
-  // half of the Delete tool merges it into the NEXT chunk on this page
-  // (deleted chunk's text first, so overall reading order is preserved),
-  // per explicit user correction: this reads as "delete the boundary
-  // between this chunk and the next one", not "destroy this text". Refuses
-  // to act on the last chunk on the page (nothing to merge into) - this
-  // also covers a single-remaining-chunk document as a special case, so
-  // Save can never end up with an empty chunk array (see
-  // EmptyManualChunkError/backend/app/pipeline.py) without a separate
-  // count check.
+  // half of the Delete tool merges it into a NEIGHBORING chunk on this page
+  // (reading order preserved either way), per explicit user correction: this
+  // reads as "delete a boundary", not "destroy this text". Normally merges
+  // into the NEXT chunk; the last chunk on the page has no next neighbor, so
+  // it merges into the PREVIOUS one instead. Only refuses when this is the
+  // sole chunk on the page (no neighbor in either direction), so Save can
+  // never end up with an empty chunk array (see
+  // EmptyManualChunkError/backend/app/pipeline.py) without a separate count
+  // check.
   function commitDelete(chunkId: string): void {
     const index = pageChunks.findIndex((candidate) => candidate.id === chunkId)
     if (index === -1) {
       return
     }
-    if (index >= pageChunks.length - 1) {
-      setToastMessage('A document needs at least one chunk - this is the last one, so there is nothing to merge it into.')
+    if (pageChunks.length <= 1) {
+      setToastMessage('A document needs at least one chunk - this is the only one on this page, so there is nothing to merge it into.')
       return
     }
     const current = pageChunks[index]
-    const next = pageChunks[index + 1]
-    const mergedText = [current.editedContent, next.editedContent].filter((text) => text !== '').join('\n')
+    const mergesIntoPrevious = index === pageChunks.length - 1
+    const neighbor = pageChunks[mergesIntoPrevious ? index - 1 : index + 1]
+    const mergedText = (mergesIntoPrevious ? [neighbor.editedContent, current.editedContent] : [current.editedContent, neighbor.editedContent])
+      .filter((text) => text !== '')
+      .join('\n')
 
+    pushHistory(chunks)
+    typingRunChunkIdRef.current = null
     setChunks((allChunks) => {
       const withoutCurrent = allChunks.filter((candidate) => candidate.id !== current.id)
-      const nextIndex = withoutCurrent.findIndex((candidate) => candidate.id === next.id)
-      if (nextIndex === -1) {
+      const neighborIndex = withoutCurrent.findIndex((candidate) => candidate.id === neighbor.id)
+      if (neighborIndex === -1) {
         return allChunks
       }
       const merged = [...withoutCurrent]
-      merged[nextIndex] = { ...merged[nextIndex], editedContent: mergedText, isDirty: true }
+      merged[neighborIndex] = { ...merged[neighborIndex], editedContent: mergedText, isDirty: true }
       return merged
     })
     setBoundariesManuallyAdjusted(true)
@@ -634,6 +727,7 @@ export function ChunkPreviewPage(): JSX.Element {
     if (!upperChunk || !lowerChunk) {
       return
     }
+    typingRunChunkIdRef.current = null
     dragStateRef.current = {
       upperChunkId,
       lowerChunkId,
@@ -641,12 +735,16 @@ export function ChunkPreviewPage(): JSX.Element {
       baseUpperText: upperChunk.editedContent,
       baseLowerText: lowerChunk.editedContent,
       lastLineDelta: 0,
+      chunksBeforeDrag: chunks,
+      historyPushed: false,
     }
   }
 
   function handleBoundaryKeyboardMove(upperChunkId: string, lowerChunkId: string, lineDelta: number): void {
     const next = applyBoundaryDrag(chunks, upperChunkId, lowerChunkId, lineDelta)
     if (next !== chunks) {
+      pushHistory(chunks)
+      typingRunChunkIdRef.current = null
       setChunks(next)
       setBoundariesManuallyAdjusted(true)
     }
@@ -671,6 +769,10 @@ export function ChunkPreviewPage(): JSX.Element {
       const [newUpperText, newLowerText] = redistributeLines(drag.baseUpperText, drag.baseLowerText, lineDelta)
       if (newUpperText !== drag.baseUpperText || newLowerText !== drag.baseLowerText) {
         setBoundariesManuallyAdjusted(true)
+        if (!drag.historyPushed) {
+          pushHistory(drag.chunksBeforeDrag)
+          drag.historyPushed = true
+        }
       }
       setChunks((current) =>
         current.map((chunk) => {
@@ -790,6 +892,43 @@ export function ChunkPreviewPage(): JSX.Element {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [showDiscardConfirm, chunks, navigate, activeTool])
 
+  // Standard Ctrl+Z / Ctrl+Shift+Z (and Cmd- on Mac) shortcuts for the
+  // Undo/Redo buttons below, fired page-wide rather than scoped to a
+  // particular element - matches how a plain text editor's undo works
+  // regardless of what currently has focus. Mirrors handleUndo/handleRedo's
+  // own logic rather than calling them directly (same reason as the Escape
+  // effect above): keeps this effect's dependency array listing the actual
+  // state it reads, instead of functions recreated fresh every render.
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') {
+        return
+      }
+      event.preventDefault()
+      typingRunChunkIdRef.current = null
+      if (event.shiftKey) {
+        if (future.length === 0) {
+          return
+        }
+        const next = future[0]
+        setFuture((current) => current.slice(1))
+        setPast((current) => [...current, chunks])
+        setChunks(next)
+      } else {
+        if (past.length === 0) {
+          return
+        }
+        const previous = past[past.length - 1]
+        setPast((current) => current.slice(0, -1))
+        setFuture((current) => [chunks, ...current])
+        setChunks(previous)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [past, future, chunks])
+
   return (
     // userSelect 'none' at this page-wide scope (rather than one-off fixes on
     // individual elements) stops a click-drag ANYWHERE on this page's
@@ -825,35 +964,130 @@ export function ChunkPreviewPage(): JSX.Element {
         resize the chunks on either side of it.
       </Text>
 
-      <Group gap="xs">
-        {/* Split/Delete tools: click to arm (persists across multiple uses -
-            see handleToolButtonClick), then click a chunk to commit. Bold/
-            filled while armed so it's obvious which tool (if any) is
-            currently active, matching the pressed-state convention Save/
-            Cancel already use for their own states elsewhere on this page. */}
-        <ActionIcon
-          aria-label="Split chunk"
-          aria-pressed={activeTool === 'cut'}
-          title="Split chunk - click a chunk to cut it in two"
-          variant={activeTool === 'cut' ? 'filled' : 'subtle'}
-          color="signalBlue"
-          size="lg"
-          onClick={() => handleToolButtonClick('cut')}
-        >
-          <ScissorsIcon />
-        </ActionIcon>
-        <ActionIcon
-          aria-label="Delete chunk"
-          aria-pressed={activeTool === 'delete'}
-          title="Delete chunk - click a chunk to merge it into the next one"
-          variant={activeTool === 'delete' ? 'filled' : 'subtle'}
-          color="alertMagenta"
-          size="lg"
-          onClick={() => handleToolButtonClick('delete')}
-        >
-          <TrashIcon />
-        </ActionIcon>
-      </Group>
+      {/* The toolbar sits inside its own small elevated Paper rather than
+          floating bare on the void page background - the same Cards/
+          Surfaces pattern as Upload's table panel and Chat's message-
+          composer Paper (surface background, hairline border via the
+          gray.3 remap, the app's default `lg` radius - see
+          design-principles.md). `alignSelf: 'flex-start'` opts this Paper
+          out of the page's outer Stack's default `align="stretch"` (every
+          other direct child - the back/title Group, this toolbar - would
+          otherwise silently stretch to the full page width; invisible for
+          a transparent Group, but would read as an oddly empty bar once
+          this has a visible surface/border), so it hugs its own content
+          instead, like a compact floating toolbar rather than a full-width
+          ribbon. The soft, bottom-weighted shadow is the same device as
+          Upload's table-panel lift, just scaled down for this much smaller
+          surface. */}
+      <Paper
+        radius="lg"
+        p="xs"
+        bg="var(--doc-surface)"
+        withBorder
+        style={{ alignSelf: 'flex-start', boxShadow: '0 10px 20px -12px rgba(0, 0, 0, 0.5)' }}
+      >
+        <Group gap="sm" wrap="nowrap">
+          {/* Undo/Redo: cover every kind of edit on this page (typing, Split,
+              Delete, boundary drag/nudge) since they all go through
+              pushHistory - see the state comment above. Disabled (not hidden)
+              at each end of the stack, matching the Save button's own
+              disabled-while-unusable convention elsewhere on this page.
+              Grouped tightly together (gap 4) since both are history
+              navigation, the same kind of action.
+
+              Deliberately quieter than Split/Delete right next to them: at
+              rest, these read as plain icon-only glyphs pinned to the same
+              muted token Upload's SortIcon/ClearIcon use for their own idle
+              affordances (`var(--doc-text-muted)`, via the `historyButton`
+              class below), accenting to signalBlue only on hover - not the
+              bright accent color at rest. Two adjacent saturated-signalBlue
+              circles here would've read as one loud "blue blob" even though
+              each individually matched Split/Delete's own idle styling.
+              `variant="transparent"` (not "subtle") is deliberate too:
+              Mantine documents "transparent" as never applying a background,
+              even on hover, which is a stronger guarantee than "subtle"
+              tinting to a background of `transparent` via variant-color
+              resolution that a wrapping context could still perturb - see
+              `historyButton`'s own comment in ChunkPreviewPage.module.css for
+              the concrete mechanism (unrelated to `subtle` itself) that was
+              actually causing these two, and only these two, to render as
+              solid filled circles. No explicit `color` prop - the
+              `historyButton` class is the single source of truth for this
+              pair's color in every state (idle/hover/disabled), so there's
+              no unused/overridden prop left sitting on the element. */}
+          <Group gap={4} wrap="nowrap">
+            <ActionIcon
+              aria-label="Undo"
+              title="Undo (Ctrl+Z)"
+              variant="transparent"
+              size="lg"
+              disabled={past.length === 0}
+              onClick={handleUndo}
+              className={`${classes.toolbarButton} ${classes.historyButton}`}
+            >
+              <UndoIcon />
+            </ActionIcon>
+            <ActionIcon
+              aria-label="Redo"
+              title="Redo (Ctrl+Shift+Z)"
+              variant="transparent"
+              size="lg"
+              disabled={future.length === 0}
+              onClick={handleRedo}
+              className={`${classes.toolbarButton} ${classes.historyButton}`}
+            >
+              <RedoIcon />
+            </ActionIcon>
+          </Group>
+
+          {/* Purely decorative separator between the history controls and
+              the destructive/structural chunk-editing tools - a plain
+              hairline-colored Box, NOT Mantine's `Divider` component: Divider
+              renders `role="separator"`, which would collide with the
+              BoundaryHandle's own (semantically meaningful, keyboard-
+              operable) `role="separator"` elsewhere on this page and break
+              its `getByRole('separator')`/`getAllByRole('separator')`
+              assertions in ChunkPreviewPage.test.tsx. `aria-hidden` keeps it
+              out of the accessibility tree entirely, matching this file's
+              existing convention for decorative-only elements. */}
+          <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
+
+          {/* Split/Delete tools: click to arm (persists across multiple uses -
+              see handleToolButtonClick), then click a chunk to commit. Bold/
+              filled while armed so it's obvious which tool (if any) is
+              currently active, matching the pressed-state convention Save/
+              Cancel already use for their own states elsewhere on this page.
+              Grouped tightly together (gap 4) as the other conceptual pair -
+              structural/destructive chunk edits, distinct from history
+              navigation. */}
+          <Group gap={4} wrap="nowrap">
+            <ActionIcon
+              aria-label="Split chunk"
+              aria-pressed={activeTool === 'cut'}
+              title="Split chunk - click a chunk to cut it in two"
+              variant={activeTool === 'cut' ? 'filled' : 'subtle'}
+              color="signalBlue"
+              size="lg"
+              onClick={() => handleToolButtonClick('cut')}
+              className={classes.toolbarButton}
+            >
+              <ScissorsIcon />
+            </ActionIcon>
+            <ActionIcon
+              aria-label="Delete chunk"
+              aria-pressed={activeTool === 'delete'}
+              title="Delete chunk - click a chunk to merge it into a neighboring chunk"
+              variant={activeTool === 'delete' ? 'filled' : 'subtle'}
+              color="alertMagenta"
+              size="lg"
+              onClick={() => handleToolButtonClick('delete')}
+              className={classes.toolbarButton}
+            >
+              <TrashIcon />
+            </ActionIcon>
+          </Group>
+        </Group>
+      </Paper>
 
       {isBusy ? (
         <Alert color="alertMagenta" variant="light" radius="lg" title="Still processing">
@@ -910,6 +1144,11 @@ export function ChunkPreviewPage(): JSX.Element {
                       value={chunk.editedContent}
                       onChange={(event) => handleChunkTextChange(chunk.id, event.currentTarget.value)}
                       onKeyDown={(event) => handleChunkKeyDown(event, chunk.id)}
+                      onBlur={() => {
+                        if (typingRunChunkIdRef.current === chunk.id) {
+                          typingRunChunkIdRef.current = null
+                        }
+                      }}
                       autosize
                       minRows={1}
                       variant="unstyled"
