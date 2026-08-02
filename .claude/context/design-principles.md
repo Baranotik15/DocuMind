@@ -341,19 +341,19 @@ the examples currently in the codebase (`ChunksPage.tsx`, `AppLayout.tsx`,
   state (`variant="filled"` when active, `variant="outline"` when not, same
   toggle pattern as before).
 - **Destructive**: `color="alertMagenta"`.
-- **Cancel/dismiss vs. the confirming action, in confirm dialogs and
-  page-level "leave without saving" flows**: Cancel/dismiss is quiet -
-  `variant="subtle" color="signalBlue"` - reserving the bold
-  `variant="filled" color="alertMagenta"` (or `sparkOrange` for a
-  non-destructive confirm, e.g. Overwrite) treatment for the button that
-  actually performs the confirmed/destructive action. See UploadPage.tsx's
-  Delete/Overwrite confirm `Modal`s and ChunkPreviewPage.tsx's Cancel button
-  + its own discard-changes confirm `Modal` ("Keep editing" is the quiet
-  option, "Discard changes" is the bold one) for two independent instances of
-  the same pattern. A plain top-level Cancel that has nothing to confirm
-  (nothing would be lost) should never get the bold destructive treatment
-  just because it says "Cancel" - that's reserved for buttons that are
-  themselves confirming something.
+- **Cancel/dismiss vs. the confirming action, inside a confirm dialog
+  itself**: the quiet dismiss option is `variant="subtle" color="signalBlue"`,
+  reserving the bold `variant="filled" color="alertMagenta"` (or
+  `sparkOrange` for a non-destructive confirm, e.g. Overwrite) treatment for
+  the button that actually performs the confirmed/destructive action. See
+  UploadPage.tsx's Delete/Overwrite confirm `Modal`s, and
+  ChunkPreviewPage.tsx's own discard-changes confirm `Modal` ("Keep editing"
+  is the quiet option, "Discard changes" is the bold one). **Exception**:
+  ChunkPreviewPage.tsx's page-level Cancel button (the one that opens that
+  Modal, not a button inside it) is itself `variant="filled"
+  color="alertMagenta"` - a deliberate, explicit user override of the
+  quieter treatment this bullet otherwise recommends for a plain top-level
+  Cancel; see the Chunk Preview subsection below for the full history.
 - The sparkOrange mark is never applied to a button via `color="sparkOrange"`
   variant="filled"` as if it were "the mark" - that's just the secondary
   accent color used as an ordinary button color, not the signature device
@@ -522,23 +522,30 @@ run is actively chunking that document) closes the dialog and surfaces the
 same page-level `processingMessage` `Alert` pattern already used for
 upload/overwrite conflicts, rather than a dialog-level error state.
 
-### Chunk Preview: Cancel/Discard Confirmation
+### Chunk Preview: Cancel/Discard Confirmation + Bottom Action Bar
 
-`ChunkPreviewPage.tsx`'s bottom-of-page Cancel button is `variant="subtle"
-color="signalBlue"` - the quiet secondary treatment (see the Buttons section
-above), not a bold destructive one, since by itself Cancel navigates straight
-back to `/upload` with nothing to confirm whenever no chunk is dirty
-(`chunks.some((chunk) => chunk.isDirty)` is `false`). When at least one chunk
-IS dirty, clicking Cancel instead opens a confirm `Modal` ("Discard
-changes?"), matching UploadPage.tsx's Delete/Overwrite `Modal` structure
-(`Modal` > `Stack` > body `Text` + `Group[justify="flex-end"]` of two
-`Button`s): a quiet "Keep editing" (`variant="subtle" color="signalBlue"`,
-just closes the dialog - the edit is untouched, still dirty, still in state)
-and a bold "Discard changes" (`variant="filled" color="alertMagenta"` - this
-is the button that's actually destructive/confirming, per the Buttons
-section) that navigates to `/upload`. No API call is made either way -
-per-chunk edits only ever live in local `chunks` state until Save calls
-`apiClient.saveChunks`, so "discarding" is just choosing not to persist them.
+`ChunkPreviewPage.tsx`'s Cancel button is `variant="filled"
+color="alertMagenta"` - the bold red/pink treatment, by explicit user
+direction (an earlier pass had tried the quieter `variant="subtle"
+color="signalBlue"` treatment the Buttons section otherwise recommends for a
+plain top-level Cancel, matching UploadPage.tsx's confirm-dialog Cancel
+buttons; the user looked at it live and asked for red/pink back). Clicking it
+still only opens a confirmation when there's actually something to lose: with
+no chunk dirty (`chunks.some((chunk) => chunk.isDirty)` is `false`) it
+navigates straight to `/upload`; with at least one chunk dirty, it opens a
+confirm `Modal` ("Discard changes?") instead, matching UploadPage.tsx's
+Delete/Overwrite `Modal` structure (`Modal` > `Stack` > body `Text` +
+`Group[justify="flex-end"]` of two `Button`s): a quiet "Keep editing"
+(`variant="subtle" color="signalBlue"`, just closes the dialog - the edit is
+untouched, still dirty, still in state) and a bold "Discard changes"
+(`variant="filled" color="alertMagenta"` - the button that's actually
+destructive/confirming, per the Buttons section) that navigates to
+`/upload`. Cancel and "Discard changes" now share the same
+`filled`/`alertMagenta` styling - that's fine, both represent "leave without
+saving," so a single red/pink family reads as coherent, not conflicting. No
+API call is made either way - per-chunk edits only ever live in local
+`chunks` state until Save calls `apiClient.saveChunks`, so "discarding" is
+just choosing not to persist them.
 
 The Escape key is wired to the exact same dirty-check logic as the Cancel
 button (a `keydown` listener on `document`, added/removed in a `useEffect`),
@@ -557,11 +564,144 @@ a shared `handleCancelClick` function) purely so its dependency array can
 list the actual state it reads instead of a plain function that's recreated
 on every render.
 
-The Previous/Next pagination buttons pass an explicit `color="signalBlue"`
-(previously relying on the implicit `primaryColor` default) so every
-`variant="subtle"` button on the page names its color explicitly, matching
-the Back `ActionIcon` and the new Cancel button above - a no-visual-change,
-consistency-only touch-up, not a behavior change.
+Pagination (Previous / "Page X of Y" / Next, shown only once `pages.length >
+1`) lives in the same bottom-anchored row as Cancel/Save, not its own row
+floating above it - and is horizontally **centered** in that row, not
+left-aligned. Centering it is deliberately NOT the common `Group
+justify="space-between"` two-flex-children trick (an empty/pagination
+cluster on the left, Cancel/Save on the right) - that only looks centered
+when both sides happen to end up similar widths, which isn't guaranteed
+here (an empty left side vs. a two-button-wide right side are not
+naturally equal). Instead, the row is a plain `Box[position: relative,
+display: flex, justifyContent: flex-end]` wrapping the Cancel/Save `Group`
+in normal flow, with the pagination `Group` pulled out of flow entirely and
+centered via `position: absolute; left: 50%; top: 50%; transform:
+translate(-50%, -50%)` - this centers relative to the row's own total
+width, correctly, regardless of how wide the Cancel/Save cluster ends up
+being (the one Mantine-idiomatic technique that's actually guaranteed
+correct here, not just visually close). Previous/Next are `variant="filled"
+color="sparkOrange"` - a bold yellow fill matching Save's boldness/family
+(clearly distinct from Cancel's red/pink) - plus a felt hover reaction: a
+`transform: scale(1.05)` over the standard ~150ms transition (see Motion &
+Interaction), applied via a small `.paginationButton` class in
+`ChunkPreviewPage.module.css` (`transform` is compositor-only, not a layout
+property, so this doesn't conflict with that section's "avoid animating
+layout properties for state toggles" guidance - that's about `width`/
+`height`), wrapped in `@media (hover: hover)` so touch devices don't get a
+"stuck" post-tap scale, the same convention `UploadPage.module.css`'s
+Dropzone hover rule already uses. Previous/Next are **hidden, not
+disabled**, at each boundary (`pageIndex > 0` / `pageIndex < pages.length -
+1` conditionally render the button at all, rather than rendering it
+`disabled`) - the "Page X of Y" label simply sits between whichever of the
+two buttons happens to be present, rather than the row reserving fixed
+space for a grayed-out button.
+
+The whole page disables text selection by default - `userSelect: 'none'` set
+inline on the outermost `Stack` returned by `ChunkPreviewPage.tsx` - rather
+than patching individual elements one at a time. This started as a narrower
+fix scoped only to the main chunk `Text` (a click-drag there was triggering
+the browser's translate-selection popup), but the same popup turned out to
+be reachable from other text on the page too (the pagination "Page X of Y"
+label), which is why the fix is applied page-wide instead: nothing in this
+page's non-editing chrome (chunk text when not being edited, filenames,
+labels, buttons) is meant to be a text-selectable field, so none of it
+should be able to trigger that popup. `userSelect: 'none'` is inherited by
+every descendant unless a more specific rule overrides it for that element -
+the one exception is the chunk `Textarea` itself in edit mode, which needs
+normal text selection/editing to work: its own `styles={{ input: {
+userSelect: 'text', ... } }}` sets an inline style directly on the rendered
+`<textarea>`, which always wins over an inherited value regardless of the
+ancestor's specificity (a directly-matching rule beats inheritance, not a
+specificity contest). The minimap's own inline `userSelect: 'none'` (see
+above) is now redundant with the page-wide rule but is harmless and was left
+as-is rather than removed for its own sake.
+
+Both the read-mode chunk `Text` and the minimap's own miniature copy set
+`whiteSpace: 'pre-wrap'` - without it, normal HTML text-flow collapses a
+chunk's original line breaks/blank-line paragraph spacing/markdown structure
+(blank lines between paragraphs, "> " blockquote lines, "## Section" headers
+each on their own line, ...) into one dense run-together block, while a
+`<textarea>` (what the same content switches to in edit mode) preserves
+whitespace natively regardless of CSS - so without this, clicking a chunk
+into or out of edit mode caused a jarring reflow purely from this rendering
+difference, not from any actual change to the text. `pre-wrap` (not plain
+`pre`) still wraps long lines instead of overflowing horizontally. The
+minimap's copy gets the same treatment too, for consistency (a VS Code-style
+minimap is meant to mirror the real document's line structure, even at an
+illegible size) even though the specific reflow-on-click bug doesn't apply
+there - that Text never switches between two different renderings the way
+the main column does.
+
+### Chunk Preview: Manual Boundary Resizing (always-mounted editors + persistent marker)
+
+**Revision (2026-08-02, second pass):** superseded a same-day first pass
+that replaced per-chunk boxes with one page-spanning free-text `Textarea`
+you'd enter via a click, with boundary markers as literal text typed
+inline (`splitBySeparator`/`findMarkerOffsets`/`boundaryOffsetsChanged` in
+`chunkBoundaryMarker.ts`, now removed - the file keeps only the
+`CHUNK_BOUNDARY_MARKER` string constant). Live use showed that regressed
+worse than it fixed: the colored per-chunk boxes disappeared entirely the
+instant you clicked to edit, and the boundary marker was invisible until
+you were already inside that edit mode. The explicit requirement going
+forward: **nothing about a chunk's appearance changes between viewing and
+editing it, ever** - colors and the boundary marker are visible AT ALL
+TIMES, not conjured up by entering some other mode. See
+`.claude/specs/manual-chunk-boundaries.md`'s Requirements for the full
+history; the backend contract (`manualBoundaries` boolean flag on the save
+endpoint) is unaffected by this revision either.
+
+Every chunk is now an ALWAYS-mounted `Textarea` (`variant="unstyled"`, no
+border/background of its own, transparent so the parent colored `Box`
+shows straight through) sitting directly inside its colored `Box` -
+there is no more separate read-mode `Text` vs. edit-mode `Textarea` swap,
+and therefore no click-to-enter-edit-mode step at all. Typing anywhere
+just types, immediately, the same as a normal text file - `onChange`
+updates that chunk's `editedContent`/`isDirty` directly, with no separate
+commit/blur step. The minimap now genuinely live-updates per keystroke as
+a natural consequence (there's no "last-committed snapshot" to hold onto
+anymore - `chunks` state IS the current state).
+
+Between every pair of adjacent chunks, a `BoundaryHandle` is rendered
+persistently (`role="separator"`, `aria-orientation="horizontal"`,
+`tabIndex={0}` for keyboard operability per this project's accessibility
+rule) showing `CHUNK_BOUNDARY_MARKER` as a static label plus a grip icon on
+each side - always visible, never tied to any edit state. Dragging it (or
+focusing it and pressing ArrowUp/ArrowDown) moves whole lines across the
+boundary via `redistributeLines(upperText, lowerText, lineDelta)`
+(`frontend/src/utils/redistributeLines.ts`, restored after briefly being
+removed during the superseded pass - same pure-function/thorough-unit-test
+precedent as `fuzzyMatch.ts`) - positive delta moves lines from the start
+of the lower chunk into the end of the upper one (dragging down), negative
+the reverse (dragging up), always clamped to whatever's actually available
+on the giving side, so it can never produce a negative-length chunk or
+invent lines that don't exist. Chunk COUNT never changes via this
+mechanism (resize only, not merge/split) - ids are stable, so there's no
+need to regenerate them the way the superseded marker-parsing design did.
+
+**Drag mechanics**: `mousedown` on the handle just records where it
+started; a `document`-wide `mouseup` listener (not scoped to the thin
+handle itself, so the drag still completes if the cursor drifts off it)
+computes the final line delta via a fixed `BOUNDARY_DRAG_LINE_HEIGHT_PX`
+approximation (not read off real layout via `getBoundingClientRect`) and
+commits in one step - a single well-defined state transition, not a
+stream of updates on every `mousemove`, which is also what keeps it
+reliably testable with plain simulated `clientY` values despite jsdom's
+unreliable real layout geometry. The actual redistribution math
+(`applyBoundaryDrag` in `ChunkPreviewPage.tsx`) is a module-level pure
+function, not a component closure, specifically so the `mouseup` effect
+doesn't need it listed as a dependency that's recreated every render.
+
+**State**: a completed drag (mouse or keyboard) that actually moves at
+least one line marks both affected chunks `isDirty: true` and sets
+`boundariesManuallyAdjusted` to `true` - never reset for the rest of the
+session. `handleSave` passes it straight through as
+`ApiClient.saveChunks`'s optional third parameter - an ordinary Save where
+no boundary was ever dragged sends byte-for-byte the same request it
+always has (`manualBoundaries` omitted, not sent as `false`), unchanged
+default backend behavior (full algorithmic re-chunk). A drag that resolves
+to zero actual movement (e.g. dragged toward a neighbor that's already
+empty on the giving side) is a no-op - neither chunk is marked dirty and
+the flag stays untouched.
 
 ### Dashboard: Stat Cards + Bar Visualization
 

@@ -136,7 +136,11 @@ export const mockApiClient: ApiClient = {
     return chunks.filter((chunk) => chunk.documentId === documentId).map((chunk) => ({ ...chunk }))
   },
 
-  async saveChunks(documentId, updatedChunks) {
+  // `manualBoundaries` is accepted (matching the real ApiClient signature)
+  // but not otherwise modeled here - this mock has no algorithmic
+  // re-chunker to skip in the first place, so there's nothing for the flag
+  // to change about its own in-memory behavior.
+  async saveChunks(documentId, updatedChunks, _manualBoundaries) {
     const savedChunks = updatedChunks.map((chunk) => ({ ...chunk, isDirty: false }))
     chunks = [...chunks.filter((chunk) => chunk.documentId !== documentId), ...savedChunks]
   },

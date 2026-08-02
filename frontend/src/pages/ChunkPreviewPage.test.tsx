@@ -49,16 +49,12 @@ function renderChunkPreviewPage(): ReturnType<typeof render> {
   )
 }
 
-// Clicks the first chunk to enter edit mode, types a change (making it
-// dirty), then blurs to exit edit mode - the same click-edit-blur flow an
-// operator uses, landing on a chunk that's dirty but no longer actively
-// focused (matching the state Cancel/Escape are meant to guard).
+// Every chunk's Textarea is always mounted (no click-to-enter-edit-mode step
+// anymore) - this just types directly into the first one, making it dirty,
+// matching the state Cancel/Escape are meant to guard.
 async function makeFirstChunkDirty(): Promise<void> {
-  const [chunkText] = await screen.findAllByText('Intro paragraph.')
-  fireEvent.click(chunkText)
-  const textarea = screen.getByRole('textbox')
-  fireEvent.change(textarea, { target: { value: 'Intro paragraph edited.' } })
-  fireEvent.blur(textarea)
+  const [firstTextarea] = await screen.findAllByRole('textbox')
+  fireEvent.change(firstTextarea, { target: { value: 'Intro paragraph edited.' } })
 }
 
 describe('ChunkPreviewPage', () => {
@@ -136,10 +132,7 @@ describe('ChunkPreviewPage', () => {
 
     renderChunkPreviewPage()
 
-    // "Intro paragraph." renders twice (the main text column plus the
-    // minimap's miniature copy) - assert at least one is present rather than
-    // pinning to a single match.
-    expect((await screen.findAllByText('Intro paragraph.')).length).toBeGreaterThan(0)
+    expect(await screen.findAllByRole('textbox')).toHaveLength(2)
     const saveButton = screen.getByRole('button', { name: 'Save' })
     expect(saveButton).toBeEnabled()
     expect(screen.queryByText(PROCESSING_MESSAGE)).not.toBeInTheDocument()
@@ -160,7 +153,7 @@ describe('ChunkPreviewPage', () => {
     // page stays put - still showing the chunk preview, not navigated to /upload.
     expect(await screen.findByText(PROCESSING_MESSAGE)).toBeInTheDocument()
     expect(screen.getByText(filename)).toBeInTheDocument()
-    expect(screen.getAllByText('Intro paragraph.').length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('textbox')).toHaveLength(2)
   })
 
   it('navigates to Upload immediately when Cancel is clicked and no chunk is dirty', async () => {
@@ -168,7 +161,7 @@ describe('ChunkPreviewPage', () => {
 
     renderChunkPreviewPage()
 
-    await screen.findAllByText('Intro paragraph.')
+    await screen.findAllByRole('textbox')
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
@@ -205,7 +198,7 @@ describe('ChunkPreviewPage', () => {
     // same as the confirm dialogs in UploadPage.test.tsx - wait for it.
     await waitFor(() => expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument())
     expect(screen.queryByText(UPLOAD_PLACEHOLDER)).not.toBeInTheDocument()
-    expect(screen.getAllByText('Intro paragraph edited.').length).toBeGreaterThan(0)
+    expect(screen.getAllByDisplayValue('Intro paragraph edited.').length).toBeGreaterThan(0)
   })
 
   it('"Discard changes" navigates to Upload, discarding the edit', async () => {
@@ -234,20 +227,132 @@ describe('ChunkPreviewPage', () => {
     expect(screen.queryByText(UPLOAD_PLACEHOLDER)).not.toBeInTheDocument()
   })
 
-  it('pressing Escape while a chunk is actively being edited exits that chunk\'s edit mode instead of showing the confirmation', async () => {
+  it('typing into a chunk updates it immediately with no click-to-enter-edit-mode step, and every chunk stays mounted and visible throughout', async () => {
     stubFetch({ status: 'ready' })
 
     renderChunkPreviewPage()
 
-    const [chunkText] = await screen.findAllByText('Intro paragraph.')
-    fireEvent.click(chunkText)
-    const textarea = screen.getByRole('textbox')
-    fireEvent.change(textarea, { target: { value: 'Intro paragraph edited.' } })
+    const [firstTextarea, secondTextarea] = await screen.findAllByRole('textbox')
+    expect(firstTextarea).toHaveValue('Intro paragraph.')
+    expect(secondTextarea).toHaveValue('Second paragraph.')
 
-    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.change(firstTextarea, { target: { value: 'Intro paragraph edited.' } })
 
-    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Intro paragraph edited.').length).toBeGreaterThan(0)
+    // Nothing disappears or swaps - both textareas are still there, still
+    // showing their own content, immediately reflecting the edit with no
+    // separate commit/blur step.
+    expect(screen.getAllByRole('textbox')).toHaveLength(2)
+    expect(firstTextarea).toHaveValue('Intro paragraph edited.')
+    expect(secondTextarea).toHaveValue('Second paragraph.')
+  })
+
+  it('disables text selection page-wide, but explicitly re-enables it on every chunk Textarea', async () => {
+    stubFetch({ status: 'ready' })
+
+    const { container } = renderChunkPreviewPage()
+
+    const textareas = await screen.findAllByRole('textbox')
+
+    // The page root carries the broad userSelect: 'none' every other element
+    // on the page inherits (the boundary marker label, pagination label,
+    // buttons, etc.) - asserted directly on this element's own inline style
+    // rather than via jsdom's limited getComputedStyle inheritance support.
+    // MantineProvider injects its own <style> tags as earlier siblings
+    // within `container` (emotion's style-injection point), so the page's
+    // actual root element isn't reliably `container.firstChild` - find the
+    // first non-<style> child instead.
+    const pageRoot = Array.from(container.children).find((el) => el.tagName !== 'STYLE')
+    expect(pageRoot).toHaveStyle({ userSelect: 'none' })
+
+    // Every chunk's Textarea carries a direct override back to 'text' - not
+    // just one "actively edited" chunk, since there's no such distinction
+    // anymore.
+    for (const textarea of textareas) {
+      expect(textarea).toHaveStyle({ userSelect: 'text' })
+    }
+  })
+
+  it('renders a boundary handle between adjacent chunks at all times - never hidden, since there is no separate edit mode to hide it during', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await screen.findAllByRole('textbox')
+
+    // Exactly one boundary between this fixture's two chunks.
+    expect(screen.getAllByRole('separator')).toHaveLength(1)
+
+    fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'Intro paragraph edited.' } })
+
+    // Still there - editing a chunk's text doesn't hide the handle, unlike
+    // the superseded design where a page-wide edit surface replaced
+    // everything.
+    expect(screen.getAllByRole('separator')).toHaveLength(1)
+  })
+
+  it('dragging a boundary handle redistributes lines between the two chunks, and Save includes manualBoundaries: true afterward', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await screen.findAllByRole('textbox')
+    const handle = screen.getByRole('separator')
+
+    // Real mouse-drag pixel geometry doesn't work reliably in jsdom, but
+    // this doesn't depend on any actual layout measurement (no
+    // getBoundingClientRect) - only on the raw clientY values on the mouse
+    // events themselves, which jsdom handles fine as plain data. A large
+    // downward delta is used deliberately so the exact line-height constant
+    // doesn't need to leak into this test: however many lines it rounds to,
+    // redistributeLines clamps to what's actually available (this fixture's
+    // second chunk has exactly one line), so the observable result is the
+    // same either way.
+    fireEvent.mouseDown(handle, { clientY: 0 })
+    fireEvent.mouseUp(document, { clientY: 500 })
+
+    // The lower chunk's one line moved into the end of the upper chunk.
+    const [firstTextarea, secondTextarea] = screen.getAllByRole('textbox')
+    expect(firstTextarea).toHaveValue('Intro paragraph.\nSecond paragraph.')
+    expect(secondTextarea).toHaveValue('')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    // GET /internal/documents, GET .../chunks, then this POST.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    const [, saveInit] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit]
+    const body = JSON.parse(saveInit.body as string) as { manualBoundaries?: boolean }
+    expect(body.manualBoundaries).toBe(true)
+  })
+
+  it('a boundary handle is keyboard-operable via ArrowUp/ArrowDown, for accessibility', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await screen.findAllByRole('textbox')
+    const handle = screen.getByRole('separator')
+
+    fireEvent.keyDown(handle, { key: 'ArrowUp' })
+
+    // ArrowUp moves one line from the end of the upper chunk to the start
+    // of the lower chunk - this fixture's upper chunk has exactly one line,
+    // so it fully empties.
+    const [firstTextarea, secondTextarea] = screen.getAllByRole('textbox')
+    expect(firstTextarea).toHaveValue('')
+    expect(secondTextarea).toHaveValue('Intro paragraph.\nSecond paragraph.')
+  })
+
+  it('Save omits manualBoundaries when only chunk text was edited and no boundary was ever dragged', async () => {
+    stubFetch({ status: 'ready' })
+
+    renderChunkPreviewPage()
+
+    await makeFirstChunkDirty()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    const [, saveInit] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit]
+    const body = JSON.parse(saveInit.body as string) as { manualBoundaries?: boolean }
+    expect(body.manualBoundaries).toBeFalsy()
   })
 })

@@ -10,3 +10,42 @@
 .scrollArea::-webkit-scrollbar {
   display: none;
 }
+
+/* Previous/Next pagination buttons get a felt hover reaction (a slight
+   scale-up) rather than sitting flat/static - `transform` is compositor-only,
+   not a layout property, so animating it doesn't conflict with the Motion &
+   Interaction section's "avoid animating layout properties" guidance (that's
+   about width/height). Wrapped in `@media (hover: hover)` so touch devices
+   (no real :hover state) don't get a "stuck" post-tap scale, same convention
+   UploadPage.module.css's Dropzone hover rule already uses. */
+.paginationButton {
+  transition: transform 150ms ease;
+}
+
+@media (hover: hover) {
+  .paginationButton:hover {
+    transform: scale(1.05);
+  }
+}
+
+/* The persistent divider between adjacent chunks - idle, it's a quiet strip
+   (just enough to read as "there's a seam here, and it's grabbable") rather
+   than competing visually with the chunk content above/below it. Hover and
+   keyboard-focus both highlight to signalBlue - this app's documented
+   "default interactive color" (see design-principles.md's Color & Theming),
+   not the sparkOrange signature mark, since resizing a boundary is an
+   unrelated concept from "this chunk has unsaved edits" (the mark's actual
+   meaning). cursor: row-resize signals the drag direction (vertical). */
+.boundaryHandle {
+  padding: 2px 0;
+  color: var(--doc-text-muted);
+  cursor: row-resize;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.boundaryHandle:hover,
+.boundaryHandle:focus-visible {
+  color: var(--mantine-color-signalBlue-6);
+  background-color: rgba(61, 107, 255, 0.08);
+  outline: none;
+}

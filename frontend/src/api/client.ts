@@ -7,7 +7,7 @@ export interface ApiClient {
   uploadDocument(file: File, overwrite?: boolean): Promise<DocumentSummary>
   deleteDocument(documentId: string): Promise<void>
   getChunks(documentId: string): Promise<Chunk[]>
-  saveChunks(documentId: string, chunks: Chunk[]): Promise<void>
+  saveChunks(documentId: string, chunks: Chunk[], manualBoundaries?: boolean): Promise<void>
   listChatMessages(): Promise<ChatMessage[]>
   sendChatMessage(content: string): Promise<ChatMessage>
   dislikeMessage(messageId: string): Promise<void>

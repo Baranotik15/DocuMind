@@ -178,6 +178,22 @@ describe('httpApiClient', () => {
     expect(JSON.parse(init.body as string)).toEqual({ chunks: [{ editedContent: 'a edited' }] })
   })
 
+  it('saveChunks includes manualBoundaries: true in the body only when the third arg is explicitly true', async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(202))
+    const chunks: Chunk[] = [
+      { id: 'chunk-1', documentId: 'doc-1', originalContent: 'a', editedContent: 'a edited', isDirty: true },
+    ]
+
+    const { httpApiClient } = await import('./httpClient')
+    await httpApiClient.saveChunks('doc-1', chunks, true)
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init.body as string)).toEqual({
+      chunks: [{ editedContent: 'a edited' }],
+      manualBoundaries: true,
+    })
+  })
+
   it('saveChunks rejects with ApiConflictError(document_processing) on a 409', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'document_processing' }, 409))
     const chunks: Chunk[] = [

@@ -97,15 +97,24 @@ export const httpApiClient: ApiClient = {
     return requestJson(`/internal/documents/${documentId}/chunks`, { method: 'GET' })
   },
 
-  saveChunks(documentId, chunks) {
-    const body = JSON.stringify({
+  saveChunks(documentId, chunks, manualBoundaries) {
+    // manualBoundaries only appears in the body when explicitly true - same
+    // "add an optional parameter, omit it by default" pattern as
+    // uploadDocument's `overwrite`, so an ordinary Save (no boundary ever
+    // dragged this session) is byte-for-byte identical to the request this
+    // endpoint has always sent, and the backend's existing default
+    // (`manualBoundaries: false` = full algorithmic re-chunk) is untouched.
+    const payload: { chunks: { editedContent: string }[]; manualBoundaries?: true } = {
       chunks: chunks.map((chunk: Chunk) => ({ editedContent: chunk.editedContent })),
-    })
+    }
+    if (manualBoundaries === true) {
+      payload.manualBoundaries = true
+    }
 
     return requestVoid(`/internal/documents/${documentId}/chunks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body,
+      body: JSON.stringify(payload),
     })
   },
 

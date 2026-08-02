@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.db_sync import SyncSessionLocal
+from app.pipeline import DocumentProcessingError
 
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 
@@ -199,6 +200,132 @@ def test_post_chunks_while_already_chunking_returns_409_same_detail(
         assert response.status_code == 409
         assert response.json()["detail"] == "document_processing"
         assert _document_status(document_id) == "chunking"
+        assert _chunk_rows(document_id) == before
+    finally:
+        _cleanup(document_id)
+
+
+def test_post_chunks_with_manual_boundaries_skips_rechunk_and_saves_exact_chunks(
+    client: TestClient,
+) -> None:
+    document_id = _insert_document(status="ready")
+    try:
+        _insert_chunk(document_id, 0, "stale original", "stale edited")
+
+        # No blank-line paragraph separators between these, and well under
+        # the 1500-char max_chars limit - if the algorithmic splitter ran
+        # over the joined text, it would collapse into a single chunk.
+        # Getting back exactly 3 chunks, matching this list verbatim,
+        # proves the algorithm was skipped.
+        manual_chunks = [
+            "Manually placed chunk one.",
+            "Manually placed chunk two.",
+            "Manually placed chunk three.",
+        ]
+        with patch(
+            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            response = client.post(
+                f"/internal/documents/{document_id}/chunks",
+                json={
+                    "chunks": [
+                        {"editedContent": part} for part in manual_chunks
+                    ],
+                    "manualBoundaries": True,
+                },
+            )
+
+        assert response.status_code == 202
+        assert response.content == b""
+
+        # Celery is eager, so the re-chunk pipeline has already run inline
+        # by the time the response comes back.
+        assert _document_status(document_id) == "ready"
+
+        rows = _chunk_rows(document_id)
+        assert [row.edited_content for row in rows] == manual_chunks
+        assert [row.original_content for row in rows] == manual_chunks
+    finally:
+        _cleanup(document_id)
+
+
+def test_post_chunks_with_manual_boundaries_on_uploaded_document_returns_409(
+    client: TestClient,
+) -> None:
+    document_id = _insert_document(status="uploaded")
+    try:
+        _insert_chunk(document_id, 0, "leftover original", "leftover edited")
+        before = _chunk_rows(document_id)
+
+        response = client.post(
+            f"/internal/documents/{document_id}/chunks",
+            json={
+                "chunks": [{"editedContent": "new content"}],
+                "manualBoundaries": True,
+            },
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "document_processing"
+        assert _document_status(document_id) == "uploaded"
+        assert _chunk_rows(document_id) == before
+    finally:
+        _cleanup(document_id)
+
+
+def test_post_chunks_with_manual_boundaries_while_already_chunking_returns_409(
+    client: TestClient,
+) -> None:
+    document_id = _insert_document(status="ready")
+    try:
+        _insert_chunk(document_id, 0, "in-flight original", "in-flight edited")
+        _force_status(document_id, "chunking")
+        before = _chunk_rows(document_id)
+
+        response = client.post(
+            f"/internal/documents/{document_id}/chunks",
+            json={
+                "chunks": [{"editedContent": "should not apply"}],
+                "manualBoundaries": True,
+            },
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "document_processing"
+        assert _document_status(document_id) == "chunking"
+        assert _chunk_rows(document_id) == before
+    finally:
+        _cleanup(document_id)
+
+
+def test_post_chunks_with_manual_boundaries_failing_embedding_marks_document_failed(
+    client: TestClient,
+) -> None:
+    document_id = _insert_document(status="ready")
+    try:
+        _insert_chunk(
+            document_id, 0, "pre-existing original", "pre-existing edited"
+        )
+        before = _chunk_rows(document_id)
+
+        failing_embed_texts = AsyncMock(side_effect=RuntimeError("embedding API down"))
+        with patch("app.pipeline.embed_texts", new=failing_embed_texts):
+            # Celery is eager with task_eager_propagates=True (project-wide
+            # convention, see test_tasks.py), so the task runs inline
+            # inside .delay() and its DocumentProcessingError propagates
+            # straight out through this synchronous call - the endpoint
+            # never gets a chance to return a response. What matters is
+            # the terminal DB state mark_document_failed leaves behind.
+            with pytest.raises(DocumentProcessingError):
+                client.post(
+                    f"/internal/documents/{document_id}/chunks",
+                    json={
+                        "chunks": [{"editedContent": "new chunk that fails to embed"}],
+                        "manualBoundaries": True,
+                    },
+                )
+
+        assert _document_status(document_id) == "failed"
         assert _chunk_rows(document_id) == before
     finally:
         _cleanup(document_id)

@@ -25,6 +25,15 @@ class ChunkIn(BaseModel):
 
 class SaveChunksRequest(BaseModel):
     chunks: list[ChunkIn]
+    manualBoundaries: bool = False
+    # True when the operator manually dragged at least one chunk boundary
+    # during the current editing session (see
+    # .claude/specs/manual-chunk-boundaries.md) - `chunks` is then treated
+    # as the final, authoritative chunk list and the algorithmic re-split
+    # is skipped entirely; every chunk is embedded exactly as given.
+    # Defaults to False, which is exactly today's behavior: full text
+    # reconstruction (`"".join(...)`) followed by a full algorithmic
+    # re-chunk.
 
 # Mirrors app.documents.extract_text's supported extension set - kept as a
 # local constant (rather than importing that module's private set) so this
@@ -250,16 +259,25 @@ async def save_chunks(
 
     await session.commit()
 
-    # Request array order IS document order, as sent by the frontend - not
-    # re-sorted here.
-    source_text = "".join(chunk.editedContent for chunk in body.chunks)
-
     # See upload_document's comment above on why .delay() must be run via
     # asyncio.to_thread under Celery-eager test mode: run_document_pipeline
     # internally does asyncio.run(embed_texts(...)), which cannot be called
     # from a thread whose event loop is already running - which this
     # coroutine's thread's is.
-    await asyncio.to_thread(run_document_pipeline.delay, document_id, source_text)
+    if body.manualBoundaries:
+        # The operator manually dragged at least one chunk boundary this
+        # session - `body.chunks` IS the final chunk list, in order; skip
+        # the algorithmic re-split entirely and embed each chunk exactly
+        # as given, none re-split, none merged.
+        manual_chunks = [chunk.editedContent for chunk in body.chunks]
+        await asyncio.to_thread(
+            run_document_pipeline.delay, document_id, manual_chunks=manual_chunks
+        )
+    else:
+        # Request array order IS document order, as sent by the frontend -
+        # not re-sorted here.
+        source_text = "".join(chunk.editedContent for chunk in body.chunks)
+        await asyncio.to_thread(run_document_pipeline.delay, document_id, source_text)
 
     # Returned as a bare Response (rather than `None`) so the body is
     # truly empty, per the spec's "return 202 with no body" - FastAPI would
