@@ -1,8 +1,8 @@
-import type { JSX, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react'
+import type { CSSProperties, JSX, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, Textarea, Title } from '@mantine/core'
+import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, Textarea, TextInput, Title } from '@mantine/core'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import classes from './ChunkPreviewPage.module.css'
@@ -38,6 +38,27 @@ const PAGE_CHAR_LIMIT = 15000
 // DOM geometry, so it can be exercised with plain simulated mouse events in
 // tests without jsdom's layout limitations getting in the way.
 const BOUNDARY_DRAG_LINE_HEIGHT_PX = 28
+
+// Shared between a chunk's always-mounted, editable Textarea and its
+// read-only highlight backdrop sitting directly behind it (see the chunk
+// rendering below) - identical font metrics/padding/whitespace handling on
+// BOTH is what keeps every character's on-screen position aligned between
+// the two layers, which is what makes the backdrop's <mark> highlights
+// (every search match, not just the current one - see the component-level
+// comment on why a plain <textarea> can't show that on its own) line up
+// with the real glyphs the Textarea is rendering, with a transparent fill
+// color, directly on top of them.
+const CHUNK_TEXT_LAYER_STYLE: CSSProperties = {
+  fontFamily: 'var(--mantine-font-family-monospace)',
+  fontSize: 'var(--mantine-font-size-lg)',
+  lineHeight: 1.55,
+  padding: 0,
+  margin: 0,
+  border: 'none',
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'break-word',
+  boxSizing: 'border-box',
+}
 
 /**
  * Pure math for the Split tool's hover preview: given where the mouse sits
@@ -102,6 +123,82 @@ function applyBoundaryDrag(chunks: Chunk[], upperChunkId: string, lowerChunkId: 
   next[upperIndex] = { ...next[upperIndex], editedContent: newUpperText, isDirty: true }
   next[lowerIndex] = { ...next[lowerIndex], editedContent: newLowerText, isDirty: true }
   return next
+}
+
+interface SearchMatch {
+  chunkId: string
+  start: number
+  end: number
+}
+
+/**
+ * Finds every case-insensitive occurrence of `query` across all chunks, in
+ * document reading order - powers the search box's live match count and its
+ * Previous/Next navigation. A blank (or whitespace-only) query always
+ * returns no matches, rather than matching every zero-width gap. Kept as a
+ * plain, chunk-array-in/matches-out pure function (like
+ * applyBoundaryDrag/computeSplitLineIndex above) so the search input's
+ * onChange handler can call it synchronously with the freshly-typed value,
+ * without needing an effect to react to it a render later.
+ */
+function findSearchMatches(chunksToSearch: Chunk[], query: string): SearchMatch[] {
+  const trimmedQuery = query.trim()
+  if (!trimmedQuery) {
+    return []
+  }
+  const lowerQuery = trimmedQuery.toLowerCase()
+  const matches: SearchMatch[] = []
+  for (const chunk of chunksToSearch) {
+    const lowerText = chunk.editedContent.toLowerCase()
+    let fromIndex = 0
+    while (fromIndex <= lowerText.length) {
+      const foundAt = lowerText.indexOf(lowerQuery, fromIndex)
+      if (foundAt === -1) {
+        break
+      }
+      matches.push({ chunkId: chunk.id, start: foundAt, end: foundAt + trimmedQuery.length })
+      fromIndex = foundAt + trimmedQuery.length
+    }
+  }
+  return matches
+}
+
+interface HighlightSegment {
+  text: string
+  isMatch: boolean
+  isCurrent: boolean
+}
+
+/**
+ * Splits `text` into alternating plain/matched segments for rendering as
+ * plain text and <mark> elements - `chunkMatches` must already be scoped to
+ * THIS one chunk's own text (start/end offsets relative to it, not the
+ * global searchMatches array), sorted and non-overlapping, which is exactly
+ * what findSearchMatches already guarantees per chunk. Used identically by
+ * both the main chunk text's highlight backdrop and the minimap's own
+ * miniature copy, so every match is visually marked in both places, not
+ * just wherever the current one happens to be focused.
+ */
+function splitTextForHighlighting(
+  text: string,
+  chunkMatches: { start: number; end: number; isCurrent: boolean }[],
+): HighlightSegment[] {
+  if (chunkMatches.length === 0) {
+    return [{ text, isMatch: false, isCurrent: false }]
+  }
+  const segments: HighlightSegment[] = []
+  let cursor = 0
+  for (const match of chunkMatches) {
+    if (match.start > cursor) {
+      segments.push({ text: text.slice(cursor, match.start), isMatch: false, isCurrent: false })
+    }
+    segments.push({ text: text.slice(match.start, match.end), isMatch: true, isCurrent: match.isCurrent })
+    cursor = match.end
+  }
+  if (cursor < text.length) {
+    segments.push({ text: text.slice(cursor), isMatch: false, isCurrent: false })
+  }
+  return segments
 }
 
 /** Hand-rolled back-arrow glyph - no icon library installed (see design-principles.md). */
@@ -170,6 +267,34 @@ function RedoIcon(): JSX.Element {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <polyline points="15 14 20 9 15 4" />
       <path d="M4 20v-7a4 4 0 0 1 4-4h12" />
+    </svg>
+  )
+}
+
+/** Hand-rolled magnifying-glass glyph for the search field - no icon library installed (see design-principles.md). */
+function SearchIcon(): JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+
+/** Hand-rolled chevron glyphs for the search box's Previous/Next-match buttons - no icon library installed (see design-principles.md). */
+function ChevronLeftIcon(): JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  )
+}
+
+/** See ChevronLeftIcon above. */
+function ChevronRightIcon(): JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <polyline points="9 18 15 12 9 6" />
     </svg>
   )
 }
@@ -278,6 +403,18 @@ export function ChunkPreviewPage(): JSX.Element {
   // next keystroke anywhere starts a fresh entry) on blur or on switching to
   // a different chunk - see handleChunkTextChange and the Textarea's onBlur.
   const typingRunChunkIdRef = useRef<string | null>(null)
+  // Whole-document text search state - see findSearchMatches/searchMatches
+  // below for the matching itself. `currentMatchIndex` is always kept
+  // in-range by goToSearchMatch's own wraparound math whenever it changes
+  // the index; `pendingMatchFocus` is the one match (if any) that still
+  // needs its Textarea actually focused/selected once mounted - see the
+  // effect below, which is why this is separate state rather than doing
+  // the focus/select call directly inline wherever a match is chosen (the
+  // target chunk may be on a different pagination page that hasn't
+  // rendered - and therefore has no ref - yet).
+  const [searchQuery, setSearchQuery] = useState('')
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0)
+  const [pendingMatchFocus, setPendingMatchFocus] = useState<SearchMatch | null>(null)
   const [viewport, setViewport] = useState({ topPct: 0, heightPct: 100 })
   const scrollRef = useRef<HTMLDivElement>(null)
   const minimapRef = useRef<HTMLDivElement>(null)
@@ -319,6 +456,34 @@ export function ChunkPreviewPage(): JSX.Element {
   // keyboard navigation without changing that per-chunk structure.
   const chunkTextareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map())
 
+  // This page's own root Stack is deliberately fixed-height (`calc(100dvh -
+  // ...)` below) with exactly one scrollable region inside it (the text
+  // column, via `scrollRef`) - it manages its own scrolling entirely and was
+  // never meant to let the outer page/body scroll too. In practice, though,
+  // a focus/selection change on a chunk's Textarea (see the
+  // pendingMatchFocus effect below, used by the search box's Next/Prev) can
+  // still nudge an OUTER ancestor's scroll position as a side effect of the
+  // browser's own native "keep the caret visible" behavior, which isn't
+  // fully suppressed by `preventScroll` on `.focus()` alone (see
+  // focusChunkCaret's own comment for another documented instance of this
+  // same browser quirk) - the visible symptom was stray scrollbars
+  // appearing along the bottom/right of the whole app. Locking body/html
+  // overflow while this page is mounted makes that structurally impossible
+  // regardless of the exact trigger, rather than chasing every individual
+  // native auto-scroll call site - restored on unmount so other pages (e.g.
+  // Upload's document table) that DO rely on ordinary page-level scrolling
+  // are unaffected.
+  useEffect(() => {
+    const previousBodyOverflow = document.body.style.overflow
+    const previousHtmlOverflow = document.documentElement.style.overflow
+    document.body.style.overflow = 'hidden'
+    document.documentElement.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousBodyOverflow
+      document.documentElement.style.overflow = previousHtmlOverflow
+    }
+  }, [])
+
   useEffect(() => {
     if (!documentId) {
       return
@@ -333,6 +498,9 @@ export function ChunkPreviewPage(): JSX.Element {
     setPast([])
     setFuture([])
     typingRunChunkIdRef.current = null
+    setSearchQuery('')
+    setCurrentMatchIndex(0)
+    setPendingMatchFocus(null)
   }, [documentId])
 
   // Groups chunks into pages so no single page holds more than
@@ -367,6 +535,89 @@ export function ChunkPreviewPage(): JSX.Element {
     chunks.forEach((chunk, index) => map.set(chunk.id, HIGHLIGHT_COLORS[index % HIGHLIGHT_COLORS.length]))
     return map
   }, [chunks])
+  // Each chunk's 1-based position in the WHOLE document (not its position
+  // within the current page), for the small "Chunk N" label on each chunk -
+  // same whole-document-derived-from-`chunks` shape as colorByChunkId, so a
+  // chunk's number stays stable across pagination just like its color does.
+  const chunkNumberByChunkId = useMemo(() => {
+    const map = new Map<string, number>()
+    chunks.forEach((chunk, index) => map.set(chunk.id, index + 1))
+    return map
+  }, [chunks])
+
+  // Every match of the current search query across the WHOLE document (not
+  // just this page - see findSearchMatches's own comment), recomputed live
+  // as either the query or the document's own text changes.
+  const searchMatches = useMemo(() => findSearchMatches(chunks, searchQuery), [chunks, searchQuery])
+  // Which page each chunk currently lives on, so Next/Prev match can flip
+  // `pageIndex` to whatever page a target match is actually on before
+  // asking to focus it - mirrors colorByChunkId's own
+  // whole-document-derived-from-`chunks` shape, just keyed to page index
+  // instead of color.
+  const pageIndexByChunkId = useMemo(() => {
+    const map = new Map<string, number>()
+    pages.forEach((pageChunkList, index) => {
+      for (const chunk of pageChunkList) {
+        map.set(chunk.id, index)
+      }
+    })
+    return map
+  }, [pages])
+  // Groups searchMatches by chunk (with each match's offsets already
+  // relative to that one chunk's own text, matching splitTextForHighlighting's
+  // expected shape) and flags whichever one is the globally-current match -
+  // feeds both the main chunk text's highlight backdrop and the minimap's
+  // own copy below, so every match is marked in both, not just the current
+  // one. `currentMatchIndex` is clamped defensively (mirrors the match-count
+  // label's own clamping) in case it's briefly stale relative to a
+  // `searchMatches` that just changed size from an edit elsewhere on the
+  // page, without the search query itself having changed.
+  const matchesByChunkId = useMemo(() => {
+    const map = new Map<string, { start: number; end: number; isCurrent: boolean }[]>()
+    if (searchMatches.length === 0) {
+      return map
+    }
+    const clampedCurrentIndex = Math.min(currentMatchIndex, searchMatches.length - 1)
+    searchMatches.forEach((match, index) => {
+      const list = map.get(match.chunkId) ?? []
+      list.push({ start: match.start, end: match.end, isCurrent: index === clampedCurrentIndex })
+      map.set(match.chunkId, list)
+    })
+    return map
+  }, [searchMatches, currentMatchIndex])
+  // Proportional vertical positions (0-100%) of every search match on the
+  // CURRENT page, for the minimap's own small marker dashes below - NOT
+  // rendered as <mark> highlights within the minimap's own mini-text like
+  // the main chunk text is, deliberately: that mini-text is already
+  // documented as "decorative only" (illegible at ~4px), and a
+  // single-word-sized highlight shrinks to a sub-pixel sliver inside a
+  // long chunk's proportionally tiny share of the minimap's height,
+  // effectively invisible regardless of color - the exact bug just
+  // reported live. A dedicated marker at a known percentage position,
+  // sized independently of how long its chunk's own text happens to be, is
+  // the same "overview ruler" technique code editors use for this exact
+  // scale problem. Math mirrors how each chunk's own minimap height is
+  // proportional to `chunk.editedContent.length || 1` (see the minimap's
+  // chunk-Box rendering) - a match's position is its chunk's cumulative
+  // preceding share of the page's total length, plus its own fractional
+  // offset within that one chunk's share.
+  const searchMatchMarkers = useMemo(() => {
+    const totalLength = pageChunks.reduce((sum, chunk) => sum + (chunk.editedContent.length || 1), 0)
+    if (totalLength === 0) {
+      return []
+    }
+    const markers: { topPct: number; isCurrent: boolean }[] = []
+    let cumulative = 0
+    for (const chunk of pageChunks) {
+      const chunkLength = chunk.editedContent.length || 1
+      for (const match of matchesByChunkId.get(chunk.id) ?? []) {
+        const withinChunkFraction = chunk.editedContent.length > 0 ? match.start / chunk.editedContent.length : 0
+        markers.push({ topPct: ((cumulative + withinChunkFraction * chunkLength) / totalLength) * 100, isCurrent: match.isCurrent })
+      }
+      cumulative += chunkLength
+    }
+    return markers
+  }, [pageChunks, matchesByChunkId])
 
   // Tracks how much of the text column is currently visible, so the
   // minimap can show a "you are here" rectangle - recomputed on every
@@ -423,6 +674,49 @@ export function ChunkPreviewPage(): JSX.Element {
     event.preventDefault()
     scrollEl.scrollTop += event.deltaY
     updateViewport()
+  }
+
+  // Live-updates the query and, as soon as there's at least one match,
+  // immediately targets the FIRST one for focus/selection - so typing a
+  // query gives instant feedback about where it was found, the same
+  // "highlight as you type" feel Ctrl+F search boxes have, without waiting
+  // for an explicit Next click. Computes matches synchronously here
+  // (rather than reading the `searchMatches` memo, which reflects the
+  // PREVIOUS render's query until this one commits) so the very first
+  // keystroke that produces a match jumps to it immediately, not one
+  // keystroke later.
+  function handleSearchQueryChange(value: string): void {
+    setSearchQuery(value)
+    const matches = findSearchMatches(chunks, value)
+    setCurrentMatchIndex(0)
+    setPendingMatchFocus(matches[0] ?? null)
+  }
+
+  // Moves to `rawIndex` (wrapped into range, so stepping past either end
+  // cycles to the other), switches to that match's page if it isn't the
+  // one currently showing, and queues it for focus/selection - see the
+  // pendingMatchFocus effect below for why the actual DOM focus call has to
+  // happen separately rather than right here.
+  function goToSearchMatch(rawIndex: number): void {
+    if (searchMatches.length === 0) {
+      return
+    }
+    const nextIndex = ((rawIndex % searchMatches.length) + searchMatches.length) % searchMatches.length
+    setCurrentMatchIndex(nextIndex)
+    const match = searchMatches[nextIndex]
+    const targetPage = pageIndexByChunkId.get(match.chunkId)
+    if (targetPage !== undefined && targetPage !== pageIndex) {
+      setPageIndex(targetPage)
+    }
+    setPendingMatchFocus(match)
+  }
+
+  function handleSearchNext(): void {
+    goToSearchMatch(currentMatchIndex + 1)
+  }
+
+  function handleSearchPrev(): void {
+    goToSearchMatch(currentMatchIndex - 1)
   }
 
   // Records `previousChunks` (chunks as they stood right before a change
@@ -524,6 +818,56 @@ export function ChunkPreviewPage(): JSX.Element {
       scrollEl.scrollTop = previousScrollTop
     }
   }
+
+  // Performs the actual focus + text-selection for whatever match Next/Prev
+  // (or a fresh search query) last targeted, once that chunk's Textarea is
+  // actually mounted. Can't just do this synchronously wherever
+  // pendingMatchFocus gets set: when the target match lives on a DIFFERENT
+  // pagination page than the one currently showing, that chunk's Textarea
+  // (and therefore its ref in chunkTextareaRefs) doesn't exist until the
+  // setPageIndex call alongside it has actually re-rendered - this effect
+  // re-runs on pageChunks too so it retries right after that page switch
+  // lands. Native text selection is deliberately how a "highlighted" match
+  // is represented here, not an inline colored <mark> - a plain <textarea>
+  // (what every chunk is, always-mounted, right through the rest of this
+  // page - see HIGHLIGHT_COLORS' own comment) has no way to render styled
+  // substrings within its own value, so only the CURRENT match is visually
+  // marked at a time, the same "one match highlighted, step through the
+  // rest" model most find-in-field UIs already use for plain text inputs.
+  //
+  // Scrolling the match into view is a manual scrollTop computation against
+  // `scrollRef` specifically (the same technique handleMinimapClick already
+  // uses), NOT the native `el.scrollIntoView()` - that was tried first, but
+  // the browser's own algorithm doesn't confine itself to this one
+  // designated scroll container: it walks up and scrolls whichever
+  // ancestors it thinks are necessary, which reached the outer AppShell/
+  // page layout too and made stray scrollbars appear along the bottom/side
+  // of the whole app on every Next/Prev click - this page's layout is
+  // deliberately fixed-height with exactly one scrollable region (see the
+  // root Stack's `height: calc(...)` and the hidden native scrollbar in
+  // ChunkPreviewPage.module.css), so scrolling has to stay scoped to that
+  // one element.
+  useEffect(() => {
+    if (!pendingMatchFocus) {
+      return
+    }
+    const el = chunkTextareaRefs.current.get(pendingMatchFocus.chunkId)
+    const scrollEl = scrollRef.current
+    if (!el) {
+      return
+    }
+    el.focus({ preventScroll: true })
+    el.setSelectionRange(pendingMatchFocus.start, pendingMatchFocus.end)
+    if (scrollEl) {
+      const elRect = el.getBoundingClientRect()
+      const scrollRect = scrollEl.getBoundingClientRect()
+      const elTopWithinScroll = elRect.top - scrollRect.top + scrollEl.scrollTop
+      const centeredScrollTop = elTopWithinScroll - (scrollEl.clientHeight - elRect.height) / 2
+      scrollEl.scrollTop = Math.max(0, Math.min(centeredScrollTop, scrollEl.scrollHeight - scrollEl.clientHeight))
+      updateViewport()
+    }
+    setPendingMatchFocus(null)
+  }, [pendingMatchFocus, pageChunks])
 
   // Lets ArrowUp/Down/Left/Right cross out of the current chunk's textarea
   // into the neighboring one once the caret is already at that edge -
@@ -959,135 +1303,224 @@ export function ChunkPreviewPage(): JSX.Element {
         <Title order={2}>{filename}</Title>
       </Group>
 
-      <Text size="sm" c="dimmed">
-        This is the document as it was split into chunks. Edit any chunk's text directly, or drag a boundary to
-        resize the chunks on either side of it.
-      </Text>
+      <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
+        <Text size="sm" c="dimmed">
+          This is the document as it was split into chunks. Edit any chunk's text directly, or drag a boundary to
+          resize the chunks on either side of it.
+        </Text>
+        <Text size="sm" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+          {chunks.length} {chunks.length === 1 ? 'chunk' : 'chunks'}
+        </Text>
+      </Group>
 
-      {/* The toolbar sits inside its own small elevated Paper rather than
-          floating bare on the void page background - the same Cards/
-          Surfaces pattern as Upload's table panel and Chat's message-
-          composer Paper (surface background, hairline border via the
-          gray.3 remap, the app's default `lg` radius - see
-          design-principles.md). `alignSelf: 'flex-start'` opts this Paper
-          out of the page's outer Stack's default `align="stretch"` (every
-          other direct child - the back/title Group, this toolbar - would
-          otherwise silently stretch to the full page width; invisible for
-          a transparent Group, but would read as an oddly empty bar once
-          this has a visible surface/border), so it hugs its own content
-          instead, like a compact floating toolbar rather than a full-width
-          ribbon. The soft, bottom-weighted shadow is the same device as
-          Upload's table-panel lift, just scaled down for this much smaller
-          surface. */}
-      <Paper
-        radius="lg"
-        p="xs"
-        bg="var(--doc-surface)"
-        withBorder
-        style={{ alignSelf: 'flex-start', boxShadow: '0 10px 20px -12px rgba(0, 0, 0, 0.5)' }}
-      >
-        <Group gap="sm" wrap="nowrap">
-          {/* Undo/Redo: cover every kind of edit on this page (typing, Split,
-              Delete, boundary drag/nudge) since they all go through
-              pushHistory - see the state comment above. Disabled (not hidden)
-              at each end of the stack, matching the Save button's own
-              disabled-while-unusable convention elsewhere on this page.
-              Grouped tightly together (gap 4) since both are history
-              navigation, the same kind of action.
+      {/* The toolbar and the search field each sit inside their own small
+          elevated Paper rather than floating bare on the void page
+          background - the same Cards/Surfaces pattern as Upload's table
+          panel and Chat's message-composer Paper (surface background,
+          hairline border via the gray.3 remap, the app's default `lg`
+          radius - see design-principles.md). Wrapping both in this Group
+          (rather than each being its own direct Stack child) lets
+          `justify="space-between"` push the search Paper to the row's
+          right edge while the toolbar Paper hugs the left - the Group
+          itself, as a direct Stack child, still stretches to the page's
+          full width via the Stack's default `align="stretch"` (same
+          mechanism the toolbar Paper used to opt out of on its own via
+          `alignSelf: 'flex-start'` before the search field gave this row a
+          second thing to actually push against). `wrap="wrap"` (Group's
+          own default) lets the search Paper drop to its own line on
+          narrow viewports instead of squeezing the row. */}
+      <Group justify="space-between" gap="sm">
+        {/* The soft, bottom-weighted shadow on both Papers below is the
+            same device as Upload's table-panel lift, just scaled down for
+            this much smaller surface. */}
+        <Paper radius="lg" p="xs" bg="var(--doc-surface)" withBorder style={{ boxShadow: '0 10px 20px -12px rgba(0, 0, 0, 0.5)' }}>
+          <Group gap="sm" wrap="nowrap">
+            {/* Undo/Redo: cover every kind of edit on this page (typing, Split,
+                Delete, boundary drag/nudge) since they all go through
+                pushHistory - see the state comment above. Disabled (not hidden)
+                at each end of the stack, matching the Save button's own
+                disabled-while-unusable convention elsewhere on this page.
+                Grouped tightly together (gap 4) since both are history
+                navigation, the same kind of action.
 
-              Deliberately quieter than Split/Delete right next to them: at
-              rest, these read as plain icon-only glyphs pinned to the same
-              muted token Upload's SortIcon/ClearIcon use for their own idle
-              affordances (`var(--doc-text-muted)`, via the `historyButton`
-              class below), accenting to signalBlue only on hover - not the
-              bright accent color at rest. Two adjacent saturated-signalBlue
-              circles here would've read as one loud "blue blob" even though
-              each individually matched Split/Delete's own idle styling.
-              `variant="transparent"` (not "subtle") is deliberate too:
-              Mantine documents "transparent" as never applying a background,
-              even on hover, which is a stronger guarantee than "subtle"
-              tinting to a background of `transparent` via variant-color
-              resolution that a wrapping context could still perturb - see
-              `historyButton`'s own comment in ChunkPreviewPage.module.css for
-              the concrete mechanism (unrelated to `subtle` itself) that was
-              actually causing these two, and only these two, to render as
-              solid filled circles. No explicit `color` prop - the
-              `historyButton` class is the single source of truth for this
-              pair's color in every state (idle/hover/disabled), so there's
-              no unused/overridden prop left sitting on the element. */}
-          <Group gap={4} wrap="nowrap">
+                Deliberately quieter than Split/Delete right next to them: at
+                rest, these read as plain icon-only glyphs pinned to the same
+                muted token Upload's SortIcon/ClearIcon use for their own idle
+                affordances (`var(--doc-text-muted)`, via the `historyButton`
+                class below), accenting to signalBlue only on hover - not the
+                bright accent color at rest. Two adjacent saturated-signalBlue
+                circles here would've read as one loud "blue blob" even though
+                each individually matched Split/Delete's own idle styling.
+                `variant="transparent"` (not "subtle") is deliberate too:
+                Mantine documents "transparent" as never applying a background,
+                even on hover, which is a stronger guarantee than "subtle"
+                tinting to a background of `transparent` via variant-color
+                resolution that a wrapping context could still perturb - see
+                `historyButton`'s own comment in ChunkPreviewPage.module.css for
+                the concrete mechanism (unrelated to `subtle` itself) that was
+                actually causing these two, and only these two, to render as
+                solid filled circles. No explicit `color` prop - the
+                `historyButton` class is the single source of truth for this
+                pair's color in every state (idle/hover/disabled), so there's
+                no unused/overridden prop left sitting on the element. */}
+            <Group gap={4} wrap="nowrap">
+              <ActionIcon
+                aria-label="Undo"
+                title="Undo (Ctrl+Z)"
+                variant="transparent"
+                size="lg"
+                disabled={past.length === 0}
+                onClick={handleUndo}
+                className={`${classes.toolbarButton} ${classes.historyButton}`}
+              >
+                <UndoIcon />
+              </ActionIcon>
+              <ActionIcon
+                aria-label="Redo"
+                title="Redo (Ctrl+Shift+Z)"
+                variant="transparent"
+                size="lg"
+                disabled={future.length === 0}
+                onClick={handleRedo}
+                className={`${classes.toolbarButton} ${classes.historyButton}`}
+              >
+                <RedoIcon />
+              </ActionIcon>
+            </Group>
+
+            {/* Purely decorative separator between the history controls and
+                the destructive/structural chunk-editing tools - a plain
+                hairline-colored Box, NOT Mantine's `Divider` component: Divider
+                renders `role="separator"`, which would collide with the
+                BoundaryHandle's own (semantically meaningful, keyboard-
+                operable) `role="separator"` elsewhere on this page and break
+                its `getByRole('separator')`/`getAllByRole('separator')`
+                assertions in ChunkPreviewPage.test.tsx. `aria-hidden` keeps it
+                out of the accessibility tree entirely, matching this file's
+                existing convention for decorative-only elements. */}
+            <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
+
+            {/* Split/Delete tools: click to arm (persists across multiple uses -
+                see handleToolButtonClick), then click a chunk to commit. Bold/
+                filled while armed so it's obvious which tool (if any) is
+                currently active, matching the pressed-state convention Save/
+                Cancel already use for their own states elsewhere on this page.
+                Grouped tightly together (gap 4) as the other conceptual pair -
+                structural/destructive chunk edits, distinct from history
+                navigation. */}
+            <Group gap={4} wrap="nowrap">
+              <ActionIcon
+                aria-label="Split chunk"
+                aria-pressed={activeTool === 'cut'}
+                title="Split chunk - click a chunk to cut it in two"
+                variant={activeTool === 'cut' ? 'filled' : 'subtle'}
+                color="signalBlue"
+                size="lg"
+                onClick={() => handleToolButtonClick('cut')}
+                className={classes.toolbarButton}
+              >
+                <ScissorsIcon />
+              </ActionIcon>
+              <ActionIcon
+                aria-label="Delete chunk"
+                aria-pressed={activeTool === 'delete'}
+                title="Delete chunk - click a chunk to merge it into a neighboring chunk"
+                variant={activeTool === 'delete' ? 'filled' : 'subtle'}
+                color="alertMagenta"
+                size="lg"
+                onClick={() => handleToolButtonClick('delete')}
+                className={classes.toolbarButton}
+              >
+                <TrashIcon />
+              </ActionIcon>
+            </Group>
+          </Group>
+        </Paper>
+
+        {/* Whole-document text search: finds every case-insensitive
+            occurrence of the typed query across ALL chunks on ALL
+            pagination pages, not just the current one (see
+            findSearchMatches/pageIndexByChunkId) - a document-wide search
+            that only searched the visible page would be far less useful,
+            so this deliberately does NOT repeat the Split/Delete tools'
+            and the boundary handle's own page-scoped Non-Goal.
+            "Highlighting" a match means giving it the browser's native
+            text selection (focus + setSelectionRange), not an inline
+            colored <mark> - see the pendingMatchFocus effect above for why
+            a plain <textarea> can't do the latter. */}
+        <Paper radius="lg" p="xs" bg="var(--doc-surface)" withBorder style={{ boxShadow: '0 10px 20px -12px rgba(0, 0, 0, 0.5)' }}>
+          <Group gap={6} wrap="nowrap">
+            {/* type="search" (not TextInput's default "text") is
+                deliberate: it gives this field the distinct `searchbox`
+                accessibility role instead of `textbox` - every chunk
+                Textarea on this page is ALSO role `textbox`, and
+                ChunkPreviewPage.test.tsx has ~100 existing assertions
+                against `getAllByRole('textbox')` to count chunks; sharing
+                that role here would have silently inflated every one of
+                those counts by one. */}
+            <TextInput
+              type="search"
+              aria-label="Search document text"
+              placeholder="Search document text..."
+              value={searchQuery}
+              onChange={(event) => handleSearchQueryChange(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') {
+                  return
+                }
+                event.preventDefault()
+                if (event.shiftKey) {
+                  handleSearchPrev()
+                } else {
+                  handleSearchNext()
+                }
+              }}
+              leftSection={<SearchIcon />}
+              size="sm"
+              w={220}
+              // Same fix as Upload's own filter field (see design-principles.md):
+              // Mantine's default light-scheme input background/text washes out
+              // against this app's dark theme without an explicit override.
+              styles={{
+                input: {
+                  backgroundColor: 'var(--doc-void)',
+                  color: 'var(--doc-text)',
+                  border: '1px solid var(--doc-hairline)',
+                },
+              }}
+            />
+            <Text size="sm" c="dimmed" style={{ whiteSpace: 'nowrap', minWidth: '4.5ch' }}>
+              {searchQuery.trim()
+                ? searchMatches.length > 0
+                  ? `${Math.min(currentMatchIndex + 1, searchMatches.length)} / ${searchMatches.length}`
+                  : 'No matches'
+                : ''}
+            </Text>
             <ActionIcon
-              aria-label="Undo"
-              title="Undo (Ctrl+Z)"
+              aria-label="Previous match"
+              title="Previous match (Shift+Enter)"
               variant="transparent"
               size="lg"
-              disabled={past.length === 0}
-              onClick={handleUndo}
+              disabled={searchMatches.length === 0}
+              onClick={handleSearchPrev}
               className={`${classes.toolbarButton} ${classes.historyButton}`}
             >
-              <UndoIcon />
+              <ChevronLeftIcon />
             </ActionIcon>
             <ActionIcon
-              aria-label="Redo"
-              title="Redo (Ctrl+Shift+Z)"
+              aria-label="Next match"
+              title="Next match (Enter)"
               variant="transparent"
               size="lg"
-              disabled={future.length === 0}
-              onClick={handleRedo}
+              disabled={searchMatches.length === 0}
+              onClick={handleSearchNext}
               className={`${classes.toolbarButton} ${classes.historyButton}`}
             >
-              <RedoIcon />
+              <ChevronRightIcon />
             </ActionIcon>
           </Group>
-
-          {/* Purely decorative separator between the history controls and
-              the destructive/structural chunk-editing tools - a plain
-              hairline-colored Box, NOT Mantine's `Divider` component: Divider
-              renders `role="separator"`, which would collide with the
-              BoundaryHandle's own (semantically meaningful, keyboard-
-              operable) `role="separator"` elsewhere on this page and break
-              its `getByRole('separator')`/`getAllByRole('separator')`
-              assertions in ChunkPreviewPage.test.tsx. `aria-hidden` keeps it
-              out of the accessibility tree entirely, matching this file's
-              existing convention for decorative-only elements. */}
-          <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
-
-          {/* Split/Delete tools: click to arm (persists across multiple uses -
-              see handleToolButtonClick), then click a chunk to commit. Bold/
-              filled while armed so it's obvious which tool (if any) is
-              currently active, matching the pressed-state convention Save/
-              Cancel already use for their own states elsewhere on this page.
-              Grouped tightly together (gap 4) as the other conceptual pair -
-              structural/destructive chunk edits, distinct from history
-              navigation. */}
-          <Group gap={4} wrap="nowrap">
-            <ActionIcon
-              aria-label="Split chunk"
-              aria-pressed={activeTool === 'cut'}
-              title="Split chunk - click a chunk to cut it in two"
-              variant={activeTool === 'cut' ? 'filled' : 'subtle'}
-              color="signalBlue"
-              size="lg"
-              onClick={() => handleToolButtonClick('cut')}
-              className={classes.toolbarButton}
-            >
-              <ScissorsIcon />
-            </ActionIcon>
-            <ActionIcon
-              aria-label="Delete chunk"
-              aria-pressed={activeTool === 'delete'}
-              title="Delete chunk - click a chunk to merge it into a neighboring chunk"
-              variant={activeTool === 'delete' ? 'filled' : 'subtle'}
-              color="alertMagenta"
-              size="lg"
-              onClick={() => handleToolButtonClick('delete')}
-              className={classes.toolbarButton}
-            >
-              <TrashIcon />
-            </ActionIcon>
-          </Group>
-        </Group>
-      </Paper>
+        </Paper>
+      </Group>
 
       {isBusy ? (
         <Alert color="alertMagenta" variant="light" radius="lg" title="Still processing">
@@ -1112,17 +1545,29 @@ export function ChunkPreviewPage(): JSX.Element {
                   {/* Each chunk is its own always-mounted, always-editable,
                       always-colored block - nothing about its appearance
                       changes on click/focus, only where the text cursor is.
-                      variant="unstyled" plus a transparent background keeps
-                      the Textarea visually identical to plain text sitting
-                      directly on the colored Box - no border, no separate
-                      "edit mode" chrome.
+
+                      Two overlapping text layers, sharing CHUNK_TEXT_LAYER_STYLE
+                      so every character lands in the same on-screen position in
+                      both: a plain, read-only backdrop Box (renders the text with
+                      every search match wrapped in <mark> - see
+                      splitTextForHighlighting) determines this Box's natural
+                      height, and the actual editable Textarea sits
+                      absolutely-positioned directly on top of it with a
+                      TRANSPARENT text color - the operator reads the backdrop's
+                      glyphs (and its highlights) through it, while typing/
+                      selection/focus/caret all still work normally since it's a
+                      real, fully interactive <textarea>. Without a live search
+                      query, matchesByChunkId is empty for every chunk and the
+                      backdrop just silently mirrors plain text with no visible
+                      difference from before this existed.
 
                       While a tool is armed, this Box itself takes over
                       hover/click (the Textarea gets pointer-events: none so
                       clicks/moves fall through to it instead of placing a
                       text cursor or getting swallowed) - position:
-                      'relative' so the cut-line indicator/delete overlay
-                      below can be absolutely positioned within it. */}
+                      'relative' so the highlight backdrop, cut-line indicator,
+                      and delete overlay below can be absolutely positioned
+                      within it. */}
                   <Box
                     p={0}
                     pos="relative"
@@ -1133,6 +1578,22 @@ export function ChunkPreviewPage(): JSX.Element {
                     onMouseMove={(event) => handleChunkMouseMove(event, chunk)}
                     onClick={() => handleChunkToolClick(chunk)}
                   >
+                    <Box aria-hidden="true" style={{ ...CHUNK_TEXT_LAYER_STYLE, userSelect: 'none' }}>
+                      {splitTextForHighlighting(chunk.editedContent, matchesByChunkId.get(chunk.id) ?? []).map(
+                        (segment, segmentIndex) =>
+                          segment.isMatch ? (
+                            <mark
+                              key={segmentIndex}
+                              data-current-match={segment.isCurrent ? 'true' : undefined}
+                              className={segment.isCurrent ? classes.searchMatchHighlightCurrent : classes.searchMatchHighlight}
+                            >
+                              {segment.text}
+                            </mark>
+                          ) : (
+                            <span key={segmentIndex}>{segment.text}</span>
+                          ),
+                      )}
+                    </Box>
                     <Textarea
                       ref={(el) => {
                         if (el) {
@@ -1152,11 +1613,23 @@ export function ChunkPreviewPage(): JSX.Element {
                       autosize
                       minRows={1}
                       variant="unstyled"
-                      style={{ pointerEvents: activeTool ? 'none' : undefined }}
+                      style={{ pointerEvents: activeTool ? 'none' : undefined, position: 'absolute', top: 0, left: 0, right: 0 }}
                       styles={{
                         input: {
-                          fontFamily: 'var(--mantine-font-family-monospace)',
-                          fontSize: 'var(--mantine-font-size-lg)',
+                          ...CHUNK_TEXT_LAYER_STYLE,
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          background: 'transparent',
+                          // The backdrop Box right behind this (same text,
+                          // same metrics) is what the operator actually
+                          // reads/sees highlighted - this layer stays fully
+                          // functional (focus, typing, native selection,
+                          // caret) but visually invisible except for the
+                          // caret itself, via caretColor.
+                          color: 'transparent',
+                          caretColor: 'var(--doc-text)',
                           // Direct override of the page-wide userSelect:
                           // 'none' above - an inline style on the element
                           // itself always wins over an inherited value,
@@ -1171,6 +1644,28 @@ export function ChunkPreviewPage(): JSX.Element {
                     {activeTool === 'delete' && hoveredChunkId === chunk.id ? (
                       <Box className={classes.deleteOverlay} />
                     ) : null}
+                    {/* Small, low-opacity "Chunk N" label pinned to each
+                        chunk's own bottom-right corner - purely informational
+                        (which chunk this is, stable across pagination via
+                        chunkNumberByChunkId), so it's deliberately quiet
+                        rather than competing with the chunk's actual text.
+                        pointerEvents: 'none' keeps it from ever intercepting
+                        a click/hover meant for the chunk box beneath it. */}
+                    <Text
+                      size="xs"
+                      ff="monospace"
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        bottom: 4,
+                        right: 8,
+                        color: 'var(--doc-text)',
+                        opacity: 0.35,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      Chunk {chunkNumberByChunkId.get(chunk.id) ?? '?'}
+                    </Text>
                   </Box>
                   {index < pageChunks.length - 1 ? (
                     <BoundaryHandle
@@ -1249,6 +1744,42 @@ export function ChunkPreviewPage(): JSX.Element {
                   pointerEvents: 'none',
                 }}
               />
+
+              {/* Search-match markers: small dashes at each match's
+                  proportional vertical position (see searchMatchMarkers'
+                  own comment for why this replaces trying to highlight the
+                  actual - illegible at this scale - mini-text glyphs
+                  above). zIndex above the viewport indicator so a marker
+                  stays visible even where the "you are here" tint overlaps
+                  it. */}
+              {searchMatchMarkers.map((marker, markerIndex) => (
+                <Box
+                  key={markerIndex}
+                  aria-hidden="true"
+                  data-search-match-marker="true"
+                  data-current-match={marker.isCurrent ? 'true' : undefined}
+                  style={{
+                    position: 'absolute',
+                    top: `${marker.topPct}%`,
+                    left: 2,
+                    right: 2,
+                    height: marker.isCurrent ? 4 : 3,
+                    // Mantine's stock `yellow` ramp (not one of this app's
+                    // own signalBlue/sparkOrange/alertMagenta brand tokens -
+                    // see design-principles.md's "built-in color names are
+                    // fine for anything that isn't one of the roles above")
+                    // for every ordinary match, per explicit request - the
+                    // one CURRENT match is `--doc-text` (this app's
+                    // off-white body-text token) instead, so it's the
+                    // brightest/most-distinct dash among a column of
+                    // otherwise-uniform yellow ones.
+                    backgroundColor: marker.isCurrent ? 'var(--doc-text)' : 'var(--mantine-color-yellow-4)',
+                    borderRadius: 2,
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              ))}
             </Box>
           </Group>
         </>

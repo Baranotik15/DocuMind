@@ -151,3 +151,37 @@
   background-color: rgba(255, 61, 113, 0.25);
   pointer-events: none;
 }
+
+/* Search match highlights - applied to every occurrence of the current
+   search query (see splitTextForHighlighting in ChunkPreviewPage.tsx),
+   both in a chunk's own highlight backdrop and the minimap's miniature
+   copy. Resets the browser's default <mark> styling (a plain yellow
+   background/black text) entirely.
+
+   Regular (non-current) matches deliberately do NOT use any of the three
+   brand accents (signalBlue/sparkOrange/alertMagenta) - HIGHLIGHT_COLORS
+   (ChunkPreviewPage.tsx) already cycles through all three of them, at low
+   opacity, as every chunk's OWN background. A same-hue highlight on top of
+   a chunk that happens to land on that exact accent in the rotation just
+   deepens the same color instead of standing out - invisible in practice at
+   the minimap's 4px scale, and easy to miss even in the full-size chunk
+   text. `--doc-text` (this app's off-white body-text token) as a fill is
+   guaranteed to contrast against all three translucent accent washes
+   uniformly, whichever one a given chunk happens to have. The one CURRENT
+   match keeps the same solid sparkOrange-fill/void-text pairing already
+   used everywhere else in the app for a filled sparkOrange surface (see
+   design-principles.md's autoContrast note) - its full-opacity, distinctly
+   different color (rather than a same-hue-just-brighter fill) is what
+   keeps it unambiguously "the one you're on" next to every other, quieter
+   highlighted occurrence. */
+.searchMatchHighlight {
+  background-color: var(--doc-text);
+  color: var(--doc-void);
+  border-radius: 2px;
+}
+
+.searchMatchHighlightCurrent {
+  background-color: var(--mantine-color-sparkOrange-6);
+  color: var(--doc-void);
+  border-radius: 2px;
+}

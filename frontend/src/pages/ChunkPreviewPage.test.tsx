@@ -853,4 +853,280 @@ describe('ChunkPreviewPage', () => {
       expect(firstTextbox).toHaveValue('Intro paragraph edited.')
     })
   })
+
+  describe('Search', () => {
+    it('renders a search field and Previous/Next match buttons, disabled until there is a query with matches', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      expect(screen.getByRole('searchbox', { name: 'Search document text' })).toHaveValue('')
+      expect(screen.getByRole('button', { name: 'Previous match' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Next match' })).toBeDisabled()
+    })
+
+    it('typing a query selects the first match in the document and shows a match count', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const [firstTextbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'paragraph' } })
+
+      // "Intro paragraph." - "paragraph" starts at index 6.
+      expect(document.activeElement).toBe(firstTextbox)
+      expect(firstTextbox).toHaveProperty('selectionStart', 6)
+      expect(firstTextbox).toHaveProperty('selectionEnd', 15)
+      expect(screen.getByText('1 / 2')).toBeInTheDocument()
+    })
+
+    it('shows "No matches" for a query that matches nothing, and keeps the arrows disabled', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'zzz-not-present' } })
+
+      expect(screen.getByText('No matches')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Previous match' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Next match' })).toBeDisabled()
+    })
+
+    it('matching is case-insensitive', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'INTRO' } })
+
+      expect(screen.getByText('1 / 1')).toBeInTheDocument()
+    })
+
+    it('Next steps to each occurrence in order, including repeats within the same chunk, and wraps around', async () => {
+      stubFetch({ status: 'ready' })
+      const repeatedChunk: Chunk[] = [
+        {
+          id: 'chunk-1',
+          documentId,
+          originalContent: 'cat sat on the cat mat with a cat',
+          editedContent: 'cat sat on the cat mat with a cat',
+          isDirty: false,
+        },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(repeatedChunk))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage()
+      const [textbox] = await screen.findAllByRole('textbox')
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'cat' } })
+      expect(textbox).toHaveProperty('selectionStart', 0)
+      expect(screen.getByText('1 / 3')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+      expect(textbox).toHaveProperty('selectionStart', 15)
+      expect(screen.getByText('2 / 3')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+      expect(textbox).toHaveProperty('selectionStart', 30)
+      expect(screen.getByText('3 / 3')).toBeInTheDocument()
+
+      // Wraps back to the first occurrence.
+      fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+      expect(textbox).toHaveProperty('selectionStart', 0)
+      expect(screen.getByText('1 / 3')).toBeInTheDocument()
+    })
+
+    it('Previous from the first match wraps to the last', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'paragraph' } })
+      expect(screen.getByText('1 / 2')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Previous match' }))
+      expect(screen.getByText('2 / 2')).toBeInTheDocument()
+    })
+
+    it('Next crosses a page boundary to reach a match that only exists on a later page', async () => {
+      stubFetch({ status: 'ready' })
+      const bigChunks: Chunk[] = [
+        { id: 'chunk-1', documentId, originalContent: 'x'.repeat(15100), editedContent: 'x'.repeat(15100), isDirty: false },
+        {
+          id: 'chunk-2',
+          documentId,
+          originalContent: 'The needle word is here.',
+          editedContent: 'The needle word is here.',
+          isDirty: false,
+        },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(bigChunks))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      const rendered = renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+      expect(screen.getByText('Page 1 of 2')).toBeInTheDocument()
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'needle' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+
+      expect(await screen.findByText('Page 2 of 2')).toBeInTheDocument()
+      const [textboxOnPageTwo] = await screen.findAllByRole('textbox')
+      expect(document.activeElement).toBe(textboxOnPageTwo)
+      expect(textboxOnPageTwo).toHaveProperty('selectionStart', 4)
+      expect(textboxOnPageTwo).toHaveProperty('selectionEnd', 10)
+
+      // The match is still marked on the new page too - the main text
+      // backdrop's <mark>, AND the minimap's own marker dash - not just
+      // selected in the textarea.
+      const marksOnPageTwo = Array.from(rendered.container.querySelectorAll('mark'))
+      expect(marksOnPageTwo).toHaveLength(1)
+      expect(marksOnPageTwo[0].textContent).toBe('needle')
+      expect(rendered.container.querySelectorAll('[data-search-match-marker="true"]')).toHaveLength(1)
+    })
+
+    it('Enter in the search field jumps to the next match; Shift+Enter to the previous', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      const searchBox = screen.getByRole('searchbox', { name: 'Search document text' })
+      fireEvent.change(searchBox, { target: { value: 'paragraph' } })
+      expect(screen.getByText('1 / 2')).toBeInTheDocument()
+
+      fireEvent.keyDown(searchBox, { key: 'Enter' })
+      expect(screen.getByText('2 / 2')).toBeInTheDocument()
+
+      fireEvent.keyDown(searchBox, { key: 'Enter', shiftKey: true })
+      expect(screen.getByText('1 / 2')).toBeInTheDocument()
+    })
+
+    it('does not affect the count of chunk textboxes - the search field has its own distinct accessible role', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      const textboxes = await screen.findAllByRole('textbox')
+
+      // Exactly the 2 chunk Textareas, NOT the search field too.
+      expect(textboxes).toHaveLength(2)
+    })
+  })
+
+  describe('Chunk numbering', () => {
+    it('labels each chunk with its 1-based position in the document, and shows the total chunk count near the page description', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      expect(screen.getByText('Chunk 1')).toBeInTheDocument()
+      expect(screen.getByText('Chunk 2')).toBeInTheDocument()
+      expect(screen.getByText('2 chunks')).toBeInTheDocument()
+    })
+
+    it('shows singular "1 chunk" for a single-chunk document', async () => {
+      stubFetch({ status: 'ready' })
+      const singleChunk: Chunk[] = [
+        { id: 'chunk-1', documentId, originalContent: 'Only chunk.', editedContent: 'Only chunk.', isDirty: false },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(singleChunk))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      expect(screen.getByText('1 chunk')).toBeInTheDocument()
+      expect(screen.getByText('Chunk 1')).toBeInTheDocument()
+    })
+  })
+
+  describe('Page-level scroll lock', () => {
+    it('locks body/html scrolling while mounted, and restores it on unmount', async () => {
+      stubFetch({ status: 'ready' })
+      const originalBodyOverflow = document.body.style.overflow
+      const originalHtmlOverflow = document.documentElement.style.overflow
+
+      const rendered = renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      expect(document.body.style.overflow).toBe('hidden')
+      expect(document.documentElement.style.overflow).toBe('hidden')
+
+      rendered.unmount()
+
+      expect(document.body.style.overflow).toBe(originalBodyOverflow)
+      expect(document.documentElement.style.overflow).toBe(originalHtmlOverflow)
+    })
+  })
+
+  describe('Highlighting all matches', () => {
+    it('wraps every match (not just the current one) in <mark> in the chunk text, and shows a minimap marker per match, with the current one flagged in both', async () => {
+      stubFetch({ status: 'ready' })
+      const rendered = renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'paragraph' } })
+
+      // Main chunk text: one <mark> per match (2 matches, one per chunk) -
+      // the minimap's own mini-text is illegible at ~4px and deliberately
+      // does NOT get inline <mark>s (see searchMatchMarkers' own comment) -
+      // it gets a separate marker dash instead, asserted below.
+      const marks = Array.from(rendered.container.querySelectorAll('mark'))
+      expect(marks).toHaveLength(2)
+      marks.forEach((mark) => expect(mark.textContent).toBe('paragraph'))
+      expect(marks.filter((mark) => mark.getAttribute('data-current-match') === 'true')).toHaveLength(1)
+
+      const markers = Array.from(rendered.container.querySelectorAll('[data-search-match-marker="true"]'))
+      expect(markers).toHaveLength(2)
+      expect(markers.filter((marker) => marker.getAttribute('data-current-match') === 'true')).toHaveLength(1)
+    })
+
+    it('moves the "current" flag to the new match (in both the text mark and the minimap marker) after clicking Next', async () => {
+      stubFetch({ status: 'ready' })
+      const rendered = renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search document text' }), { target: { value: 'paragraph' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+
+      const marks = Array.from(rendered.container.querySelectorAll('mark'))
+      expect(marks.filter((mark) => mark.getAttribute('data-current-match') === 'true')).toHaveLength(1)
+      expect(marks.filter((mark) => mark.getAttribute('data-current-match') !== 'true')).toHaveLength(1)
+
+      const markers = Array.from(rendered.container.querySelectorAll('[data-search-match-marker="true"]'))
+      expect(markers.filter((marker) => marker.getAttribute('data-current-match') === 'true')).toHaveLength(1)
+      expect(markers.filter((marker) => marker.getAttribute('data-current-match') !== 'true')).toHaveLength(1)
+    })
+
+    it('renders no marks or markers when the search box is empty', async () => {
+      stubFetch({ status: 'ready' })
+      const rendered = renderChunkPreviewPage()
+      await screen.findAllByRole('textbox')
+
+      expect(rendered.container.querySelectorAll('mark')).toHaveLength(0)
+      expect(rendered.container.querySelectorAll('[data-search-match-marker="true"]')).toHaveLength(0)
+    })
+  })
 })
