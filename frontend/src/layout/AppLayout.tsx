@@ -15,6 +15,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/upload', label: 'Upload' },
   { to: '/chat', label: 'Chat' },
+  { to: '/relevance', label: 'Relevance Preview' },
   { to: '/dashboard', label: 'Logs & Stats' },
 ]
 

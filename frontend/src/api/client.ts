@@ -1,4 +1,4 @@
-import type { Chunk, ChatMessage, DashboardEvent, DocumentSummary } from './types'
+import type { Chunk, ChatMessage, DashboardEvent, DocumentSummary, RelevantChunkMatch } from './types'
 
 import { httpApiClient } from './httpClient'
 
@@ -11,6 +11,7 @@ export interface ApiClient {
   listChatMessages(): Promise<ChatMessage[]>
   sendChatMessage(content: string): Promise<ChatMessage>
   dislikeMessage(messageId: string): Promise<void>
+  getTopMatchingChunks(content: string): Promise<RelevantChunkMatch[]>
   getDashboardEvents(): Promise<DashboardEvent[]>
 }
 

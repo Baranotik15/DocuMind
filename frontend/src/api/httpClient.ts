@@ -134,6 +134,14 @@ export const httpApiClient: ApiClient = {
     return requestVoid(`/internal/chat/messages/${messageId}/dislike`, { method: 'POST' })
   },
 
+  getTopMatchingChunks(content) {
+    return requestJson('/internal/chat/top-chunks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    })
+  },
+
   getDashboardEvents() {
     return requestJson('/internal/dashboard/events', { method: 'GET' })
   },

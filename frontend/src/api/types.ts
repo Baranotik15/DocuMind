@@ -26,3 +26,11 @@ export interface DashboardEvent {
   timestamp: string
   detail: string
 }
+
+export interface RelevantChunkMatch {
+  chunkId: string
+  documentId: string
+  filename: string
+  content: string
+  matchPercent: number
+}
