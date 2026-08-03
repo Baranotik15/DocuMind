@@ -1,16 +1,84 @@
 import type { JSX } from 'react'
+import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
+import { Alert, Box, Button, Group, Modal, Stack, Text, Title } from '@mantine/core'
 import ForceGraph3D from '3d-force-graph'
+import { useNavigate } from 'react-router-dom'
+import { MOUSE } from 'three'
 
+import classes from './ChunkGraphPanel.module.css'
 import { apiClient } from '../api/client'
-import type { ChunkGraphNode } from '../api/types'
+import type { Chunk, ChunkGraphNode } from '../api/types'
 
 // UMAP's raw output sits in a small numeric range (roughly -10..10) - scaled
 // up so nodes actually spread out at 3d-force-graph's default camera/link
 // distances, instead of rendering as one tight cluster.
 const POSITION_SCALE = 40
+
+// How fast a left-button drag pans the camera across the graph - OrbitControls'
+// own default (1) as a named constant, not a magic number at the call site,
+// so it's a single obvious place to retune if panning feels too slow/fast.
+const GRAPH_PAN_SPEED = 1
+
+/**
+ * The exact shape of the objects this component hands to 3d-force-graph's
+ * `graphData` call below - `id`/`documentId`/`filename`/`position` come
+ * straight from the backend's `ChunkGraphNode`, plus the `color` and fixed
+ * `fx`/`fy`/`fz` coordinates this component derives itself. NOT the same
+ * type as `ChunkGraphNode`. 3d-force-graph's own TypeScript defs type every
+ * node handed to callbacks (`nodeLabel`, `onNodeClick`, ...) as a near-
+ * untyped `object` (see `NodeObject` in three-forcegraph's own .d.ts, which
+ * the library's public types re-export) - there's no way to parametrize the
+ * `ForceGraph3D` constructor itself with a custom node type (its default
+ * export is a plain `const`, not a generic factory), so those callbacks
+ * below cast back to this shape to read our own custom fields. That's safe
+ * specifically because these are exactly the objects this component itself
+ * constructed and handed to the library a few lines earlier (see the
+ * `nodes` array built in the `getChunkGraph().then(...)` below) - nothing
+ * the library invents on its own.
+ */
+interface GraphNodeDatum {
+  id: string
+  documentId: string
+  filename: string
+  color: string
+  fx: number
+  fy: number
+  fz: number
+  /** This chunk's own 0-indexed position within its document (reading order) - see ChunkGraphNode.position. */
+  position: number
+}
+
+/**
+ * Shared by the hover label AND the click modal's title, so both read
+ * identically: "<filename> — chunk <1-based number>". `position` is the
+ * chunk's 0-indexed position within its own document (assigned via
+ * `enumerate()` when its row is first inserted - see backend/app/
+ * pipeline.py's `run_pipeline`), so `+ 1` here matches the exact same
+ * 1-based "Chunk N" numbering ChunkPreviewPage shows for this same chunk
+ * (see its own `chunkNumberByChunkId`, similarly `index + 1` over the same
+ * backend-ordered chunk list).
+ */
+function chunkNodeLabel(node: GraphNodeDatum): string {
+  return `${node.filename} — chunk ${node.position + 1}`
+}
+
+/**
+ * Chunk text often comes from source documents hard-wrapped at ~80 columns
+ * (a single `\n` mid-paragraph, not a real paragraph break) - rendered
+ * as-is, that makes the text look like it's ignoring the modal's actual
+ * width instead of reflowing to fill it. Collapses each single newline
+ * (one NOT immediately followed by another) into a space, so prose
+ * reflows to the container's real width, while a genuine blank-line
+ * paragraph break (`\n\n`) is left alone - paired with `white-space:
+ * pre-line` below, which still renders that surviving break as a blank
+ * line.
+ */
+function reflowChunkText(text: string): string {
+  return text.replace(/([^\n])\n(?!\n)/g, '$1 ')
+}
 
 /**
  * Deterministic per-document color: a golden-angle hue wheel keyed by the
@@ -60,6 +128,27 @@ function buildSameDocumentLinks(nodes: ChunkGraphNode[], documentColors: Map<str
 }
 
 /**
+ * The average of every node's (already `POSITION_SCALE`d) `fx`/`fy`/`fz` -
+ * i.e. roughly the middle of wherever the actual cluster of chunks ended up,
+ * not the coordinate origin. OrbitControls' own default orbit pivot
+ * (`controls.target`) is hardcoded to (0, 0, 0), which only happens to
+ * coincide with the cluster's real center by coincidence - UMAP's output
+ * isn't guaranteed to center itself there. Orbiting around the wrong pivot
+ * makes the whole cluster visibly swing across the screen during a drag,
+ * which reads as "the nodes are moving" even though their world positions
+ * never change - reassigning `controls.target` to this centroid (see the
+ * call site below) is what actually fixes that, not anything about the
+ * nodes themselves.
+ */
+function computeCentroid(nodes: GraphNodeDatum[]): { x: number; y: number; z: number } {
+  const sum = nodes.reduce(
+    (acc, node) => ({ x: acc.x + node.fx, y: acc.y + node.fy, z: acc.z + node.fz }),
+    { x: 0, y: 0, z: 0 },
+  )
+  return { x: sum.x / nodes.length, y: sum.y / nodes.length, z: sum.z / nodes.length }
+}
+
+/**
  * The 3D chunk-embedding map: each node is a chunk, positioned at its
  * backend-computed UMAP coordinates (see GET /internal/dashboard/chunk-graph)
  * so semantically-similar chunks land near each other - not a physics
@@ -67,18 +156,53 @@ function buildSameDocumentLinks(nodes: ChunkGraphNode[], documentColors: Map<str
  * backend. Positions are pinned via `fx`/`fy`/`fz` (d3-force's "fixed
  * position" fields, which 3d-force-graph/three-forcegraph respect) so the
  * force engine doesn't fight the UMAP layout by re-scattering nodes with
- * generic charge/link forces. Nodes/links are colored per source document
- * (buildDocumentColors/buildSameDocumentLinks above) - "like Obsidian's
- * graph view", per explicit request. Orbit/pan/zoom navigation is
- * `3d-force-graph`'s own default behavior, not custom code here.
+ * generic charge/link forces - and, for the same reason, dragging a node is
+ * disabled outright (`enableNodeDrag(false)` below): letting an operator
+ * drag one around would let them visually contradict the semantic-
+ * similarity layout, which would be meaningless, not just discouraged.
+ * Nodes/links are colored per source document (buildDocumentColors/
+ * buildSameDocumentLinks above) - "like Obsidian's graph view", per explicit
+ * request. Orbit/pan/zoom navigation is `3d-force-graph`'s own default
+ * behavior, not custom code here.
  *
  * `3d-force-graph` is an imperative, canvas/WebGL-based library (built on
  * Three.js) - not a React component - so it's mounted/torn down by hand in
  * an effect rather than rendered declaratively, the same shape as any
- * other "wrap an imperative widget" integration.
+ * other "wrap an imperative widget" integration. The one bit of ordinary
+ * React-rendered JSX in this component is the click-to-preview Modal below
+ * (see onNodeClick in the effect) - everything else stays exactly that
+ * imperative "mount a 3rd-party widget in a ref" shape.
  */
 export function ChunkGraphPanel(): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+
+  // The clicked node (if any) driving the modal below - null means the
+  // modal is closed. Set synchronously by onNodeClick (see the effect
+  // below); the chunk's actual TEXT is fetched separately (chunkText/
+  // chunkTextError/chunkTextLoading) since the graph endpoint this
+  // component already fetches from only carries positions, not chunk
+  // bodies - there's no single-chunk-by-id endpoint, so getting the text
+  // means reusing apiClient.getChunks(documentId) and finding this one
+  // chunk's entry in it.
+  const [selectedNode, setSelectedNode] = useState<GraphNodeDatum | null>(null)
+  const [chunkText, setChunkText] = useState<string | null>(null)
+  const [chunkTextError, setChunkTextError] = useState<string | null>(null)
+  const [chunkTextLoading, setChunkTextLoading] = useState(false)
+  // Caches apiClient.getChunks(documentId) results per document, so
+  // clicking multiple chunks from the SAME document (a common case - a
+  // document's own chunks tend to cluster together in the graph) doesn't
+  // refetch that whole document's chunk list again on every click. Not
+  // invalidated on a timer/event - this graph is only ever open alongside a
+  // one-shot fetch of its own (see getChunkGraph below), so a document's
+  // chunk list can't meaningfully change out from under an open session.
+  const chunksCacheRef = useRef<Map<string, Chunk[]>>(new Map())
+  // Guards an in-flight chunk-text fetch from an earlier click against
+  // clobbering state after the operator has already clicked a DIFFERENT
+  // node before that first fetch resolved - same "cancelled"-style guard as
+  // the graph-data fetch below, just keyed by which node's click actually
+  // asked for this particular fetch.
+  const latestClickedNodeIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     const container = containerRef.current
@@ -86,17 +210,88 @@ export function ChunkGraphPanel(): JSX.Element {
       return
     }
 
-    const graph = new ForceGraph3D(container)
+    // controlType: 'orbit' (THREE.OrbitControls), not the library's own
+    // default 'trackball' (THREE.TrackballControls) - trackball allows
+    // free rotation around ANY axis (including roll), which reads as the
+    // whole scene/nodes tumbling around; orbit clamps to a fixed up-vector
+    // and always orbits the camera around one fixed target point, which is
+    // what actually matches "the nodes are the fixed center, the screen/
+    // camera moves around them" - per explicit correction, this is a real
+    // difference in feel, not just a rewording of the same behavior.
+    // `controlType` is constructor-only (see 3d-force-graph's own
+    // ConfigOptions type) - it can't be changed via a chainable call after
+    // the fact.
+    const graph = new ForceGraph3D(container, { controlType: 'orbit' })
       .backgroundColor('rgba(0,0,0,0)')
       .width(container.clientWidth)
       .height(container.clientHeight)
-      .nodeLabel('filename')
+      .nodeLabel((node) => chunkNodeLabel(node as unknown as GraphNodeDatum))
       .nodeRelSize(4)
       .nodeColor('color')
       .linkOpacity(0.45)
       .linkColor('color')
       .linkWidth(1.5)
       .showNavInfo(false)
+      .enableNodeDrag(false)
+      .onNodeClick((node) => {
+        const graphNode = node as unknown as GraphNodeDatum
+        latestClickedNodeIdRef.current = graphNode.id
+        setSelectedNode(graphNode)
+        setChunkText(null)
+        setChunkTextError(null)
+        setChunkTextLoading(true)
+
+        const cachedChunks = chunksCacheRef.current.get(graphNode.documentId)
+        const chunksPromise = cachedChunks
+          ? Promise.resolve(cachedChunks)
+          : apiClient.getChunks(graphNode.documentId).then((documentChunks) => {
+              chunksCacheRef.current.set(graphNode.documentId, documentChunks)
+              return documentChunks
+            })
+
+        void chunksPromise
+          .then((documentChunks) => {
+            if (latestClickedNodeIdRef.current !== graphNode.id) {
+              return
+            }
+            // editedContent (not originalContent) - the live/current text,
+            // matching how ChunkPreviewPage itself treats these two fields
+            // (originalContent is only the pre-edit snapshot).
+            const match = documentChunks.find((chunk) => chunk.id === graphNode.id)
+            if (match) {
+              setChunkText(match.editedContent)
+            } else {
+              setChunkTextError('Could not find this chunk - it may have been deleted or merged since this graph was last loaded.')
+            }
+          })
+          .catch(() => {
+            if (latestClickedNodeIdRef.current === graphNode.id) {
+              setChunkTextError("Failed to load this chunk's text.")
+            }
+          })
+          .finally(() => {
+            if (latestClickedNodeIdRef.current === graphNode.id) {
+              setChunkTextLoading(false)
+            }
+          })
+      })
+
+    // LEFT-drag pans across the x/y plane; RIGHT-drag orbits the camera
+    // around the (fixed) nodes - "rotate" here has only ever meant the
+    // camera/field of view orbiting a fixed target, never the nodes moving
+    // (they're pinned via fx/fy/fz above regardless of which control does
+    // what). Wheel still zooms (`enableZoom`, on by default - untouched
+    // here). There's no chainable config for any of this on ForceGraph3D
+    // itself, so `.controls()` (typed as a bare `object` in its own d.ts)
+    // reaches the underlying OrbitControls instance directly - cast to the
+    // real `OrbitControls` type (from `@types/three`) rather than an ad-hoc
+    // inline shape, since `target`/`update()` below need it too.
+    const controls = graph.controls() as OrbitControls
+    controls.mouseButtons.LEFT = MOUSE.PAN
+    controls.mouseButtons.RIGHT = MOUSE.ROTATE
+    // Named so it's a single, obvious place to retune - not a magic number
+    // buried in the OrbitControls call site.
+    controls.panSpeed = GRAPH_PAN_SPEED
 
     // The one-time `container.clientWidth`/`clientHeight` reads above are
     // just a reasonable first guess - this ResizeObserver is what actually
@@ -122,7 +317,7 @@ export function ChunkGraphPanel(): JSX.Element {
         return
       }
       const documentColors = buildDocumentColors(data.nodes)
-      const nodes = data.nodes.map((node) => ({
+      const nodes: GraphNodeDatum[] = data.nodes.map((node) => ({
         id: node.id,
         documentId: node.documentId,
         filename: node.filename,
@@ -130,9 +325,21 @@ export function ChunkGraphPanel(): JSX.Element {
         fx: node.x * POSITION_SCALE,
         fy: node.y * POSITION_SCALE,
         fz: node.z * POSITION_SCALE,
+        position: node.position,
       }))
       const links = buildSameDocumentLinks(data.nodes, documentColors)
       graph.graphData({ nodes, links })
+
+      // Re-pivots orbit rotation onto the cluster's actual center - see
+      // computeCentroid's own comment for why this can't just stay at
+      // OrbitControls' default (0, 0, 0). `update()` applies the new
+      // target immediately rather than waiting for the next drag to
+      // silently jump to it.
+      if (nodes.length > 0) {
+        const centroid = computeCentroid(nodes)
+        controls.target.set(centroid.x, centroid.y, centroid.z)
+        controls.update()
+      }
     })
 
     return () => {
@@ -143,16 +350,98 @@ export function ChunkGraphPanel(): JSX.Element {
     }
   }, [])
 
-  // `position: 'relative'` is load-bearing, not decorative: three.js/
-  // three-render-objects position the actual WebGL canvas (and any
-  // overlay elements) with `position: absolute`, which anchors to the
-  // nearest *positioned* ancestor - without one here, that anchor was some
-  // unrelated ancestor further up the page (or the viewport itself),
-  // which is why the rendered graph was showing up detached from this
-  // card entirely instead of filling it. No minHeight here deliberately -
-  // this should fill its parent Paper exactly (which itself is stretched
-  // by the outer Group to match the Messages/Dislikes chart stack's
-  // height precisely), not impose its own floor that could make it taller
-  // than that stack.
-  return <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }} />
+  return (
+    <>
+      {/* `position: 'relative'` is load-bearing, not decorative: three.js/
+          three-render-objects position the actual WebGL canvas (and any
+          overlay elements) with `position: absolute`, which anchors to the
+          nearest *positioned* ancestor - without one here, that anchor was
+          some unrelated ancestor further up the page (or the viewport
+          itself), which is why the rendered graph was showing up detached
+          from this card entirely instead of filling it. No minHeight here
+          deliberately - this should fill its parent Paper exactly (which
+          itself is stretched by the outer Group to match the Messages/
+          Dislikes chart stack's height precisely), not impose its own
+          floor that could make it taller than that stack. */}
+      <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }} />
+
+      {/* Same Modal convention as ChatPage/ChunkPreviewPage/UploadPage
+          (opened/onClose, radius="lg"). `size="1200px"` - twice this app's
+          usual `size="lg"` (~620px) - a whole chunk's text needs more
+          reading width than this app's other, narrower confirm-only
+          Modals. The text itself sits in its own capped-height, custom-
+          scrolled box (classes.chunkTextScrollArea) rather than letting the
+          Modal grow arbitrarily tall for a long chunk. `title` is a real
+          `<Title order={4}>` (same "section heading" component the
+          Messages sent/Dislikes charts use, not Mantine's own default
+          title styling, which read too close in size to the body text
+          below it) so it visually reads as a heading over the chunk text.
+          `closeButtonProps` recolors the X to this app's alertMagenta
+          accent (same red used for the dislike button/delete confirms/
+          error Alerts elsewhere) with that same color's `-light` tinted
+          background (the automatic Mantine variant-color CSS var the
+          `variant="light"` Alert below also resolves to) - a plain neutral
+          backdrop read as too quiet, per explicit request for a more
+          noticeable red. `radius="xl"` keeps that backdrop a full circle
+          regardless of this component's own default. */}
+      <Modal
+        opened={selectedNode !== null}
+        onClose={() => setSelectedNode(null)}
+        title={selectedNode ? <Title order={4}>{chunkNodeLabel(selectedNode)}</Title> : ''}
+        radius="lg"
+        size="1200px"
+        closeButtonProps={{
+          c: 'alertMagenta',
+          radius: 'xl',
+          // Default size is 28px (Mantine's own --cb-size-md) - enlarged
+          // per explicit request (56px read as slightly too big on a
+          // follow-up look, dialed back to 40px), the X glyph itself
+          // scales with it automatically (CloseButton's own iconSize
+          // defaults to 70% of this size, not a separate fixed value).
+          size: 40,
+          style: { backgroundColor: 'var(--mantine-color-alertMagenta-light)' },
+        }}
+      >
+        <Stack gap="lg">
+          {chunkTextLoading ? (
+            <Text c="dimmed">Loading chunk text...</Text>
+          ) : chunkTextError ? (
+            <Alert color="alertMagenta" variant="light" radius="lg">
+              {chunkTextError}
+            </Alert>
+          ) : (
+            <Box className={classes.chunkTextScrollArea} style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+              {/* white-space: pre-line (not pre-wrap) - see reflowChunkText
+                  above: single hard-wrapped newlines are already collapsed
+                  to spaces before this renders, so this only needs to keep
+                  honoring the real paragraph breaks that survived that. */}
+              <Text ff="monospace" style={{ whiteSpace: 'pre-line' }}>
+                {chunkText ? reflowChunkText(chunkText) : chunkText}
+              </Text>
+            </Box>
+          )}
+          <Group justify="flex-end">
+            {/* Deep-links into ChunkPreviewPage at this exact chunk via a
+                `?chunk=` query param the route itself has no built-in
+                support for - ChunkPreviewPage reads it once its own chunks
+                have loaded and jumps/focuses to it (see its own
+                pendingChunkFocus state/effect). */}
+            <Button
+              variant="filled"
+              color="sparkOrange"
+              radius="xl"
+              onClick={() => {
+                if (!selectedNode) {
+                  return
+                }
+                navigate(`/upload/${selectedNode.documentId}/chunks?chunk=${selectedNode.id}`)
+              }}
+            >
+              Open in document
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  )
 }

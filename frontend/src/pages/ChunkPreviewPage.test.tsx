@@ -1,10 +1,12 @@
+import type { JSX } from 'react'
+
 import type { Chunk, DocumentSummary } from '../api/types'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MantineProvider } from '@mantine/core'
 import { fireEvent, render, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom'
 
 import { ChunkPreviewPage } from './ChunkPreviewPage'
 import { screen } from '../test-utils'
@@ -36,14 +38,38 @@ function documentWithStatus(status: DocumentSummary['status']): DocumentSummary[
 // ChunkPreviewPage reads :documentId via useParams, so, unlike the other page
 // tests, it needs an actual Route match (renderWithProviders only wraps in a
 // bare MemoryRouter with no Routes/Route) rather than the shared test-utils helper.
-function renderChunkPreviewPage(): ReturnType<typeof render> {
+// `initialPath` defaults to the plain (no query string) route - the Dashboard's
+// chunk-graph deep-link tests below pass an explicit `?chunk=` path instead.
+function renderChunkPreviewPage(initialPath?: string): ReturnType<typeof render> {
   return render(
     <MantineProvider>
-      <MemoryRouter initialEntries={[`/upload/${documentId}/chunks`]}>
+      <MemoryRouter initialEntries={[initialPath ?? `/upload/${documentId}/chunks`]}>
         <Routes>
           <Route path="/upload/:documentId/chunks" element={<ChunkPreviewPage />} />
           <Route path="/upload" element={<div>{UPLOAD_PLACEHOLDER}</div>} />
         </Routes>
+      </MemoryRouter>
+    </MantineProvider>,
+  )
+}
+
+/** Bare display of the current URL's search string - lets a test assert the
+ * `?chunk=` deep-link param actually gets consumed (removed) once handled,
+ * not just that it had an effect the first time. */
+function SearchParamsProbe(): JSX.Element {
+  const [params] = useSearchParams()
+  return <div data-testid="search-params-probe">{params.toString()}</div>
+}
+
+function renderChunkPreviewPageWithSearchParamsProbe(initialPath: string): ReturnType<typeof render> {
+  return render(
+    <MantineProvider>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route path="/upload/:documentId/chunks" element={<ChunkPreviewPage />} />
+          <Route path="/upload" element={<div>{UPLOAD_PLACEHOLDER}</div>} />
+        </Routes>
+        <SearchParamsProbe />
       </MemoryRouter>
     </MantineProvider>,
   )
@@ -1127,6 +1153,66 @@ describe('ChunkPreviewPage', () => {
 
       expect(rendered.container.querySelectorAll('mark')).toHaveLength(0)
       expect(rendered.container.querySelectorAll('[data-search-match-marker="true"]')).toHaveLength(0)
+    })
+  })
+
+  describe('Deep link to a specific chunk (?chunk=)', () => {
+    it('focuses the deep-linked chunk once its chunks have loaded', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage(`/upload/${documentId}/chunks?chunk=chunk-2`)
+
+      const textboxes = await screen.findAllByRole('textbox')
+      await waitFor(() => expect(document.activeElement).toBe(textboxes[1]))
+    })
+
+    it('jumps to the pagination page the deep-linked chunk actually lives on, then focuses it there', async () => {
+      stubFetch({ status: 'ready' })
+      const bigChunks: Chunk[] = [
+        { id: 'chunk-1', documentId, originalContent: 'x'.repeat(15100), editedContent: 'x'.repeat(15100), isDirty: false },
+        {
+          id: 'chunk-2',
+          documentId,
+          originalContent: 'Second page chunk.',
+          editedContent: 'Second page chunk.',
+          isDirty: false,
+        },
+      ]
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/documents')) {
+          return Promise.resolve(jsonResponse(documentWithStatus('ready')))
+        }
+        if (method === 'GET' && url.endsWith(`/internal/documents/${documentId}/chunks`)) {
+          return Promise.resolve(jsonResponse(bigChunks))
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+
+      renderChunkPreviewPage(`/upload/${documentId}/chunks?chunk=chunk-2`)
+      await screen.findAllByRole('textbox')
+
+      expect(await screen.findByText('Page 2 of 2')).toBeInTheDocument()
+      const [textboxOnPageTwo] = await screen.findAllByRole('textbox')
+      await waitFor(() => expect(document.activeElement).toBe(textboxOnPageTwo))
+    })
+
+    it('does nothing (no crash, no focus change) for a chunk id that does not exist in this document', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPage(`/upload/${documentId}/chunks?chunk=does-not-exist`)
+
+      const textboxes = await screen.findAllByRole('textbox')
+      // Give the deep-link effect a tick to (not) act, then confirm neither
+      // chunk textarea ended up focused.
+      await waitFor(() => expect(textboxes).toHaveLength(2))
+      expect(textboxes).not.toContain(document.activeElement)
+    })
+
+    it('clears the ?chunk query param after handling it once, so it does not keep re-focusing on later re-renders', async () => {
+      stubFetch({ status: 'ready' })
+      renderChunkPreviewPageWithSearchParamsProbe(`/upload/${documentId}/chunks?chunk=chunk-2`)
+
+      await screen.findAllByRole('textbox')
+      await waitFor(() => expect(screen.getByTestId('search-params-probe')).toHaveTextContent(''))
     })
   })
 })

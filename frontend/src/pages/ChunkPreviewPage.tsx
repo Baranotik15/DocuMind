@@ -3,7 +3,7 @@ import type { CSSProperties, JSX, KeyboardEvent as ReactKeyboardEvent, MouseEven
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, Textarea, TextInput, Title } from '@mantine/core'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import classes from './ChunkPreviewPage.module.css'
 import { apiClient } from '../api/client'
@@ -348,6 +348,7 @@ function BoundaryHandle({ upperChunkId, lowerChunkId, onDragStart, onKeyboardMov
 export function ChunkPreviewPage(): JSX.Element {
   const { documentId } = useParams<{ documentId: string }>()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [filename, setFilename] = useState('')
   const [status, setStatus] = useState<DocumentSummary['status'] | null>(null)
   const [chunks, setChunks] = useState<Chunk[]>([])
@@ -415,6 +416,15 @@ export function ChunkPreviewPage(): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('')
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0)
   const [pendingMatchFocus, setPendingMatchFocus] = useState<SearchMatch | null>(null)
+  // Sibling of pendingMatchFocus above, for the "deep-linked from the
+  // Dashboard's chunk graph" case (see the `?chunk=` query-param effect
+  // below): just the one chunk id to bring into view/focus, with no text
+  // range to select - unlike a search match, a deep link has no substring
+  // to highlight, only a whole chunk to land on. Consumed by its own
+  // effect further below, modeled closely on pendingMatchFocus's own effect
+  // (same "wait for the target page to actually render before the ref
+  // exists" timing concern), just without the setSelectionRange step.
+  const [pendingChunkFocus, setPendingChunkFocus] = useState<string | null>(null)
   const [viewport, setViewport] = useState({ topPct: 0, heightPct: 100 })
   const scrollRef = useRef<HTMLDivElement>(null)
   const minimapRef = useRef<HTMLDivElement>(null)
@@ -501,6 +511,7 @@ export function ChunkPreviewPage(): JSX.Element {
     setSearchQuery('')
     setCurrentMatchIndex(0)
     setPendingMatchFocus(null)
+    setPendingChunkFocus(null)
   }, [documentId])
 
   // Groups chunks into pages so no single page holds more than
@@ -563,6 +574,40 @@ export function ChunkPreviewPage(): JSX.Element {
     })
     return map
   }, [pages])
+
+  // Reads a `?chunk=<chunkId>` deep link (see ChunkGraphPanel's "Open in
+  // document" button, which is the only place that ever navigates here with
+  // this param) once `chunks` has actually loaded - has to wait for that,
+  // same reason the query-param check can't just run once on mount:
+  // pageIndexByChunkId (derived from `chunks`) isn't populated yet on the
+  // very first render. Jumps to whichever page the target chunk lives on
+  // (mirrors goToSearchMatch's own use of pageIndexByChunkId) and queues it
+  // for a plain focus/scroll via pendingChunkFocus (see that effect below).
+  // The param is always consumed (removed from the URL) once `chunks` has
+  // loaded, whether or not the id actually matched a real chunk, so a
+  // stale/invalid id doesn't leave a dangling query param, and a valid one
+  // doesn't keep re-triggering the jump on later, unrelated re-renders.
+  useEffect(() => {
+    const targetChunkId = searchParams.get('chunk')
+    if (!targetChunkId || chunks.length === 0) {
+      return
+    }
+    if (chunks.some((chunk) => chunk.id === targetChunkId)) {
+      const targetPage = pageIndexByChunkId.get(targetChunkId)
+      if (targetPage !== undefined && targetPage !== pageIndex) {
+        setPageIndex(targetPage)
+      }
+      setPendingChunkFocus(targetChunkId)
+    }
+    setSearchParams(
+      (params) => {
+        params.delete('chunk')
+        return params
+      },
+      { replace: true },
+    )
+  }, [chunks, searchParams, pageIndexByChunkId, pageIndex, setSearchParams])
+
   // Groups searchMatches by chunk (with each match's offsets already
   // relative to that one chunk's own text, matching splitTextForHighlighting's
   // expected shape) and flags whichever one is the globally-current match -
@@ -868,6 +913,34 @@ export function ChunkPreviewPage(): JSX.Element {
     }
     setPendingMatchFocus(null)
   }, [pendingMatchFocus, pageChunks])
+
+  // Sibling of the pendingMatchFocus effect directly above, for a
+  // deep-linked chunk (see the `?chunk=` query-param effect further up) -
+  // same "wait for the target page's chunks to actually render before the
+  // ref exists" timing concern (this re-runs on pageChunks too, so it
+  // retries right after a setPageIndex from that effect lands), just a
+  // plain focus + scroll-into-view with no text range to select, since a
+  // deep link (unlike a search match) has no substring to highlight.
+  useEffect(() => {
+    if (!pendingChunkFocus) {
+      return
+    }
+    const el = chunkTextareaRefs.current.get(pendingChunkFocus)
+    const scrollEl = scrollRef.current
+    if (!el) {
+      return
+    }
+    el.focus({ preventScroll: true })
+    if (scrollEl) {
+      const elRect = el.getBoundingClientRect()
+      const scrollRect = scrollEl.getBoundingClientRect()
+      const elTopWithinScroll = elRect.top - scrollRect.top + scrollEl.scrollTop
+      const centeredScrollTop = elTopWithinScroll - (scrollEl.clientHeight - elRect.height) / 2
+      scrollEl.scrollTop = Math.max(0, Math.min(centeredScrollTop, scrollEl.scrollHeight - scrollEl.clientHeight))
+      updateViewport()
+    }
+    setPendingChunkFocus(null)
+  }, [pendingChunkFocus, pageChunks])
 
   // Lets ArrowUp/Down/Left/Right cross out of the current chunk's textarea
   // into the neighboring one once the caret is already at that edge -

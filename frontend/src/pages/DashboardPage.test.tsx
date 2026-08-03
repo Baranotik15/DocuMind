@@ -14,8 +14,16 @@ import { renderWithProviders, screen } from '../test-utils'
 // needs DashboardPage to mount without crashing.
 vi.mock('3d-force-graph', () => ({
   default: vi.fn().mockImplementation(function ForceGraph3DMock() {
-    const stub: Record<string, ReturnType<typeof vi.fn>> = { _destructor: vi.fn() }
-    for (const method of ['backgroundColor', 'width', 'height', 'nodeLabel', 'nodeRelSize', 'nodeColor', 'linkOpacity', 'linkColor', 'linkWidth', 'showNavInfo', 'graphData']) {
+    const stub: Record<string, ReturnType<typeof vi.fn>> = {
+      _destructor: vi.fn(),
+      // Not chainable (unlike the methods below) - real 3d-force-graph
+      // returns the underlying OrbitControls instance, not the graph - this
+      // stub covers the members ChunkGraphPanel actually touches
+      // (mouseButtons/panSpeed, plus target.set/update for the centroid
+      // re-pivot).
+      controls: vi.fn(() => ({ mouseButtons: {}, target: { set: vi.fn() }, update: vi.fn() })),
+    }
+    for (const method of ['backgroundColor', 'width', 'height', 'nodeLabel', 'nodeRelSize', 'nodeColor', 'linkOpacity', 'linkColor', 'linkWidth', 'showNavInfo', 'enableNodeDrag', 'onNodeClick', 'graphData']) {
       stub[method] = vi.fn(() => stub)
     }
     return stub
