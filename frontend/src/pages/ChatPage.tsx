@@ -106,7 +106,13 @@ function BotAvatar(): JSX.Element {
           <circle cx="12" cy="3" r="1.4" fill="var(--doc-void)" />
         </svg>
       ) : (
-        <img src={BOT_AVATAR_IMAGE_SRC} alt="" className={classes.botAvatarImage} onError={() => setImageFailed(true)} />
+        <img
+          src={BOT_AVATAR_IMAGE_SRC}
+          alt=""
+          draggable={false}
+          className={classes.botAvatarImage}
+          onError={() => setImageFailed(true)}
+        />
       )}
     </div>
   )

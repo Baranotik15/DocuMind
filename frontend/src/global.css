@@ -1,0 +1,44 @@
+/*
+ * Fixes Mantine's Input family (TextInput, Select, NumberInput,
+ * PasswordInput, Textarea's own "default" variant, ...) rendering with a
+ * hardcoded near-white background in light color scheme
+ * (`--input-bg: var(--mantine-color-white)`, `--input-bd:
+ * var(--mantine-color-gray-4)` - see node_modules/@mantine/core/styles/Input.css)
+ * completely independent of this app's own dark theme. Everything else
+ * (page background, body text, dimmed/placeholder text, gray-3 hairline
+ * borders) is already remapped globally via theme.ts's cssVariablesResolver
+ * - but --input-bg/--input-bd aren't part of that mechanism (Mantine only
+ * exposes Input's SIZE-related vars, like --input-height, through the
+ * component `vars` resolver API - the color ones are plain CSS rules keyed
+ * off `[data-mantine-color-scheme]` + `[data-variant]`, so they have to be
+ * overridden the same way, with a plain CSS rule).
+ *
+ * Net effect without this: text.ts's own near-white `--mantine-color-text`
+ * (correctly applied to input text via `--input-color`) renders on top of
+ * Mantine's own near-white default background - invisible text, on every
+ * new TextInput/Select/etc. added to this app unless individually patched
+ * with an inline `styles={{ input: { backgroundColor: ..., color: ... } }}`
+ * override (the same fix has now been applied ad-hoc, per-component,
+ * multiple times - ChunkPreviewPage's search field, Upload's filter field,
+ * RelevancePage's question field - see feedback memory). This is the fix
+ * applied ONCE, globally, so it can't be missed on the next new input.
+ *
+ * `.mantine-Input-wrapper` is Mantine's own stable, human-readable class
+ * (not the internal per-build CSS-modules hash) kept in the DOM specifically
+ * for this kind of external override - present on every Input-family
+ * component's wrapper element regardless of which higher-level component
+ * (TextInput, Select, ...) composes it. The leading `html` element selector
+ * is a deliberate specificity bump (matches Mantine's own
+ * `[data-mantine-color-scheme] .<hash>[data-variant='default']` rule
+ * exactly on class+attribute count, so equal specificity would otherwise
+ * come down to a fragile CSS-import-order tiebreak) - same
+ * beat-Mantine's-own-rule-by-specificity technique already used for
+ * ChunkPreviewPage's Undo/Redo buttons and the Clear chat button (see
+ * ChunkPreviewPage.module.css's .historyButton comment) - so this wins
+ * unconditionally, regardless of where this stylesheet ends up in the
+ * bundle relative to Mantine's own.
+ */
+html[data-mantine-color-scheme='light'] .mantine-Input-wrapper[data-variant='default'] {
+  --input-bg: var(--doc-surface);
+  --input-bd: var(--doc-hairline);
+}
