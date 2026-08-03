@@ -16,6 +16,13 @@ class SendMessageRequest(BaseModel):
     content: str
 
 
+class TopChunksRequest(BaseModel):
+    content: str
+
+
+TOP_CHUNKS_LIMIT = 5
+
+
 def _message_summary(row) -> dict:
     return {
         "id": str(row.id),
@@ -130,3 +137,67 @@ async def dislike_message(
         {"id": message_id},
     )
     await session.commit()
+
+
+def _top_chunk_summary(row, match_percent: float) -> dict:
+    return {
+        "chunkId": str(row.id),
+        "documentId": str(row.document_id),
+        "filename": row.filename,
+        "content": row.edited_content,
+        "matchPercent": match_percent,
+    }
+
+
+@router.post("/chat/top-chunks")
+async def top_chunks(
+    body: TopChunksRequest, session: AsyncSession = Depends(get_session)
+) -> list[dict]:
+    """Read-only diagnostic endpoint for previewing retrieval quality
+    without sending a chat message: embeds `body.content` and returns the
+    top TOP_CHUNKS_LIMIT chunks (across `ready` documents) most similar to
+    it, each annotated with a 0-100 match percentage. Never writes
+    anything - no chat_messages row, no dashboard event, no commit.
+
+    Uses a hardcoded TOP_CHUNKS_LIMIT rather than
+    `get_settings().chat_retrieval_top_k` deliberately: this is a
+    conceptually separate "top 5 preview" feature from chat's own
+    retrieval step, and shouldn't silently change if that setting is
+    ever tuned differently later, even though both happen to be 5 today.
+    """
+    try:
+        # Same embed-failure error contract as send_message: any LLMError
+        # from the OpenAI call becomes a 502.
+        [query_embedding] = await embed_texts([body.content])
+    except LLMError:
+        raise HTTPException(status_code=502, detail="chat_completion_failed")
+
+    # Same similarity search as send_message's retrieval step, but also
+    # projecting the raw cosine distance so a match percentage can be
+    # computed per row. Empty result (no ready documents, or none match)
+    # is valid - passed straight through as an empty list, not an error.
+    rows = (
+        await session.execute(
+            text(
+                "SELECT chunks.id, chunks.document_id, documents.filename, "
+                "chunks.edited_content, "
+                "chunks.embedding <=> :query_embedding ::vector AS distance "
+                "FROM chunks "
+                "JOIN documents ON documents.id = chunks.document_id "
+                "WHERE documents.status = 'ready' "
+                "ORDER BY chunks.embedding <=> :query_embedding ::vector "
+                "LIMIT :top_k"
+            ),
+            {
+                "query_embedding": format_vector(query_embedding),
+                "top_k": TOP_CHUNKS_LIMIT,
+            },
+        )
+    ).all()
+
+    return [
+        _top_chunk_summary(
+            row, round(max(0.0, min(1.0, 1 - row.distance)) * 100, 1)
+        )
+        for row in rows
+    ]

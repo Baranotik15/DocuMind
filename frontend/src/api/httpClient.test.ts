@@ -257,6 +257,27 @@ describe('httpApiClient', () => {
     )
   })
 
+  it('getTopMatchingChunks POSTs the question and returns the parsed matches', async () => {
+    const matches = [
+      { chunkId: 'chunk-1', documentId: 'doc-1', filename: 'guide.pdf', content: 'excerpt one', matchPercent: 87.3 },
+      { chunkId: 'chunk-2', documentId: 'doc-1', filename: 'guide.pdf', content: 'excerpt two', matchPercent: 54.1 },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(matches))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getTopMatchingChunks('What formats are supported?')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/chat/top-chunks',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'What formats are supported?' }),
+      }),
+    )
+    expect(result).toEqual(matches)
+  })
+
   it('getDashboardEvents GETs /internal/dashboard/events and returns the parsed array', async () => {
     const events = [{ id: 'event-1', type: 'document.uploaded', timestamp: '2026-01-01T00:00:00.000Z', detail: 'x' }]
     fetchMock.mockResolvedValueOnce(jsonResponse(events))

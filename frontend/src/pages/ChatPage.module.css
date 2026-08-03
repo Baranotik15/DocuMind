@@ -115,6 +115,14 @@
   height: 4rem;
   border-radius: 50%;
   background-color: var(--mantine-color-signalBlue-6);
+  /* Purely decorative (aria-hidden in ChatPage.tsx already) - a click-drag
+     shouldn't be able to select/highlight it (covers both the custom image
+     and the SVG fallback, whichever is showing), per explicit request.
+     draggable={false} on the <img> itself (ChatPage.tsx) additionally stops
+     the browser's own "drag this image out" affordance, which user-select
+     alone doesn't cover for <img> elements. */
+  user-select: none;
+  cursor: default;
 }
 
 /* Custom avatar image (see BOT_AVATAR_IMAGE_SRC in ChatPage.tsx) fills the

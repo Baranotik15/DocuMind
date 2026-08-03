@@ -1,0 +1,71 @@
+/*
+ * Fixes Mantine's Input family (TextInput, Select, NumberInput,
+ * PasswordInput, Textarea's own "default" variant, ...) rendering with a
+ * hardcoded near-white background in light color scheme
+ * (`--input-bg: var(--mantine-color-white)`, `--input-bd:
+ * var(--mantine-color-gray-4)` - see node_modules/@mantine/core/styles/Input.css)
+ * completely independent of this app's own dark theme. Everything else
+ * (page background, body text, dimmed/placeholder text, gray-3 hairline
+ * borders) is already remapped globally via theme.ts's cssVariablesResolver
+ * - but --input-bg/--input-bd aren't part of that mechanism (Mantine only
+ * exposes Input's SIZE-related vars, like --input-height, through the
+ * component `vars` resolver API - the color ones are plain CSS rules keyed
+ * off `[data-mantine-color-scheme]` + `[data-variant]`, so they have to be
+ * overridden the same way, with a plain CSS rule).
+ *
+ * Net effect without this: text.ts's own near-white `--mantine-color-text`
+ * (correctly applied to input text via `--input-color`) renders on top of
+ * Mantine's own near-white default background - invisible text, on every
+ * new TextInput/Select/etc. added to this app unless individually patched
+ * with an inline `styles={{ input: { backgroundColor: ..., color: ... } }}`
+ * override (the same fix has now been applied ad-hoc, per-component,
+ * multiple times - ChunkPreviewPage's search field, Upload's filter field,
+ * RelevancePage's question field - see feedback memory). This is the fix
+ * applied ONCE, globally, so it can't be missed on the next new input.
+ *
+ * `.mantine-Input-wrapper` is Mantine's own stable, human-readable class
+ * (not the internal per-build CSS-modules hash) kept in the DOM specifically
+ * for this kind of external override - present on every Input-family
+ * component's wrapper element regardless of which higher-level component
+ * (TextInput, Select, ...) composes it. The leading `html` element selector
+ * is a deliberate specificity bump (matches Mantine's own
+ * `[data-mantine-color-scheme] .<hash>[data-variant='default']` rule
+ * exactly on class+attribute count, so equal specificity would otherwise
+ * come down to a fragile CSS-import-order tiebreak) - same
+ * beat-Mantine's-own-rule-by-specificity technique already used for
+ * ChunkPreviewPage's Undo/Redo buttons and the Clear chat button (see
+ * ChunkPreviewPage.module.css's .historyButton comment) - so this wins
+ * unconditionally, regardless of where this stylesheet ends up in the
+ * bundle relative to Mantine's own.
+ */
+html[data-mantine-color-scheme='light'] .mantine-Input-wrapper[data-variant='default'] {
+  --input-bg: var(--doc-surface);
+  --input-bd: var(--doc-hairline);
+}
+
+/*
+ * Same bug class as the Input fix above, now hit by @mantine/dates'
+ * DateInput/TimePicker/DateTimePicker dropdowns (any Popover-based
+ * component, really - Select/Menu would have the same problem if/when this
+ * app adds one): Popover.Dropdown's background-color is a plain
+ * `[data-mantine-color-scheme='light'] .<hash> { background-color:
+ * var(--mantine-color-white); }` rule (see
+ * node_modules/@mantine/core/styles/Popover.css) - not part of the vars
+ * resolver, and not overridden by anything theme.ts already remaps. It also
+ * sets no `color`, so it was rendering with the browser's black initial
+ * value on top of that hardcoded white - pure unstyled Mantine defaults,
+ * completely independent of this app's dark theme.
+ *
+ * Setting `color` here (not just `background-color`) is enough to fix every
+ * control inside the dropdown too (calendar day cells, TimePicker's
+ * hour/minute fields, ...) without a rule per element - none of those set
+ * their own resting `color` (only `:hover`/`:active`/`[data-active]` do), so
+ * they inherit this one. Same `html[data-mantine-color-scheme='light']`
+ * specificity-bump technique as the Input fix (Mantine's own rule is
+ * `:where([data-mantine-color-scheme='light'])`, zero specificity).
+ */
+html[data-mantine-color-scheme='light'] .mantine-Popover-dropdown {
+  background-color: var(--doc-surface);
+  border-color: var(--doc-hairline);
+  color: var(--doc-text);
+}

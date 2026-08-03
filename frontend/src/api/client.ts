@@ -1,4 +1,4 @@
-import type { Chunk, ChatMessage, DashboardEvent, DocumentSummary } from './types'
+import type { ChatMessage, Chunk, ChunkGraph, DashboardEvent, DashboardStats, DashboardStatsRange, DocumentSummary, RelevantChunkMatch } from './types'
 
 import { httpApiClient } from './httpClient'
 
@@ -11,7 +11,10 @@ export interface ApiClient {
   listChatMessages(): Promise<ChatMessage[]>
   sendChatMessage(content: string): Promise<ChatMessage>
   dislikeMessage(messageId: string): Promise<void>
+  getTopMatchingChunks(content: string): Promise<RelevantChunkMatch[]>
   getDashboardEvents(): Promise<DashboardEvent[]>
+  getDashboardStats(range: DashboardStatsRange): Promise<DashboardStats>
+  getChunkGraph(): Promise<ChunkGraph>
 }
 
 // Bound to the real HTTP-backed implementation. Page components always

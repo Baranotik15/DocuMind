@@ -168,6 +168,23 @@ export const mockApiClient: ApiClient = {
     message.disliked = true
   },
 
+  // No real embedding/similarity search in this mock - just returns up to
+  // the first 5 seeded chunks with a deterministically decreasing (but
+  // fake) matchPercent, purely so RelevancePage has something to render
+  // while wired against this client.
+  async getTopMatchingChunks(_content) {
+    return chunks.slice(0, 5).map((chunk, index) => {
+      const document = documents.find((candidate) => candidate.id === chunk.documentId)
+      return {
+        chunkId: chunk.id,
+        documentId: chunk.documentId,
+        filename: document?.filename ?? 'unknown',
+        content: chunk.editedContent,
+        matchPercent: Math.max(10, 90 - index * 15),
+      }
+    })
+  },
+
   async getDashboardEvents() {
     return dashboardEvents.map((event) => ({ ...event }))
   },
