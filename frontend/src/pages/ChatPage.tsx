@@ -77,16 +77,37 @@ function ThumbsDownIcon(): JSX.Element {
  * sparkOrange bubble border as the app's two-accent brand pairing (see
  * design-principles.md).
  */
+/**
+ * Custom avatar image, swappable by just replacing the file at
+ * `frontend/public/bot-avatar.png` - `public/` assets are served as-is at a
+ * stable URL (no import/rebuild needed to pick up a new file, unlike
+ * `src/assets/`), so this is a drop-in replacement. Recommended source
+ * image: square, at least 256x256px (comfortably covers this 4rem/64px
+ * circle even at 2-3x display pixel density), PNG or WEBP. It's rendered
+ * `object-fit: cover` inside a `border-radius: 50%` circle (see
+ * `.botAvatarImage` in ChatPage.module.css), so a non-square image gets
+ * center-cropped to a circle - square avoids that entirely.
+ */
+const BOT_AVATAR_IMAGE_SRC = '/bot-avatar.png'
+
 function BotAvatar(): JSX.Element {
+  // Falls back to the hand-drawn glyph below if the image 404s (e.g. no
+  // custom avatar has been dropped in at BOT_AVATAR_IMAGE_SRC yet) - a
+  // broken-image icon would otherwise show in every message bubble.
+  const [imageFailed, setImageFailed] = useState(false)
   return (
     <div className={classes.botAvatar} data-testid="bot-avatar" aria-hidden="true">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
-        <rect x="5" y="8" width="14" height="11" rx="3" fill="var(--doc-void)" />
-        <circle cx="9.5" cy="13.5" r="1.4" fill="var(--mantine-color-signalBlue-3)" />
-        <circle cx="14.5" cy="13.5" r="1.4" fill="var(--mantine-color-signalBlue-3)" />
-        <line x1="12" y1="8" x2="12" y2="4" stroke="var(--doc-void)" strokeWidth="1.6" strokeLinecap="round" />
-        <circle cx="12" cy="3" r="1.4" fill="var(--doc-void)" />
-      </svg>
+      {imageFailed ? (
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+          <rect x="5" y="8" width="14" height="11" rx="3" fill="var(--doc-void)" />
+          <circle cx="9.5" cy="13.5" r="1.4" fill="var(--mantine-color-signalBlue-3)" />
+          <circle cx="14.5" cy="13.5" r="1.4" fill="var(--mantine-color-signalBlue-3)" />
+          <line x1="12" y1="8" x2="12" y2="4" stroke="var(--doc-void)" strokeWidth="1.6" strokeLinecap="round" />
+          <circle cx="12" cy="3" r="1.4" fill="var(--doc-void)" />
+        </svg>
+      ) : (
+        <img src={BOT_AVATAR_IMAGE_SRC} alt="" className={classes.botAvatarImage} onError={() => setImageFailed(true)} />
+      )}
     </div>
   )
 }

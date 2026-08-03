@@ -346,6 +346,27 @@ describe('ChatPage', () => {
     expect(within(assistantContainer as HTMLElement).getByTestId('bot-avatar')).toBeInTheDocument()
   })
 
+  it('falls back to the hand-drawn glyph if the custom avatar image fails to load', async () => {
+    stubFetch()
+
+    renderWithProviders(<ChatPage />)
+
+    const assistantMessageText = await screen.findByText(
+      'Go to the Upload page and choose a file to add it to the library.',
+    )
+    const messageContainer = assistantMessageText.closest('[data-message-id="msg-2"]') as HTMLElement
+    const avatar = within(messageContainer).getByTestId('bot-avatar')
+
+    const image = avatar.querySelector('img')
+    expect(image).not.toBeNull()
+    expect(avatar.querySelector('svg')).toBeNull()
+
+    fireEvent.error(image as HTMLImageElement)
+
+    expect(avatar.querySelector('img')).toBeNull()
+    expect(avatar.querySelector('svg')).not.toBeNull()
+  })
+
   describe('Clear chat', () => {
     it('does not clear anything until the confirmation dialog is accepted', async () => {
       stubFetch()
