@@ -576,20 +576,40 @@ export function DashboardPage(): JSX.Element {
                 so a slightly tight column here is fine. */}
             {/* height: chartsColumnHeight - жёсткое число из state, а не
                 auto/stretch/grid-row (см. комментарий у ResizeObserver-
-                эффекта выше про зацикливание через canvas). overflow:
-                hidden оставлен как страховка на случай кратковременного
-                рассинхрона (например, если ChunkGraphPanel успевает
-                отрисовать canvas на кадр раньше, чем применится новая
-                высота) - без него контент мог бы на миг вылезти за рамки
-                Paper вместо того, чтобы просто обрезаться. */}
+                эффекта выше про зацикливание через canvas). Заголовок
+                "3D Chunk Map" делит этот же бюджет высоты с самим 3D-видом
+                (flexDirection: 'column' + Box{flex:1} ниже) - иначе высота
+                правой колонки превысила бы chartsColumnHeight и снова
+                перестала бы совпадать с колонкой графиков слева.
+                overflow: hidden оставлен как страховка на случай
+                кратковременного рассинхрона (например, если ChunkGraphPanel
+                успевает отрисовать canvas на кадр раньше, чем применится
+                новая высота) - без него контент мог бы на миг вылезти за
+                рамки Paper вместо того, чтобы просто обрезаться. */}
             <Paper
               radius="lg"
               p="md"
               bg="var(--doc-surface)"
               withBorder
-              style={{ flex: 1.3, minWidth: 360, height: chartsColumnHeight, display: 'flex', overflow: 'hidden' }}
+              style={{
+                flex: 1.3,
+                minWidth: 360,
+                height: chartsColumnHeight,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--mantine-spacing-sm)',
+                overflow: 'hidden',
+              }}
             >
-              <ChunkGraphPanel />
+              <Title order={4}>3D Chunk Map</Title>
+              {/* minHeight: 0 - a flex item's default min-height is `auto`
+                  (its content's natural size), which for this WebGL canvas
+                  wrapper would ignore `flex: 1`'s shrink and push the Paper
+                  taller than chartsColumnHeight instead of sharing the
+                  budget with the Title above it. */}
+              <Box style={{ flex: 1, minHeight: 0 }}>
+                <ChunkGraphPanel />
+              </Box>
             </Paper>
           </Group>
         </>

@@ -1,4 +1,5 @@
 import type { JSX } from 'react'
+import type { PerspectiveCamera } from 'three'
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
 import { useEffect, useRef, useState } from 'react'
@@ -6,7 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Box, Button, Group, Modal, Stack, Text, Title } from '@mantine/core'
 import ForceGraph3D from '3d-force-graph'
 import { useNavigate } from 'react-router-dom'
-import { MOUSE } from 'three'
+import { MOUSE, Vector3 } from 'three'
 
 import classes from './ChunkGraphPanel.module.css'
 import { apiClient } from '../api/client'
@@ -21,6 +22,23 @@ const POSITION_SCALE = 40
 // own default (1) as a named constant, not a magic number at the call site,
 // so it's a single obvious place to retune if panning feels too slow/fast.
 const GRAPH_PAN_SPEED = 1
+
+// Idle auto-rotate speed (OrbitControls' own default is 2, a full turn
+// every ~30s) - kept slow/subtle since this is just an idle flourish, not a
+// primary way to view the graph (real rotation is still the RIGHT-drag
+// above). Paused while the pointer is over the panel (see the mouseenter/
+// mouseleave listeners below) so it doesn't fight an operator's own
+// interaction.
+const GRAPH_AUTO_ROTATE_SPEED = 0.5
+
+// Multiplies the initial fit-to-cluster camera distance (see
+// computeMaxPairwiseDistance/the cameraPosition call below) - 1.0 would put
+// the two farthest-apart nodes' own CENTERS exactly on the view frustum's
+// edge, but each node also has its own rendered radius (nodeRelSize), so a
+// perfectly tight fit would still visibly clip the outermost spheres. A
+// little headroom keeps every node's whole sphere on-screen instead of just
+// its center point.
+const GRAPH_INITIAL_ZOOM_PADDING = 1.15
 
 /**
  * The exact shape of the objects this component hands to 3d-force-graph's
@@ -146,6 +164,33 @@ function computeCentroid(nodes: GraphNodeDatum[]): { x: number; y: number; z: nu
     { x: 0, y: 0, z: 0 },
   )
   return { x: sum.x / nodes.length, y: sum.y / nodes.length, z: sum.z / nodes.length }
+}
+
+/**
+ * The distance between the two nodes that are farthest apart from EACH
+ * OTHER (not from the centroid, and not the bounding box's own corner-to-
+ * corner diagonal, which no real node necessarily sits on) - the real
+ * "diameter" of however spread out this particular cluster actually is.
+ * O(n^2) all-pairs comparison - fine at this app's per-document chunk
+ * counts; not worth a bounding-box approximation for the corpus sizes this
+ * graph is ever built from. Used below to size the initial camera distance
+ * so the cluster fills the view without clipping either of those two
+ * farthest-apart nodes.
+ */
+function computeMaxPairwiseDistance(nodes: GraphNodeDatum[]): number {
+  let maxDistanceSquared = 0
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const dx = nodes[i].fx - nodes[j].fx
+      const dy = nodes[i].fy - nodes[j].fy
+      const dz = nodes[i].fz - nodes[j].fz
+      const distanceSquared = dx * dx + dy * dy + dz * dz
+      if (distanceSquared > maxDistanceSquared) {
+        maxDistanceSquared = distanceSquared
+      }
+    }
+  }
+  return Math.sqrt(maxDistanceSquared)
 }
 
 /**
@@ -293,6 +338,21 @@ export function ChunkGraphPanel(): JSX.Element {
     // buried in the OrbitControls call site.
     controls.panSpeed = GRAPH_PAN_SPEED
 
+    // Idle auto-rotate, paused whenever the pointer is actually over the
+    // panel - starts back up on mouseleave rather than staying off for the
+    // rest of the session, per explicit request ("a little rotation by
+    // default when the mouse ISN'T over the 3D map").
+    controls.autoRotate = true
+    controls.autoRotateSpeed = GRAPH_AUTO_ROTATE_SPEED
+    const stopAutoRotate = () => {
+      controls.autoRotate = false
+    }
+    const startAutoRotate = () => {
+      controls.autoRotate = true
+    }
+    container.addEventListener('mouseenter', stopAutoRotate)
+    container.addEventListener('mouseleave', startAutoRotate)
+
     // The one-time `container.clientWidth`/`clientHeight` reads above are
     // just a reasonable first guess - this ResizeObserver is what actually
     // keeps the canvas matching this container's real size afterward. It's
@@ -332,12 +392,48 @@ export function ChunkGraphPanel(): JSX.Element {
 
       // Re-pivots orbit rotation onto the cluster's actual center - see
       // computeCentroid's own comment for why this can't just stay at
-      // OrbitControls' default (0, 0, 0). `update()` applies the new
-      // target immediately rather than waiting for the next drag to
-      // silently jump to it.
+      // OrbitControls' default (0, 0, 0).
       if (nodes.length > 0) {
         const centroid = computeCentroid(nodes)
         controls.target.set(centroid.x, centroid.y, centroid.z)
+
+        // Zooms the initial view in as close as the cluster's actual
+        // spread allows without clipping it - 3d-force-graph's own default
+        // camera distance has no idea how spread out THIS graph's UMAP
+        // coordinates are, which is why the cluster used to render tiny in
+        // the middle of a mostly-empty box. Keeps the camera's existing
+        // viewing DIRECTION (whatever 3d-force-graph's default framing
+        // already was) and only rescales its distance from the centroid -
+        // a full re-aim isn't needed, just how far back it sits.
+        if (nodes.length > 1) {
+          const maxDistance = computeMaxPairwiseDistance(nodes)
+          const radius = maxDistance / 2
+          const perspectiveCamera = graph.camera() as PerspectiveCamera
+          const verticalFovRadians = (perspectiveCamera.fov * Math.PI) / 180
+          const fitDistance = (radius / Math.sin(verticalFovRadians / 2)) * GRAPH_INITIAL_ZOOM_PADDING
+
+          const currentPosition = graph.cameraPosition()
+          const direction = new Vector3(currentPosition.x, currentPosition.y, currentPosition.z).sub(
+            new Vector3(centroid.x, centroid.y, centroid.z),
+          )
+          if (direction.lengthSq() === 0) {
+            // Degenerate only if the default camera ever started exactly
+            // at the centroid (shouldn't happen in practice) - falls back
+            // to looking down the z-axis rather than producing a NaN
+            // position from normalizing a zero-length vector.
+            direction.set(0, 0, 1)
+          }
+          direction.normalize().multiplyScalar(fitDistance)
+
+          graph.cameraPosition(
+            { x: centroid.x + direction.x, y: centroid.y + direction.y, z: centroid.z + direction.z },
+            centroid,
+            0,
+          )
+        }
+
+        // Applies the target/position changes above immediately, rather
+        // than waiting for the next drag to silently jump to them.
         controls.update()
       }
     })
@@ -345,6 +441,8 @@ export function ChunkGraphPanel(): JSX.Element {
     return () => {
       cancelled = true
       resizeObserver.disconnect()
+      container.removeEventListener('mouseenter', stopAutoRotate)
+      container.removeEventListener('mouseleave', startAutoRotate)
       graph._destructor()
       container.replaceChildren()
     }

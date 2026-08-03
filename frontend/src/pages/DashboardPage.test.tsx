@@ -22,6 +22,13 @@ vi.mock('3d-force-graph', () => ({
       // (mouseButtons/panSpeed, plus target.set/update for the centroid
       // re-pivot).
       controls: vi.fn(() => ({ mouseButtons: {}, target: { set: vi.fn() }, update: vi.fn() })),
+      // Also not chainable - real 3d-force-graph returns the actual
+      // THREE.PerspectiveCamera (camera()) and a plain {x,y,z}
+      // (cameraPosition(), called here with no args as a getter) rather
+      // than the graph itself. A fixed fov/position is enough for the
+      // zoom-to-fit math to run without throwing.
+      camera: vi.fn(() => ({ fov: 50 })),
+      cameraPosition: vi.fn(() => ({ x: 0, y: 0, z: 100 })),
     }
     for (const method of ['backgroundColor', 'width', 'height', 'nodeLabel', 'nodeRelSize', 'nodeColor', 'linkOpacity', 'linkColor', 'linkWidth', 'showNavInfo', 'enableNodeDrag', 'onNodeClick', 'graphData']) {
       stub[method] = vi.fn(() => stub)

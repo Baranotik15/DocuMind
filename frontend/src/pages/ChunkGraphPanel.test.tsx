@@ -32,7 +32,7 @@ const chainableMethods = [
   'graphData',
 ] as const
 
-let graphStub: Record<(typeof chainableMethods)[number] | '_destructor' | 'controls', ReturnType<typeof vi.fn>>
+let graphStub: Record<(typeof chainableMethods)[number] | '_destructor' | 'controls' | 'camera' | 'cameraPosition', ReturnType<typeof vi.fn>>
 
 function createGraphStub() {
   const stub = {} as typeof graphStub
@@ -46,6 +46,13 @@ function createGraphStub() {
   // actually touches (mouseButtons/panSpeed, plus target.set/update for the
   // centroid re-pivot) instead of `stub`.
   stub.controls = vi.fn(() => ({ mouseButtons: {}, target: { set: vi.fn() }, update: vi.fn() }))
+  // Also not chainable - real 3d-force-graph returns the actual
+  // THREE.PerspectiveCamera (camera()) and a plain {x,y,z} (cameraPosition(),
+  // called here with no args as a getter) rather than the graph itself.
+  // A fixed fov/position is enough for the zoom-to-fit math to run without
+  // throwing - this file doesn't assert on the exact camera framing.
+  stub.camera = vi.fn(() => ({ fov: 50 }))
+  stub.cameraPosition = vi.fn(() => ({ x: 0, y: 0, z: 100 }))
   return stub
 }
 
