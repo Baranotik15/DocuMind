@@ -1,0 +1,77 @@
+/* Stats/Logs toggle buttons (DashboardPage.tsx): on hover, Mantine's own
+   Button.css sets `background-color: var(--button-hover, ...)` inline via
+   its vars resolver - fighting that custom property directly can't win
+   (Mantine sets it as an inline style on the same element, which always
+   outranks an external stylesheet rule for the same property/element,
+   `!important` aside). Targeting the real `background-color` property
+   instead, pinned back to `var(--button-bg)` (also set inline by Mantine,
+   just not overridden by its own hover rule), sidesteps that fight
+   entirely - and self-references whichever resting color already applies
+   (transparent when idle, filled sparkOrange when active), so one rule
+   covers both states without a bespoke value per variant. This rule's own
+   specificity (class + two pseudo-classes) already outranks Mantine's own
+   hover rule (one class + :hover, :where(...) contributes zero) - see
+   `.toolbarButton.historyButton` in ChunkPreviewPage.module.css for the
+   same "outrank by specificity, not injection order" reasoning applied to a
+   different Mantine override. No background change on hover; a small
+   scale-up reads as the button (and its text) growing instead - the same
+   idiom as `.toolbarButton:hover` there. */
+.tabButton {
+  transition: transform 150ms ease;
+}
+
+@media (hover: hover) {
+  .tabButton:hover:not(:disabled) {
+    background-color: var(--button-bg);
+    transform: scale(1.06);
+  }
+}
+
+/* Logs tab pagination (Previous/Next) - same scale-on-hover idiom as
+   ChunkPreviewPage.module.css's own .paginationButton. */
+.paginationButton {
+  transition: transform 150ms ease;
+}
+
+@media (hover: hover) {
+  .paginationButton:hover {
+    transform: scale(1.05);
+  }
+}
+
+/* Caps the Detail cell's width so a long, unbroken detail string wraps onto
+   several lines instead of stretching the column arbitrarily wide - the
+   full text still renders (nothing is truncated with an ellipsis),
+   `word-break` covers detail strings with no natural break points (e.g. a
+   long path or UUID) that `white-space: normal` alone wouldn't wrap. */
+.detailCell {
+  max-width: 32rem;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* Logs table frame's own scrollbar (DashboardPage.tsx's 80vh Box) - same
+   slim, theme-colored, signalBlue-on-hover restyle as ChatPage's own
+   `.scrollArea` (ChatPage.module.css), reused here rather than shared
+   cross-file per this codebase's existing per-page CSS Module convention. */
+.scrollArea {
+  scrollbar-width: thin;
+  scrollbar-color: var(--doc-hairline) transparent;
+}
+
+.scrollArea::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scrollArea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollArea::-webkit-scrollbar-thumb {
+  background-color: var(--doc-hairline);
+  border-radius: 999px;
+}
+
+.scrollArea::-webkit-scrollbar-thumb:hover {
+  background-color: var(--mantine-color-signalBlue-6);
+}

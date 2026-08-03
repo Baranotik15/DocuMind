@@ -18,6 +18,7 @@ describe('RelevancePage', () => {
   beforeEach(() => {
     fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+    window.localStorage.clear()
   })
 
   afterEach(() => {
@@ -133,5 +134,50 @@ describe('RelevancePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /search/i }))
 
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('persists the last question and its results across remounts, until the next search', async () => {
+    stubSearch(matches)
+
+    const { unmount } = renderWithProviders(<RelevancePage />)
+
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'What does the backend use?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findAllByText('architecture-guide.pdf')
+
+    unmount()
+    renderWithProviders(<RelevancePage />)
+
+    expect(screen.getByRole('textbox', { name: /question/i })).toHaveValue('What does the backend use?')
+    expect(screen.getAllByText('architecture-guide.pdf')).toHaveLength(2)
+    expect(screen.getByText('87.3%')).toBeInTheDocument()
+    expect(screen.getByText('54.1%')).toBeInTheDocument()
+  })
+
+  it('replaces the persisted question and results once a new search completes', async () => {
+    stubSearch(matches)
+    const { unmount } = renderWithProviders(<RelevancePage />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), { target: { value: 'first question' } })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findAllByText('architecture-guide.pdf')
+    unmount()
+
+    const secondMatches: RelevantChunkMatch[] = [
+      { chunkId: 'chunk-3', documentId: 'doc-2', filename: 'other.pdf', content: 'Something else entirely.', matchPercent: 12.0 },
+    ]
+    stubSearch(secondMatches)
+    const { unmount: unmountSecond } = renderWithProviders(<RelevancePage />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), { target: { value: 'second question' } })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('other.pdf')
+    unmountSecond()
+
+    renderWithProviders(<RelevancePage />)
+
+    expect(screen.getByRole('textbox', { name: /question/i })).toHaveValue('second question')
+    expect(screen.getByText('other.pdf')).toBeInTheDocument()
+    expect(screen.queryByText('architecture-guide.pdf')).not.toBeInTheDocument()
   })
 })

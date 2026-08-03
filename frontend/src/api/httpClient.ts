@@ -145,4 +145,12 @@ export const httpApiClient: ApiClient = {
   getDashboardEvents() {
     return requestJson('/internal/dashboard/events', { method: 'GET' })
   },
+
+  getDashboardStats(range) {
+    return requestJson(`/internal/dashboard/stats?range=${range}`, { method: 'GET' })
+  },
+
+  getChunkGraph() {
+    return requestJson('/internal/dashboard/chunk-graph', { method: 'GET' })
+  },
 }

@@ -42,3 +42,30 @@ html[data-mantine-color-scheme='light'] .mantine-Input-wrapper[data-variant='def
   --input-bg: var(--doc-surface);
   --input-bd: var(--doc-hairline);
 }
+
+/*
+ * Same bug class as the Input fix above, now hit by @mantine/dates'
+ * DateInput/TimePicker/DateTimePicker dropdowns (any Popover-based
+ * component, really - Select/Menu would have the same problem if/when this
+ * app adds one): Popover.Dropdown's background-color is a plain
+ * `[data-mantine-color-scheme='light'] .<hash> { background-color:
+ * var(--mantine-color-white); }` rule (see
+ * node_modules/@mantine/core/styles/Popover.css) - not part of the vars
+ * resolver, and not overridden by anything theme.ts already remaps. It also
+ * sets no `color`, so it was rendering with the browser's black initial
+ * value on top of that hardcoded white - pure unstyled Mantine defaults,
+ * completely independent of this app's dark theme.
+ *
+ * Setting `color` here (not just `background-color`) is enough to fix every
+ * control inside the dropdown too (calendar day cells, TimePicker's
+ * hour/minute fields, ...) without a rule per element - none of those set
+ * their own resting `color` (only `:hover`/`:active`/`[data-active]` do), so
+ * they inherit this one. Same `html[data-mantine-color-scheme='light']`
+ * specificity-bump technique as the Input fix (Mantine's own rule is
+ * `:where([data-mantine-color-scheme='light'])`, zero specificity).
+ */
+html[data-mantine-color-scheme='light'] .mantine-Popover-dropdown {
+  background-color: var(--doc-surface);
+  border-color: var(--doc-hairline);
+  color: var(--doc-text);
+}

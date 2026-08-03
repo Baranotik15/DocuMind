@@ -14,3 +14,5 @@ openai
 pypdf
 python-docx
 python-multipart
+numpy
+umap-learn

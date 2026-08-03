@@ -9,6 +9,41 @@ import type { RelevantChunkMatch } from '../api/types'
 
 const SEARCH_ERROR_MESSAGE = "Couldn't retrieve matching chunks - try again."
 
+// The last submitted question and its results survive navigating away and
+// back (the route unmounts this page) and a page reload, exactly like
+// ChatPage's "Clear chat" localStorage persistence - they stay visible
+// until the next search completes, which overwrites this entry.
+const LAST_SEARCH_STORAGE_KEY = 'documind:relevance:lastSearch'
+
+interface PersistedSearch {
+  query: string
+  results: RelevantChunkMatch[]
+}
+
+function loadPersistedSearch(): PersistedSearch | null {
+  try {
+    const raw = window.localStorage.getItem(LAST_SEARCH_STORAGE_KEY)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw) as PersistedSearch
+    return typeof parsed.query === 'string' && Array.isArray(parsed.results) ? parsed : null
+  } catch {
+    // Malformed/inaccessible storage degrades to "nothing persisted" rather
+    // than throwing - same rationale as ChatPage's hidden-message-ids store.
+    return null
+  }
+}
+
+function savePersistedSearch(search: PersistedSearch): void {
+  try {
+    window.localStorage.setItem(LAST_SEARCH_STORAGE_KEY, JSON.stringify(search))
+  } catch {
+    // Failing to persist just means this search won't survive a reload -
+    // not worth surfacing to the user over.
+  }
+}
+
 /** Simple send-arrow glyph - same as ChatPage's own SendIcon (no icon library installed, see design-principles.md). */
 function SearchArrowIcon(): JSX.Element {
   return (
@@ -20,9 +55,10 @@ function SearchArrowIcon(): JSX.Element {
 }
 
 export function RelevancePage(): JSX.Element {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<RelevantChunkMatch[]>([])
-  const [hasSearched, setHasSearched] = useState(false)
+  const persisted = loadPersistedSearch()
+  const [query, setQuery] = useState(persisted?.query ?? '')
+  const [results, setResults] = useState<RelevantChunkMatch[]>(persisted?.results ?? [])
+  const [hasSearched, setHasSearched] = useState(persisted !== null)
   const [isSearching, setIsSearching] = useState(false)
   const [searchFailed, setSearchFailed] = useState(false)
 
@@ -37,6 +73,7 @@ export function RelevancePage(): JSX.Element {
       const matches = await apiClient.getTopMatchingChunks(content)
       setResults(matches)
       setHasSearched(true)
+      savePersistedSearch({ query: content, results: matches })
     } catch {
       setSearchFailed(true)
     } finally {
@@ -45,7 +82,7 @@ export function RelevancePage(): JSX.Element {
   }
 
   return (
-    <Stack gap="lg" maw={900}>
+    <Stack gap="lg" w="100%" maw={900} mx="auto">
       <Title order={2}>Relevance Preview</Title>
       <Text size="sm" c="dimmed">
         See which chunks would be retrieved for a question, and how closely each one matches, before it ever
