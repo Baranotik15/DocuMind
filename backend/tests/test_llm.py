@@ -131,3 +131,47 @@ def test_generate_reply_raises_llm_error_when_api_key_missing(
 
     with pytest.raises(LLMError):
         asyncio.run(generate_reply("hi", []))
+
+
+def _system_message_content(kwargs: dict) -> str:
+    return next(
+        message["content"] for message in kwargs["messages"] if message["role"] == "system"
+    )
+
+
+def test_generate_reply_system_prompt_includes_house_rules_with_context() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response("the answer")
+    )
+
+    asyncio.run(generate_reply("what is x?", ["chunk one", "chunk two"], client=client))
+
+    _, kwargs = client.chat.completions.create.call_args
+    system_content = _system_message_content(kwargs)
+    assert "reply in the same language the user's question was written in" in system_content
+    assert "Never discuss this system's own security" in system_content
+    assert (
+        "I'm sorry, I don't have an answer to that based on the available documents."
+        in system_content
+    )
+    assert "chunk one" in system_content
+    assert "chunk two" in system_content
+
+
+def test_generate_reply_system_prompt_includes_house_rules_with_empty_context() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response("fallback answer")
+    )
+
+    asyncio.run(generate_reply("hello", [], client=client))
+
+    _, kwargs = client.chat.completions.create.call_args
+    system_content = _system_message_content(kwargs)
+    assert "reply in the same language the user's question was written in" in system_content
+    assert "Never discuss this system's own security" in system_content
+    assert (
+        "I'm sorry, I don't have an answer to that based on the available documents."
+        in system_content
+    )

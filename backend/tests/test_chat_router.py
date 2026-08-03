@@ -224,7 +224,7 @@ def test_send_message_embed_texts_llm_error_returns_502_and_user_message_persist
         _cleanup_messages(message_ids)
 
 
-def test_dislike_message_is_idempotent(client: TestClient) -> None:
+def test_dislike_message_toggles_disliked_flag_on_and_off(client: TestClient) -> None:
     message_ids: list[str] = []
     user_content = f"dislike me {uuid.uuid4()}"
     with (
@@ -245,6 +245,11 @@ def test_dislike_message_is_idempotent(client: TestClient) -> None:
         )
         message_ids.append(user_message["id"])
 
+        # Freshly sent messages start with disliked=false.
+        matching = next(m for m in list_response.json() if m["id"] == assistant_id)
+        assert matching["disliked"] is False
+
+        # First call flips false -> true.
         first_dislike = client.post(
             f"/internal/chat/messages/{assistant_id}/dislike"
         )
@@ -252,14 +257,18 @@ def test_dislike_message_is_idempotent(client: TestClient) -> None:
         assert first_dislike.content == b""
 
         list_response = client.get("/internal/chat/messages")
-        matching = next(
-            m for m in list_response.json() if m["id"] == assistant_id
-        )
+        matching = next(m for m in list_response.json() if m["id"] == assistant_id)
         assert matching["disliked"] is True
 
+        # Second call on the same message flips true -> false (undo).
         second_dislike = client.post(
             f"/internal/chat/messages/{assistant_id}/dislike"
         )
         assert second_dislike.status_code == 204
+        assert second_dislike.content == b""
+
+        list_response = client.get("/internal/chat/messages")
+        matching = next(m for m in list_response.json() if m["id"] == assistant_id)
+        assert matching["disliked"] is False
     finally:
         _cleanup_messages(message_ids)

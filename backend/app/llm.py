@@ -1,8 +1,12 @@
 from functools import lru_cache
+from pathlib import Path
 
 from openai import AsyncOpenAI
 
 from app.config import get_settings
+
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+CHAT_SYSTEM_PROMPT = (_PROMPTS_DIR / "chat_system_prompt.txt").read_text().strip()
 
 
 class LLMError(Exception):
@@ -58,9 +62,6 @@ async def generate_reply(
 
 def _build_system_prompt(context_chunks: list[str]) -> str:
     if not context_chunks:
-        return "You are a helpful assistant. No document context is available."
+        return f"{CHAT_SYSTEM_PROMPT}\n\nNo document context is available for this question."
     joined = "\n\n".join(context_chunks)
-    return (
-        "You are a helpful assistant. Use the following document excerpts "
-        f"as context when answering the user's question:\n\n{joined}"
-    )
+    return f"{CHAT_SYSTEM_PROMPT}\n\nDocument context:\n\n{joined}"

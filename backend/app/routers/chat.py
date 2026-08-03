@@ -118,12 +118,15 @@ async def list_messages(session: AsyncSession = Depends(get_session)) -> list[di
 async def dislike_message(
     message_id: str, session: AsyncSession = Depends(get_session)
 ) -> None:
-    """UPDATE chat_messages SET disliked=true WHERE id=:id - a no-op,
-    still 204, if the id is already disliked or doesn't exist at all
-    (idempotent per spec - deliberately not a 404, unlike other
-    "not found" cases elsewhere in this codebase)."""
+    """UPDATE chat_messages SET disliked = NOT disliked WHERE id=:id - a
+    toggle, not a one-way flag: each call flips the current value, so a
+    second call on the same message undoes the first (guards against
+    accidental double-clicks on the frontend's dislike button). Still 204
+    with no body either way, and still a no-op (not a 404), if the id
+    doesn't exist - deliberately not a 404, unlike other "not found" cases
+    elsewhere in this codebase."""
     await session.execute(
-        text("UPDATE chat_messages SET disliked = true WHERE id = :id"),
+        text("UPDATE chat_messages SET disliked = NOT disliked WHERE id = :id"),
         {"id": message_id},
     )
     await session.commit()
