@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Box, Button, Group, Paper, Select, SimpleGrid, Stack, Table, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
+import { Box, Button, Group, Loader, Paper, Select, SimpleGrid, Stack, Table, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
 import { DateInput, TimePicker } from '@mantine/dates'
 
 import { ChunkGraphPanel } from './ChunkGraphPanel'
@@ -151,11 +151,13 @@ interface SpendBlockProps {
   /** Already-formatted display string (see formatSpendAmount/formatTokenCount) for the currently selected OpenAiSpendRange - callers pick which formatter, this component just centers/sizes whatever string it's handed. */
   value: string
   configured: boolean
+  /** True during the brief post-range-click delay (see handleSpendRangeChange) - swaps the number for a same-height spinner so switching ranges doesn't just snap, purely cosmetic per explicit request. Never true on the initial fetch/unconfigured states, only on a later range change. */
+  loading: boolean
 }
 
 /** One big-number block (tokens or money, picked by the caller) for the OpenAI spend area - large, centered text filling the block, same "big number" idiom as StatCard above but centered both axes (StatCard is left-aligned/stacked) since this block has nothing else competing for space once it's down to a single value. */
 /** Left-aligned (not centered) label + value, per explicit correction - matches StatCard's own left-aligned convention elsewhere in this same stat-card row, rather than standing out as the one centered block. justify="center" still vertically centers the pair within the block's own height (only the horizontal axis changed). */
-function SpendBlock({ label, value, configured }: SpendBlockProps): JSX.Element {
+function SpendBlock({ label, value, configured, loading }: SpendBlockProps): JSX.Element {
   return (
     <Paper radius="lg" p="md" bg="var(--doc-surface)" withBorder style={{ flex: 1, minWidth: 140, display: 'flex' }}>
       <Stack gap={4} justify="center" style={{ width: '100%' }}>
@@ -163,9 +165,16 @@ function SpendBlock({ label, value, configured }: SpendBlockProps): JSX.Element 
           {label}
         </Text>
         {configured ? (
-          <Text fw={700} ta="center" style={{ fontSize: '2.5rem', lineHeight: 1.1 }}>
-            {value}
-          </Text>
+          loading ? (
+            // Same 2.75rem box height as the Text below (2.5rem font * 1.1 line-height) so the block doesn't jump while the spinner's up.
+            <Box style={{ height: '2.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Loader color="sparkOrange" size="sm" />
+            </Box>
+          ) : (
+            <Text fw={700} ta="center" style={{ fontSize: '2.5rem', lineHeight: 1.1 }}>
+              {value}
+            </Text>
+          )
         ) : (
           <Text size="xs" c="dimmed">
             Admin key not configured
@@ -449,6 +458,13 @@ export function DashboardPage(): JSX.Element {
   // never refetches (unlike statsRange above, which drives the
   // stats-polling effect's own dependency array).
   const [spendRange, setSpendRange] = useState<OpenAiSpendRange>('day')
+  // Cosmetic-only, per explicit request: true for a random 300-1000ms
+  // after a range click, during which both SpendBlocks below show a
+  // spinner instead of their (already-fetched, see openAiSpend above)
+  // number. Only handleSpendRangeChange ever flips this - never touched by
+  // the initial fetch or the configured:false branch.
+  const [spendRangeLoading, setSpendRangeLoading] = useState(false)
+  const spendRangeTimeoutRef = useRef<number | null>(null)
   // Реальная измеренная высота левой колонки (Messages sent + Dislikes) -
   // единственный источник высоты для 3D-панели справа, см. ResizeObserver
   // ниже и Paper, которому эта высота выставляется напрямую через style.
@@ -490,6 +506,18 @@ export function DashboardPage(): JSX.Element {
   function setActiveTab(tab: DashboardTab): void {
     setActiveTabState(tab)
     saveActiveTab(tab)
+  }
+
+  // Clears any still-pending reveal before starting a fresh one, so
+  // rapid re-clicks restart the delay instead of an earlier click's timer
+  // firing after a later one and re-hiding the number.
+  function handleSpendRangeChange(range: OpenAiSpendRange): void {
+    setSpendRange(range)
+    setSpendRangeLoading(true)
+    if (spendRangeTimeoutRef.current !== null) {
+      window.clearTimeout(spendRangeTimeoutRef.current)
+    }
+    spendRangeTimeoutRef.current = window.setTimeout(() => setSpendRangeLoading(false), 300 + Math.random() * 700)
   }
 
   function cycleLogsSortDirection(): void {
@@ -582,6 +610,17 @@ export function DashboardPage(): JSX.Element {
       cancelled = true
     }
   }, [activeTab])
+
+  // Mount-once cleanup for handleSpendRangeChange's own timer above - not
+  // re-run per range change (empty deps), just guards against the pending
+  // reveal firing setSpendRangeLoading after this page has unmounted.
+  useEffect(() => {
+    return () => {
+      if (spendRangeTimeoutRef.current !== null) {
+        window.clearTimeout(spendRangeTimeoutRef.current)
+      }
+    }
+  }, [])
 
   // Меряем реальную высоту левой колонки с графиками и кладём её в state -
   // именно это число потом идёт напрямую в style Paper справа (см. JSX
@@ -702,7 +741,7 @@ export function DashboardPage(): JSX.Element {
               <StatCard label="Total Dislikes" value={stats?.totalDislikes ?? 0} />
             </SimpleGrid>
             <Stack gap="sm" style={{ flex: 1, minWidth: 280 }}>
-              <SegmentedToggle options={OPENAI_SPEND_RANGE_OPTIONS} value={spendRange} onChange={setSpendRange} />
+              <SegmentedToggle options={OPENAI_SPEND_RANGE_OPTIONS} value={spendRange} onChange={handleSpendRangeChange} />
               {/* openAiSpend starts `null` (not yet fetched - treated as
                   "configured" so it shows a momentary 0 rather than
                   flashing the "not configured" message) vs. a real
@@ -715,14 +754,16 @@ export function DashboardPage(): JSX.Element {
                   stretched height. */}
               <Group align="stretch" gap="lg" wrap="wrap" style={{ flex: 1 }}>
                 <SpendBlock
-                  label="Tokens"
+                  label="Tokens Spend"
                   value={formatTokenCount(openAiSpend?.tokens?.[spendRange] ?? 0)}
                   configured={openAiSpend?.configured ?? true}
+                  loading={spendRangeLoading}
                 />
                 <SpendBlock
-                  label="Spend"
+                  label="Money Spend"
                   value={formatSpendAmount(openAiSpend?.[spendRange] ?? 0, openAiSpend?.currency ?? 'usd')}
                   configured={openAiSpend?.configured ?? true}
+                  loading={spendRangeLoading}
                 />
               </Group>
             </Stack>
