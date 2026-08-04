@@ -2,13 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat.completion import generate_reply
+from app.chat.constants import ChatRole
+from app.chat.schemas import (
+    ChatMessageSummary,
+    SendMessageRequest,
+    TopChunkSummary,
+    TopChunksRequest,
+)
+from app.chunks.embedding import LLMError, embed_texts
+from app.chunks.retrieval import fetch_similar_chunks
 from app.config import get_settings
-from app.constants import ChatRole, DashboardEventType
+from app.dashboard_events.constants import DashboardEventType
+from app.dashboard_events.recording import record_event_async
 from app.db.session import get_session
-from app.schemas import ChatMessageSummary, SendMessageRequest, TopChunkSummary, TopChunksRequest
-from app.services.events import record_event_async
-from app.services.llm import LLMError, embed_texts, generate_reply
-from app.services.retrieval import fetch_similar_chunks
 
 router = APIRouter()
 

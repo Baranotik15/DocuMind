@@ -4,9 +4,9 @@ import pytest
 from sqlalchemy import text
 
 from app.db.sync_session import SyncSessionLocal
-from app.services.pipeline import DocumentProcessingError
-from app.services.storage import StorageKeyNotFoundError
-from app.worker.tasks import run_document_pipeline
+from app.documents.pipeline import DocumentProcessingError
+from app.documents.storage import StorageKeyNotFoundError
+from app.documents.tasks import run_document_pipeline
 
 
 @pytest.fixture(autouse=True)

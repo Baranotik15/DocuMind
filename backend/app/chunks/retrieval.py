@@ -2,8 +2,12 @@ from sqlalchemy import text
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import DocumentStatus
-from app.services.vectors import format_vector
+from app.chunks.vectors import format_vector
+
+# Only cross-entity import chunks/ makes - DocumentStatus is a plain data
+# enum (see app.documents.constants), not documents business logic, needed
+# here purely to filter the JOIN to ready documents' chunks.
+from app.documents.constants import DocumentStatus
 
 # Shared by both callers below - the pgvector cosine-similarity ORDER
 # BY/LIMIT and the ready-documents JOIN/WHERE are identical either way;
@@ -25,7 +29,7 @@ async def fetch_similar_chunks(
     with_distance: bool = False,
 ) -> list[Row]:
     """Runs the pgvector cosine-similarity search shared by
-    routers.chat.send_message (context retrieval) and routers.chat.top_chunks
+    chat.router.send_message (context retrieval) and chat.router.top_chunks
     (retrieval-quality preview): the `top_k` chunks.edited_content across
     `ready` documents' chunks, nearest `query_embedding` first.
 

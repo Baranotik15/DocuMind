@@ -8,10 +8,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.chunks.vectors import format_vector
 from app.config import Settings
-from app.db.sync_session import SyncSessionLocal
-from app.routers import dashboard
-from app.routers.dashboard import (
+from app.dashboard import router as dashboard
+from app.dashboard.router import (
     _bucket_completions_input_tokens,
     _bucket_completions_output_tokens,
     _bucket_embeddings_tokens,
@@ -20,7 +20,7 @@ from app.routers.dashboard import (
     _summarize_openai_spend,
     _summarize_openai_tokens,
 )
-from app.services.vectors import format_vector
+from app.db.sync_session import SyncSessionLocal
 
 
 def _insert_event(event_type: str, detail: str, created_at: str) -> str:
@@ -715,7 +715,7 @@ def test_chunk_graph_empty_nodes_key_shape_is_a_list(client: TestClient) -> None
 # _fetch_openai_embeddings_buckets (the only pieces of this feature that
 # talk to the real OpenAI SDK) are patched directly in every test below -
 # the same external-boundary-mocking convention test_chat_router.py uses
-# for app.routers.chat.embed_texts/generate_reply - so none of these tests
+# for app.chat.router.embed_texts/generate_reply - so none of these tests
 # ever attempt a real OpenAI call. Every test that reaches
 # get_openai_spend's try block patches all three, even ones that only care
 # about one of them, since GET /internal/dashboard/openai-spend now awaits

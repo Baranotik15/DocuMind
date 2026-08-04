@@ -3,11 +3,12 @@ import asyncio
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.constants import DashboardEventType, DocumentStatus
-from app.services.documents import split_into_chunks
-from app.services.events import record_event_sync
-from app.services.llm import embed_texts
-from app.services.vectors import format_vector
+from app.chunks.embedding import embed_texts
+from app.chunks.splitting import split_into_chunks
+from app.chunks.vectors import format_vector
+from app.dashboard_events.constants import DashboardEventType
+from app.dashboard_events.recording import record_event_sync
+from app.documents.constants import DocumentStatus
 
 
 class NoExtractableTextError(Exception):
@@ -26,7 +27,7 @@ class DocumentProcessingError(Exception):
     failure recorded as a dashboard_events row - chains the original
     exception so Celery still logs the root cause. Raised both by
     run_pipeline (chunking/embedding/DB-replace failures) and by
-    mark_document_failed's callers (e.g. tasks.run_document_pipeline's
+    mark_document_failed's callers (e.g. documents.tasks.run_document_pipeline's
     storage-read/text-extraction step, which runs before run_pipeline is
     ever reached)."""
 
@@ -53,7 +54,7 @@ def mark_document_failed(document_id: str, session: Session, exc: Exception) -> 
     step of its except block.
 
     Reused by run_pipeline's own except block below AND by
-    tasks.run_document_pipeline for failures that happen before
+    documents.tasks.run_document_pipeline for failures that happen before
     run_pipeline runs at all (e.g. the file is missing from storage, or
     extract_text rejects an unsupported/corrupt file) - both cases must
     give the same guarantee: the document never gets stuck mid-pipeline,

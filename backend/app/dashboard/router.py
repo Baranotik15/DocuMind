@@ -13,19 +13,18 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from umap import UMAP
 
+from app.chat.constants import ChatRole
 from app.config import get_settings
-from app.constants import ChatRole
-from app.db.session import get_session
-from app.schemas import (
+from app.dashboard.schemas import (
     ChunkGraph,
     ChunkGraphNode,
-    DashboardEventSummary,
     DashboardStats,
     DashboardStatsBucket,
     OpenAiSpend,
     OpenAiSpendTokens,
     OpenAiSpendTokenWindow,
 )
+from app.db.session import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -36,34 +35,6 @@ router = APIRouter()
 # idiom to follow; a bare Literal-typed parameter is FastAPI/pydantic's
 # standard way to do this.
 DashboardRange = Literal["day", "7days", "month", "year"]
-
-
-def _event_summary(row) -> DashboardEventSummary:
-    return DashboardEventSummary(
-        id=str(row.id),
-        type=row.type,
-        timestamp=row.created_at.isoformat(),
-        detail=row.detail,
-    )
-
-
-@router.get("/dashboard/events")
-async def get_dashboard_events(
-    session: AsyncSession = Depends(get_session),
-) -> list[DashboardEventSummary]:
-    """Returns all dashboard_events as {id, type, timestamp, detail},
-    ordered by created_at descending (newest first) - the opposite order
-    from chat's list_messages endpoint, which is ascending. See
-    `.claude/plans/2026-08-01-phase-2-backend-integration.md` Task 9."""
-    rows = (
-        await session.execute(
-            text(
-                "SELECT id, type, detail, created_at FROM dashboard_events "
-                "ORDER BY created_at DESC"
-            )
-        )
-    ).all()
-    return [_event_summary(row) for row in rows]
 
 
 def _year_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
@@ -310,7 +281,7 @@ async def get_dashboard_stats(
 
 def _parse_embedding(embedding_text: str) -> list[float]:
     """Parses pgvector's bracketed-CSV text format (e.g. "[0.1,0.2]" - the
-    same format `app.services.vectors.format_vector` produces on the way in) back
+    same format `app.chunks.vectors.format_vector` produces on the way in) back
     into a list of floats. Nothing else in this codebase reads a raw
     embedding back out of Postgres - there's no pgvector Python codec
     registered anywhere (see app/db/session.py, a plain SQLAlchemy async engine) -
@@ -436,15 +407,15 @@ async def get_chunk_graph(session: AsyncSession = Depends(get_session)) -> Chunk
 # _bucket_completions_output_tokens/_bucket_embeddings_tokens/
 # _summarize_openai_tokens below) a parallel "tokens used" figure - split
 # into input/output - for the same four windows. Deliberately isolated
-# from app/services/llm.py: that module's get_client()/embed_texts()/
-# generate_reply() are built around settings.openai_api_key (a regular/
-# project key that can make chat and embeddings calls). This feature needs
-# settings.openai_admin_api_key instead - a separate, org-level Admin key
-# that can read organization usage/billing (GET /organization/costs, GET
+# from app.chunks.embedding/app.chat.completion: those modules' get_client()/
+# embed_texts()/generate_reply() are built around settings.openai_api_key (a
+# regular/project key that can make chat and embeddings calls). This feature
+# needs settings.openai_admin_api_key instead - a separate, org-level Admin
+# key that can read organization usage/billing (GET /organization/costs, GET
 # /organization/usage/completions, GET /organization/usage/embeddings) but
 # CANNOT make chat/embeddings calls, and vice versa for openai_api_key.
-# Both keys are optional and independent; app/services/llm.py's client/key
-# handling is untouched by any of the below.
+# Both keys are optional and independent; app.chunks.embedding/
+# app.chat.completion's client/key handling is untouched by any of the below.
 
 # Rolling-window durations for the four numbers this endpoint reports (for
 # both the money and token summaries) - trailing N days from "now", NOT
@@ -493,7 +464,7 @@ _ZERO_OPENAI_TOKENS = OpenAiSpendTokens(
 
 @lru_cache
 def _get_admin_client() -> AsyncOpenAI:
-    """Same AsyncOpenAI client class as app.services.llm.get_client(), just a
+    """Same AsyncOpenAI client class as app.chunks.embedding.get_client(), just a
     different key/instance - built from settings.openai_admin_api_key, not
     settings.openai_api_key. Passed as `admin_api_key=`, NOT `api_key=`:
     the SDK's admin/organization endpoints (client.admin.organization.
@@ -509,7 +480,7 @@ def _get_admin_client() -> AsyncOpenAI:
     (a TypeError, not an OpenAI API error) - caught by get_openai_spend's
     try/except and silently zeroed, even though `configured` came back
     `true` and the key itself was perfectly valid. lru_cache'd for the
-    same reason app.services.llm.get_client() is: reused across requests within a
+    same reason app.chunks.embedding.get_client() is: reused across requests within a
     process rather than reconstructed (and its underlying httpx
     connection pool rebuilt) on every call."""
     return AsyncOpenAI(admin_api_key=get_settings().openai_admin_api_key)
@@ -557,9 +528,9 @@ async def _fetch_openai_spend_buckets(since: datetime) -> list:
     _fetch_openai_usage_buckets above for the shared pagination shape.
 
     A thin, single-purpose external-boundary function - patched directly
-    in tests (`app.routers.dashboard._fetch_openai_spend_buckets`) the
-    same way app/routers/chat.py's tests patch
-    app.routers.chat.embed_texts/generate_reply, rather than mocked at the
+    in tests (`app.dashboard.router._fetch_openai_spend_buckets`) the
+    same way app/chat/router.py's tests patch
+    app.chat.router.embed_texts/generate_reply, rather than mocked at the
     raw SDK client level.
     """
     client = _get_admin_client()
@@ -580,7 +551,7 @@ async def _fetch_openai_completions_buckets(since: datetime) -> list:
 
     Same thin, directly-patchable external-boundary convention as
     _fetch_openai_spend_buckets above (patched in tests as
-    `app.routers.dashboard._fetch_openai_completions_buckets`).
+    `app.dashboard.router._fetch_openai_completions_buckets`).
     """
     client = _get_admin_client()
     return await _fetch_openai_usage_buckets(
@@ -599,7 +570,7 @@ async def _fetch_openai_embeddings_buckets(since: datetime) -> list:
 
     Same thin, directly-patchable external-boundary convention as
     _fetch_openai_spend_buckets above (patched in tests as
-    `app.routers.dashboard._fetch_openai_embeddings_buckets`).
+    `app.dashboard.router._fetch_openai_embeddings_buckets`).
     """
     client = _get_admin_client()
     return await _fetch_openai_usage_buckets(
@@ -727,7 +698,8 @@ def _summarize_openai_tokens(
     `tokens` dict GET /internal/dashboard/openai-spend reports alongside its
     existing USD fields, each window now an {"input": int, "output": int}
     pair rather than one combined total. DocuMind only ever calls OpenAI for
-    chat completions and embeddings (see app/services/llm.py): "input" per window is
+    chat completions (see app.chat.completion) and embeddings (see
+    app.chunks.embedding): "input" per window is
     completions input_tokens plus embeddings input_tokens (embeddings only
     ever contribute to "input"); "output" per window is completions
     output_tokens alone. Each of the three underlying sums (completions
@@ -777,7 +749,8 @@ async def get_openai_spend() -> OpenAiSpend:
     "input" is completions input_tokens plus embeddings input_tokens,
     "output" is completions output_tokens alone (embeddings have no
     output-token concept) - see _summarize_openai_tokens.
-    DocuMind's only two OpenAI call types (app/services/llm.py).
+    DocuMind's only two OpenAI call types (app.chunks.embedding/
+    app.chat.completion).
 
     `configured` is false (with all four amounts and all four token counts
     zeroed, currency "usd") when settings.openai_admin_api_key is empty -

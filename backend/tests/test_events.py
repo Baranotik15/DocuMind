@@ -5,7 +5,7 @@ from sqlalchemy import text
 
 from app.db.session import async_session_factory
 from app.db.sync_session import SyncSessionLocal
-from app.services.events import record_event_async, record_event_sync
+from app.dashboard_events.recording import record_event_async, record_event_sync
 
 
 def test_record_event_sync_insert_read_round_trip() -> None:

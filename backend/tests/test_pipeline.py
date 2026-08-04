@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import text
 
 from app.db.sync_session import SyncSessionLocal
-from app.services.pipeline import (
+from app.documents.pipeline import (
     DocumentProcessingError,
     run_pipeline,
     run_pipeline_with_manual_chunks,
@@ -86,7 +86,7 @@ def test_run_pipeline_success_leaves_document_ready_with_exact_reconstruction() 
 
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 run_pipeline(document_id, source_text, session)
@@ -125,7 +125,7 @@ def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -
 
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
@@ -164,7 +164,7 @@ def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouc
 
     try:
         failing_embed_texts = AsyncMock(side_effect=RuntimeError("embedding API down"))
-        with patch("app.services.pipeline.embed_texts", new=failing_embed_texts):
+        with patch("app.documents.pipeline.embed_texts", new=failing_embed_texts):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
                     run_pipeline(document_id, "some new source text", session)
@@ -203,7 +203,7 @@ def test_run_pipeline_with_manual_chunks_skips_split_and_embeds_exact_chunks() -
 
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 run_pipeline_with_manual_chunks(document_id, chunk_texts, session)
@@ -250,7 +250,7 @@ def test_run_pipeline_with_manual_chunks_empty_list_marks_document_failed() -> N
 
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
@@ -292,7 +292,7 @@ def test_run_pipeline_with_manual_chunks_whitespace_only_chunk_marks_document_fa
 
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
@@ -336,7 +336,7 @@ def test_run_pipeline_with_manual_chunks_failure_marks_document_failed_and_leave
 
     try:
         failing_embed_texts = AsyncMock(side_effect=RuntimeError("embedding API down"))
-        with patch("app.services.pipeline.embed_texts", new=failing_embed_texts):
+        with patch("app.documents.pipeline.embed_texts", new=failing_embed_texts):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
                     run_pipeline_with_manual_chunks(

@@ -1,4 +1,4 @@
-from app.services.vectors import format_vector
+from app.chunks.vectors import format_vector
 
 
 def test_format_vector_formats_as_bracketed_csv() -> None:
