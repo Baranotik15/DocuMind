@@ -15,8 +15,6 @@ from app.chat.schemas import (
 from app.chunks.embedding import LLMError, embed_texts
 from app.chunks.retrieval import fetch_similar_chunks
 from app.config import get_settings
-from app.dashboard_events.constants import DashboardEventType
-from app.dashboard_events.recording import record_event_async
 from app.db.session import get_session
 
 router = APIRouter()
@@ -80,8 +78,10 @@ async def send_message(
     except LLMError:
         raise HTTPException(status_code=502, detail=_CHAT_COMPLETION_FAILED_ERROR)
 
-    # 5. Insert + commit the assistant message, then record + commit the
-    # dashboard event.
+    # 5. Insert + commit the assistant message. Deliberately NOT recorded
+    # as a dashboard_events row - the Logs tab is scoped to actions that
+    # change documents/chunks (upload, delete, (re)chunk), and a chat
+    # message changes neither.
     assistant_row = (
         await session.execute(
             text(
@@ -92,10 +92,6 @@ async def send_message(
             {"content": reply},
         )
     ).one()
-    await session.commit()
-    await record_event_async(
-        session, DashboardEventType.CHAT_MESSAGE_SENT, f"message_id={assistant_row.id}"
-    )
     await session.commit()
 
     # 6. Return the assistant message - not the user message (deliberate

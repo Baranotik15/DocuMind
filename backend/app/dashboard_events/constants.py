@@ -12,4 +12,3 @@ class DashboardEventType(StrEnum):
     DOCUMENT_CHUNKING_STARTED = "document.chunking_started"
     DOCUMENT_CHUNKING_SUCCEEDED = "document.chunking_succeeded"
     DOCUMENT_CHUNKING_FAILED = "document.chunking_failed"
-    CHAT_MESSAGE_SENT = "chat.message_sent"
