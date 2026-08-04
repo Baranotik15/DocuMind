@@ -3,10 +3,10 @@ import asyncio
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.documents import split_into_chunks
-from app.events import record_event_sync
-from app.llm import embed_texts
-from app.vectors import format_vector
+from app.services.documents import split_into_chunks
+from app.services.events import record_event_sync
+from app.services.llm import embed_texts
+from app.services.vectors import format_vector
 
 
 class NoExtractableTextError(Exception):

@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.db_sync import SyncSessionLocal
+from app.db.sync_session import SyncSessionLocal
 
 # column_name -> (expected data_type or udt_name for USER-DEFINED types, is_nullable)
 EXPECTED_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {

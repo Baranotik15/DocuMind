@@ -5,9 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_session
+from app.db.session import get_session
 from app.routers import chat, dashboard, documents
-from app.tasks import run_smoke_job
+from app.worker.tasks import run_smoke_job
 
 
 def create_app() -> FastAPI:

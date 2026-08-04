@@ -3,9 +3,9 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app import llm
 from app.config import Settings
-from app.llm import LLMError, embed_texts, generate_reply
+from app.services import llm
+from app.services.llm import LLMError, embed_texts, generate_reply
 
 
 @pytest.fixture(autouse=True)

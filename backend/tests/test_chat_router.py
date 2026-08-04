@@ -5,9 +5,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.db_sync import SyncSessionLocal
-from app.llm import LLMError
-from app.vectors import format_vector
+from app.db.sync_session import SyncSessionLocal
+from app.services.llm import LLMError
+from app.services.vectors import format_vector
 
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 

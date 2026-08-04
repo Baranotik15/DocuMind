@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db import engine
+from app.db.session import engine
 from app.main import app
 
 

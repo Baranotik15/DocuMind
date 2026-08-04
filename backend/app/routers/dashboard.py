@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from umap import UMAP
 
 from app.config import get_settings
-from app.db import get_session
+from app.db.session import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -295,10 +295,10 @@ async def get_dashboard_stats(
 
 def _parse_embedding(embedding_text: str) -> list[float]:
     """Parses pgvector's bracketed-CSV text format (e.g. "[0.1,0.2]" - the
-    same format `app.vectors.format_vector` produces on the way in) back
+    same format `app.services.vectors.format_vector` produces on the way in) back
     into a list of floats. Nothing else in this codebase reads a raw
     embedding back out of Postgres - there's no pgvector Python codec
-    registered anywhere (see app/db.py, a plain SQLAlchemy async engine) -
+    registered anywhere (see app/db/session.py, a plain SQLAlchemy async engine) -
     so a `chunks.embedding::text` cast plus this parser is the only way to
     get one back out."""
     return [float(v) for v in embedding_text.strip("[]").split(",")]
@@ -421,15 +421,15 @@ async def get_chunk_graph(session: AsyncSession = Depends(get_session)) -> dict:
 # _bucket_completions_output_tokens/_bucket_embeddings_tokens/
 # _summarize_openai_tokens below) a parallel "tokens used" figure - split
 # into input/output - for the same four windows. Deliberately isolated
-# from app/llm.py: that module's get_client()/embed_texts()/
+# from app/services/llm.py: that module's get_client()/embed_texts()/
 # generate_reply() are built around settings.openai_api_key (a regular/
 # project key that can make chat and embeddings calls). This feature needs
 # settings.openai_admin_api_key instead - a separate, org-level Admin key
 # that can read organization usage/billing (GET /organization/costs, GET
 # /organization/usage/completions, GET /organization/usage/embeddings) but
 # CANNOT make chat/embeddings calls, and vice versa for openai_api_key.
-# Both keys are optional and independent; app/llm.py's client/key handling
-# is untouched by any of the below.
+# Both keys are optional and independent; app/services/llm.py's client/key
+# handling is untouched by any of the below.
 
 # Rolling-window durations for the four numbers this endpoint reports (for
 # both the money and token summaries) - trailing N days from "now", NOT
@@ -472,7 +472,7 @@ _ZERO_OPENAI_TOKENS = {
 
 @lru_cache
 def _get_admin_client() -> AsyncOpenAI:
-    """Same AsyncOpenAI client class as app.llm.get_client(), just a
+    """Same AsyncOpenAI client class as app.services.llm.get_client(), just a
     different key/instance - built from settings.openai_admin_api_key, not
     settings.openai_api_key. Passed as `admin_api_key=`, NOT `api_key=`:
     the SDK's admin/organization endpoints (client.admin.organization.
@@ -488,7 +488,7 @@ def _get_admin_client() -> AsyncOpenAI:
     (a TypeError, not an OpenAI API error) - caught by get_openai_spend's
     try/except and silently zeroed, even though `configured` came back
     `true` and the key itself was perfectly valid. lru_cache'd for the
-    same reason app.llm.get_client() is: reused across requests within a
+    same reason app.services.llm.get_client() is: reused across requests within a
     process rather than reconstructed (and its underlying httpx
     connection pool rebuilt) on every call."""
     return AsyncOpenAI(admin_api_key=get_settings().openai_admin_api_key)
@@ -706,7 +706,7 @@ def _summarize_openai_tokens(
     `tokens` dict GET /internal/dashboard/openai-spend reports alongside its
     existing USD fields, each window now an {"input": int, "output": int}
     pair rather than one combined total. DocuMind only ever calls OpenAI for
-    chat completions and embeddings (see app/llm.py): "input" per window is
+    chat completions and embeddings (see app/services/llm.py): "input" per window is
     completions input_tokens plus embeddings input_tokens (embeddings only
     ever contribute to "input"); "output" per window is completions
     output_tokens alone. Each of the three underlying sums (completions
@@ -756,7 +756,7 @@ async def get_openai_spend() -> dict:
     "input" is completions input_tokens plus embeddings input_tokens,
     "output" is completions output_tokens alone (embeddings have no
     output-token concept) - see _summarize_openai_tokens.
-    DocuMind's only two OpenAI call types (app/llm.py).
+    DocuMind's only two OpenAI call types (app/services/llm.py).
 
     `configured` is false (with all four amounts and all four token counts
     zeroed, currency "usd") when settings.openai_admin_api_key is empty -

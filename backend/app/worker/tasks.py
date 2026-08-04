@@ -3,14 +3,14 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 from app import deps
-from app.celery_app import celery_app
-from app.db_sync import SyncSessionLocal
-from app.documents import extract_text
-from app.pipeline import (
+from app.db.sync_session import SyncSessionLocal
+from app.services.documents import extract_text
+from app.services.pipeline import (
     mark_document_failed,
     run_pipeline,
     run_pipeline_with_manual_chunks,
 )
+from app.worker.celery_app import celery_app
 
 
 class SmokeJobNotFoundError(Exception):

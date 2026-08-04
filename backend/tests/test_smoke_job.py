@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.celery_app import celery_app
+from app.worker.celery_app import celery_app
 
 
 @pytest.fixture(autouse=True)
