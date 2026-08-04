@@ -38,4 +38,13 @@ class LocalDiskStorage:
         path.unlink()
 
     def _path_for(self, key: str) -> Path:
-        return self._base_dir / key
+        """Resolves `key` to an absolute path and verifies it stays under
+        base_dir - defense in depth against a key containing `..`/absolute-
+        path segments escaping base_dir (e.g. via a caller that builds a
+        key from unsanitized user input). resolve() collapses those before
+        the containment check, whether or not the target path exists yet."""
+        path = (self._base_dir / key).resolve()
+        base = self._base_dir.resolve()
+        if not path.is_relative_to(base):
+            raise ValueError(f"storage key escapes base_dir: {key!r}")
+        return path

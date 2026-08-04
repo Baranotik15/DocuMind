@@ -28,3 +28,12 @@ def test_delete_then_read_raises(tmp_path: Path) -> None:
 
     with pytest.raises(StorageKeyNotFoundError):
         storage.read("docs/b.txt")
+
+
+def test_save_with_traversal_key_raises_instead_of_escaping_base_dir(
+    tmp_path: Path,
+) -> None:
+    storage = LocalDiskStorage(tmp_path)
+
+    with pytest.raises(ValueError):
+        storage.save("../escape.txt", b"pwned")

@@ -5,7 +5,7 @@ from pathlib import Path
 from docx import Document as DocxDocument
 from pypdf import PdfReader
 
-_SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt"}
+from app.constants import SUPPORTED_DOCUMENT_EXTENSIONS
 
 # A "blank line" paragraph separator: a newline, optional horizontal
 # whitespace, then another newline. Deliberately excludes further `\n`
@@ -31,7 +31,7 @@ def extract_text(filename: str, data: bytes) -> str:
     """Extracts plain text from `data` based on filename's extension.
     .pdf via pypdf, .docx via python-docx, .md/.txt via UTF-8 decode."""
     extension = Path(filename).suffix.lower()
-    if extension not in _SUPPORTED_EXTENSIONS:
+    if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
         raise UnsupportedFileTypeError(f"Unsupported file type: {filename}")
     if extension == ".pdf":
         return _extract_pdf_text(data)

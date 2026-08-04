@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from umap import UMAP
 
 from app.config import get_settings
+from app.constants import ChatRole
 from app.db.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -285,7 +286,7 @@ async def get_dashboard_stats(
         "totalDocuments": total_documents,
         "totalDislikes": total_dislikes,
         "messageBuckets": _zero_filled_buckets(
-            bucket_starts, [row.created_at for row in rows if row.role == "user"]
+            bucket_starts, [row.created_at for row in rows if row.role == ChatRole.USER]
         ),
         "dislikeBuckets": _zero_filled_buckets(
             bucket_starts, [row.created_at for row in rows if row.disliked]
