@@ -1,11 +1,13 @@
 import io
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.config import get_settings
 from app.db.sync_session import SyncSessionLocal
 from app.deps import get_storage
 from app.services.storage import StorageKeyNotFoundError
@@ -76,6 +78,44 @@ def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
         assert filename in filenames
     finally:
         _cleanup(filename)
+
+
+def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
+    client: TestClient,
+) -> None:
+    malicious_filename = "../../../../evil-traversal.txt"
+    try:
+        with patch(
+            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            response = client.post(
+                "/internal/documents",
+                files={
+                    "file": (malicious_filename, io.BytesIO(b"payload"), "text/plain")
+                },
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        # filename is kept verbatim as display/lookup metadata...
+        assert body["filename"] == malicious_filename
+
+        with SyncSessionLocal() as session:
+            storage_key = session.execute(
+                text("SELECT storage_key FROM documents WHERE id = :id"),
+                {"id": body["id"]},
+            ).scalar_one()
+
+        # ...but the storage key must never be derived from it: no `..`
+        # segments, and it must resolve inside storage_base_dir rather than
+        # wherever the traversal would otherwise point.
+        assert ".." not in storage_key
+        base_dir = Path(get_settings().storage_base_dir).resolve()
+        resolved = (base_dir / storage_key).resolve()
+        assert resolved.is_relative_to(base_dir)
+        assert resolved.is_file()
+    finally:
+        _cleanup(malicious_filename)
 
 
 def test_upload_unsupported_extension_returns_400_and_is_not_listed(

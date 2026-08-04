@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
@@ -70,11 +71,13 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="unsupported_file_type")
 
     data = await file.read()
-    storage_key = f"docs/{filename}"
 
     existing = (
         await session.execute(
-            text("SELECT id, status FROM documents WHERE filename = :filename"),
+            text(
+                "SELECT id, status, storage_key FROM documents "
+                "WHERE filename = :filename"
+            ),
             {"filename": filename},
         )
     ).one_or_none()
@@ -86,6 +89,12 @@ async def upload_document(
         raise HTTPException(status_code=409, detail="duplicate_filename")
 
     if existing is None:
+        # Storage key is generated server-side (UUID + the already-validated
+        # extension), never derived from the client-supplied filename - a
+        # filename like "../../../etc/cron.d/x.txt" must not be able to
+        # steer where on disk this gets written. `filename` itself is kept
+        # only as display/lookup metadata in the `documents` row.
+        storage_key = f"docs/{uuid4()}{extension}"
         row = (
             await session.execute(
                 text(
@@ -100,7 +109,10 @@ async def upload_document(
         await record_event_async(session, "document.uploaded", f"document_id={row.id}")
         await session.commit()
     else:
-        storage.save(storage_key, data)
+        # Reuse the existing row's own storage_key so an overwrite replaces
+        # the same on-disk file in place, rather than minting a new key and
+        # orphaning the old one.
+        storage.save(existing.storage_key, data)
         row = (
             await session.execute(
                 text(
