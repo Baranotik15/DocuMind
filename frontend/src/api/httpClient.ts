@@ -146,11 +146,18 @@ export const httpApiClient: ApiClient = {
     return requestJson('/internal/dashboard/events', { method: 'GET' })
   },
 
-  getDashboardStats(range) {
-    return requestJson(`/internal/dashboard/stats?range=${range}`, { method: 'GET' })
+  getDashboardStats(range, tz) {
+    // tz is URL-encoded - IANA zone names contain "/" (e.g. "Europe/Kyiv"),
+    // which would otherwise be read as an extra path segment by some
+    // servers/proxies rather than a literal query value.
+    return requestJson(`/internal/dashboard/stats?range=${range}&tz=${encodeURIComponent(tz)}`, { method: 'GET' })
   },
 
   getChunkGraph() {
     return requestJson('/internal/dashboard/chunk-graph', { method: 'GET' })
+  },
+
+  getOpenAiSpend() {
+    return requestJson('/internal/dashboard/openai-spend', { method: 'GET' })
   },
 }

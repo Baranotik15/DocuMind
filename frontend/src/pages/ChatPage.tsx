@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
 
@@ -41,6 +41,82 @@ function saveHiddenMessageIds(ids: Set<string>): void {
     // won't survive a reload this one time, not worth surfacing to the
     // operator over.
   }
+}
+
+// There's no account/session system in this app at all (see
+// HIDDEN_MESSAGE_IDS_STORAGE_KEY's own comment) - so "remember where THIS
+// viewer left off" can only ever mean "remember it for this browser," via
+// the same localStorage-per-browser convention as hidden message ids above,
+// not a real per-account preference. Stores a message id (which message was
+// scrolled to, not a raw pixel offset) deliberately: chat history is shared/
+// unscoped, so it can keep growing between visits from other tabs/people -
+// a raw scrollTop pixel value would land in a misleading spot once that
+// happens, while "scroll back to THIS message" stays correct regardless of
+// how much content now precedes or follows it.
+const LAST_SCROLL_MESSAGE_ID_STORAGE_KEY = 'documind:chat:lastScrollMessageId'
+
+function loadLastScrollMessageId(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_SCROLL_MESSAGE_ID_STORAGE_KEY)
+  } catch {
+    // Same degrade-quietly reasoning as loadHiddenMessageIds - worst case,
+    // this load falls back to the default (scroll to bottom).
+    return null
+  }
+}
+
+function saveLastScrollMessageId(messageId: string): void {
+  try {
+    window.localStorage.setItem(LAST_SCROLL_MESSAGE_ID_STORAGE_KEY, messageId)
+  } catch {
+    // See loadLastScrollMessageId - failing to persist just means the next
+    // load defaults to the bottom instead of this exact spot, not worth
+    // surfacing to the operator over.
+  }
+}
+
+function clearLastScrollMessageId(): void {
+  try {
+    window.localStorage.removeItem(LAST_SCROLL_MESSAGE_ID_STORAGE_KEY)
+  } catch {
+    // Best-effort, same as the rest of this file's localStorage writes.
+  }
+}
+
+// How close to the true bottom (in px of unscrolled content below the
+// viewport) still counts as "at the bottom" for auto-scroll purposes below -
+// a small forgiveness margin, not an exact 0, since sub-pixel layout
+// rounding can leave scrollTop a fraction short of scrollHeight-clientHeight
+// even when a viewer's eye reads the list as fully scrolled down.
+const NEAR_BOTTOM_THRESHOLD_PX = 80
+
+// Debounce for persisting the scroll-anchor message id (see
+// LAST_SCROLL_MESSAGE_ID_STORAGE_KEY) - saving on every single scroll tick
+// would mean dozens of localStorage writes for one drag/flick; waiting for
+// scrolling to actually pause first is both cheaper and a better proxy for
+// "this is genuinely where the viewer stopped," not just a point it
+// happened to fly past.
+const SAVE_SCROLL_POSITION_DEBOUNCE_MS = 300
+
+// The topmost message currently at least partially visible inside `list` -
+// used both to decide what to persist as the scroll anchor (see
+// handleMessageListScroll) and, in reverse, to scroll a restored anchor
+// back into that same "topmost visible" position (see the initial-restore
+// branch of the auto-scroll effect). Compares getBoundingClientRect()
+// output (viewport coordinates) for both the container and each message,
+// rather than `element.offsetTop` against `list.scrollTop` - offsetTop is
+// relative to the nearest positioned ANCESTOR, which isn't guaranteed to be
+// `list` itself, while getBoundingClientRect() sidesteps that ambiguity
+// entirely by comparing everything in the same (viewport) coordinate space.
+function findTopmostVisibleMessageId(list: HTMLElement): string | null {
+  const containerTop = list.getBoundingClientRect().top
+  const messageElements = list.querySelectorAll<HTMLElement>('[data-message-id]')
+  for (const element of messageElements) {
+    if (element.getBoundingClientRect().bottom > containerTop) {
+      return element.dataset.messageId ?? null
+    }
+  }
+  return null
 }
 
 // Both the message list and the input bar share this exact max-width rather
@@ -128,10 +204,124 @@ export function ChatPage(): JSX.Element {
   // message appears.
   const [isSending, setIsSending] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
+  // The scrollable message list itself (the inner Stack below, not the
+  // outer page column) - read/written directly via scrollTop/scrollHeight
+  // in the auto-scroll effect below, rather than through React state, since
+  // scroll position changes on every frame of a drag and has no business
+  // triggering a re-render.
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  // Whether the viewer was scrolled at/near the bottom the last time they
+  // touched the scroll position - a ref (not state) so onScroll doesn't
+  // re-render on every tick, and so the auto-scroll effect below always
+  // reads the truly latest value rather than one from a stale closure.
+  // Starts `true` deliberately: before the viewer has scrolled at all (most
+  // importantly, on first load), this app should default to the bottom of
+  // the conversation, not the top - per explicit request. Only flips to
+  // `false` once they've actually scrolled away from the bottom themselves
+  // (see handleMessageListScroll), so a reply arriving while they're
+  // reading older history never yanks their place out from under them.
+  const isNearBottomRef = useRef(true)
+  // Debounce handle for persisting the scroll anchor (see
+  // handleMessageListScroll/SAVE_SCROLL_POSITION_DEBOUNCE_MS) - re-armed on
+  // every scroll tick so only the FINAL tick in a burst actually writes to
+  // localStorage.
+  const saveScrollPositionTimeoutRef = useRef<number | null>(null)
+  // Flips true the instant the initial listChatMessages() fetch resolves
+  // (see the mount effect below) - BEFORE setMessages, and independent of
+  // whether the fetched list is empty or not. The one-time initial-restore
+  // branch of the auto-scroll effect needs to fire exactly once real data
+  // has arrived, which `messages.length > 0` alone can't distinguish from
+  // "genuinely zero chat history ever" (both look like an empty array).
+  const hasFetchedMessagesRef = useRef(false)
+  // Guards the auto-scroll effect's one-time "restore the saved anchor, or
+  // default to the bottom" branch so it only ever runs once per mount, not
+  // on every later messages/isSending change (which should keep using the
+  // ordinary near-bottom auto-follow behavior below it instead).
+  const hasRestoredInitialScrollRef = useRef(false)
+
+  function handleMessageListScroll(event: React.UIEvent<HTMLDivElement>): void {
+    const list = event.currentTarget
+    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight
+    isNearBottomRef.current = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX
+
+    if (saveScrollPositionTimeoutRef.current !== null) {
+      window.clearTimeout(saveScrollPositionTimeoutRef.current)
+    }
+    saveScrollPositionTimeoutRef.current = window.setTimeout(() => {
+      const topmostVisibleMessageId = findTopmostVisibleMessageId(list)
+      if (topmostVisibleMessageId) {
+        saveLastScrollMessageId(topmostVisibleMessageId)
+      }
+    }, SAVE_SCROLL_POSITION_DEBOUNCE_MS)
+  }
+
+  // Clears any pending debounced save so it can't fire (and write to
+  // localStorage) after this page has navigated away.
+  useEffect(() => {
+    return () => {
+      if (saveScrollPositionTimeoutRef.current !== null) {
+        window.clearTimeout(saveScrollPositionTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  // Keeps the message list pinned to the bottom - on first load, restores
+  // wherever this browser last left off instead (see
+  // LAST_SCROLL_MESSAGE_ID_STORAGE_KEY), falling back to the bottom if
+  // there's no saved anchor or it no longer matches a currently-visible
+  // message (e.g. hidden by a later Clear chat) - and again every time the
+  // visible content changes height (a new message appended, or the typing
+  // indicator appearing/disappearing) PROVIDED the viewer was already at/
+  // near the bottom right before this change. useLayoutEffect (not
+  // useEffect) so this runs before the browser paints the new content -
+  // otherwise a viewer could see one frame of the list at its old scroll
+  // position before it snaps to the restored/new one.
+  useLayoutEffect(() => {
+    const list = scrollContainerRef.current
+    if (!list) {
+      return
+    }
+
+    if (!hasRestoredInitialScrollRef.current) {
+      if (!hasFetchedMessagesRef.current) {
+        // Still waiting on the initial fetch (this is the pre-fetch empty
+        // render) - nothing to restore against yet, try again once
+        // messages actually updates for real.
+        return
+      }
+      hasRestoredInitialScrollRef.current = true
+
+      const savedMessageId = loadLastScrollMessageId()
+      const savedElement = savedMessageId
+        ? [...list.querySelectorAll<HTMLElement>('[data-message-id]')].find(
+            (element) => element.dataset.messageId === savedMessageId,
+          )
+        : undefined
+      if (savedElement) {
+        savedElement.scrollIntoView({ block: 'start' })
+      } else {
+        list.scrollTop = list.scrollHeight
+      }
+      // Whichever branch above ran, isNearBottomRef needs to reflect where
+      // that actually landed - a restored anchor partway up the list must
+      // NOT be treated as "near the bottom" (which would wrongly let the
+      // very next message auto-scroll the viewer away from the spot they
+      // were just returned to).
+      const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight
+      isNearBottomRef.current = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX
+      return
+    }
+
+    if (!isNearBottomRef.current) {
+      return
+    }
+    list.scrollTop = list.scrollHeight
+  }, [messages, isSending])
 
   useEffect(() => {
     void apiClient.listChatMessages().then((allMessages) => {
       const hiddenIds = loadHiddenMessageIds()
+      hasFetchedMessagesRef.current = true
       setMessages(allMessages.filter((message) => !hiddenIds.has(message.id)))
     })
   }, [])
@@ -156,6 +346,13 @@ export function ChatPage(): JSX.Element {
   // deleted server-side. Merges into whatever was already hidden from a
   // previous clear (rather than overwriting it) so an earlier clear can
   // never accidentally un-hide itself.
+  //
+  // Also drops the saved scroll anchor (LAST_SCROLL_MESSAGE_ID_STORAGE_KEY)
+  // - it can only ever point at a message this same clear just hid, so
+  // leaving it behind would just make the NEXT load's restore silently
+  // no-op (already handled gracefully, see the auto-scroll effect's
+  // fallback-to-bottom branch) instead of cleanly reflecting that there's
+  // nothing to restore to anymore.
   function handleClearChat(): void {
     setShowClearConfirm(false)
     setMessages((current) => {
@@ -164,6 +361,7 @@ export function ChatPage(): JSX.Element {
       saveHiddenMessageIds(hiddenIds)
       return []
     })
+    clearLastScrollMessageId()
   }
 
   // The backend endpoint toggles (flips whatever `disliked` currently is),
@@ -282,15 +480,21 @@ export function ChatPage(): JSX.Element {
           by a percentage of the viewport while the input bar used a
           different ratio of the flex area. */}
       <Stack gap="md" w="100%" maw={CHAT_COLUMN_MAX_WIDTH} mx="auto" style={{ flex: 1, minHeight: 0 }}>
-        {/* className={classes.scrollArea} restyles the message list's native
-            scrollbar into a slim, theme-colored one (see the class's own
-            comment in ChatPage.module.css) rather than the stock OS-themed
-            scrollbar an earlier pass here just hid outright - per explicit
+        {/* The message list's scrollbar is styled by the app-wide rule in
+            global.css (applies to every scrollable element automatically) -
+            this used to need its own classes.scrollArea here; per explicit
             follow-up request to keep a scroll affordance, just one that
-            looks like it belongs in this app. pr="md" gives it breathing
-            room from the message bubbles - it sat flush against their edge
-            without this. */}
-        <Stack gap="md" className={classes.scrollArea} style={{ flex: 1, overflowY: 'auto', minHeight: 0 }} py="md" pr="md">
+            looks like it belongs in this app, that's now true everywhere,
+            not just here. pr="md" gives it breathing room from the message
+            bubbles - it sat flush against their edge without this. */}
+        <Stack
+          ref={scrollContainerRef}
+          onScroll={handleMessageListScroll}
+          gap="md"
+          style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
+          py="md"
+          pr="md"
+        >
           {messages.length === 0 ? (
             // Centered welcome state rather than a blank column - the same
             // BotAvatar used next to every assistant reply below, so the

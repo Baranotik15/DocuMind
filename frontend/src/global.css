@@ -69,3 +69,78 @@ html[data-mantine-color-scheme='light'] .mantine-Popover-dropdown {
   border-color: var(--doc-hairline);
   color: var(--doc-text);
 }
+
+/*
+ * Same light-scheme-leaking-through bug class as the two fixes above, one
+ * level more specific: hovering (or keyboard-navigating) a Select/Combobox
+ * OPTION sets `background-color: var(--mantine-color-gray-0)` - a pale
+ * near-white (see node_modules/@mantine/core/styles/Combobox.css's own
+ * `[data-mantine-color-scheme='light'] ... :hover` rule) - while this
+ * app's own near-white --doc-text (correctly applied via the
+ * Popover-dropdown fix above, which options otherwise inherit) stays as
+ * the text color. Near-white text on a near-white background is
+ * effectively invisible - the resting/selected states aren't affected
+ * (Mantine's `[data-combobox-selected]` rule already uses
+ * `--mantine-primary-color-filled`, i.e. this app's own signalBlue, +
+ * white text, which reads fine), only this hover pseudo-state does. Reusing
+ * that same signalBlue-filled treatment on hover, instead of inventing a
+ * separate hover color, means a hovered-but-not-yet-selected option looks
+ * identical to how the actually-selected option already looks - one
+ * consistent "highlighted option" affordance, not two different ones.
+ * `.mantine-Select-option` is Mantine's own stable class for this (present
+ * regardless of the per-build internal hash), same
+ * html[data-mantine-color-scheme='light']-prefix specificity-bump
+ * technique as the other two fixes in this file.
+ */
+html[data-mantine-color-scheme='light'] .mantine-Select-option:hover {
+  background-color: var(--mantine-color-signalBlue-6);
+  color: var(--mantine-color-white);
+}
+
+/*
+ * App-wide custom scrollbar - a slim hairline-colored thumb, brightening to
+ * signalBlue on hover, instead of either the OS-default scrollbar or hiding
+ * it outright. Previously duplicated per-page (ChatPage.module.css's
+ * `.scrollArea`, DashboardPage.module.css's `.scrollArea`,
+ * ChunkGraphPanel.module.css's `.chunkTextScrollArea` - all byte-for-byte
+ * identical rule bodies) and applied only to the few scrollable panels that
+ * happened to opt in via one of those classes; hoisted here, once, on `*`,
+ * so every scrollable element gets it automatically - including plain page/
+ * body scroll (e.g. RelevancePage's results list, which has no scroll
+ * container of its own) that no per-page class could have covered without
+ * being added everywhere a page might one day overflow.
+ *
+ * `scrollbar-width`/`scrollbar-color` (Firefox's standard properties) are
+ * inherited, so setting them on `*` is redundant but harmless; the
+ * `::-webkit-scrollbar*` pseudo-elements (Chrome/Edge/Safari) are NOT
+ * inherited - each overflowing box needs its own match - which is exactly
+ * why `*` (not `html`/`body` alone) is the selector here.
+ *
+ * ChunkPreviewPage.module.css's own `.scrollArea` is a deliberate exception,
+ * NOT a duplicate of this - it hides the scrollbar entirely (that page uses
+ * a minimap as its scroll indicator instead). A class selector outranks
+ * this universal one by specificity, so that page's override keeps working
+ * unchanged underneath this global rule.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--doc-hairline) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--doc-hairline);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--mantine-color-signalBlue-6);
+}

@@ -1,4 +1,4 @@
-import type { ChatMessage, Chunk, ChunkGraph, DashboardEvent, DashboardStats, DashboardStatsRange, DocumentSummary, RelevantChunkMatch } from './types'
+import type { ChatMessage, Chunk, ChunkGraph, DashboardEvent, DashboardStats, DashboardStatsRange, DocumentSummary, OpenAiSpend, RelevantChunkMatch } from './types'
 
 import { httpApiClient } from './httpClient'
 
@@ -13,8 +13,10 @@ export interface ApiClient {
   dislikeMessage(messageId: string): Promise<void>
   getTopMatchingChunks(content: string): Promise<RelevantChunkMatch[]>
   getDashboardEvents(): Promise<DashboardEvent[]>
-  getDashboardStats(range: DashboardStatsRange): Promise<DashboardStats>
+  /** `tz` is an IANA zone name (e.g. "Europe/Kyiv") sent to the backend as the `tz` query param - only affects the "day" range's bucket alignment (see GET /internal/dashboard/stats's contract); "7days"/"month"/"year" ignore it entirely. */
+  getDashboardStats(range: DashboardStatsRange, tz: string): Promise<DashboardStats>
   getChunkGraph(): Promise<ChunkGraph>
+  getOpenAiSpend(): Promise<OpenAiSpend>
 }
 
 // Bound to the real HTTP-backed implementation. Page components always

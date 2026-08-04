@@ -188,4 +188,26 @@ export const mockApiClient: ApiClient = {
   async getDashboardEvents() {
     return dashboardEvents.map((event) => ({ ...event }))
   },
+
+  // No mock spend data - this mock client backs local/offline dev, where
+  // there's no real OpenAI Admin key to have spent anything against.
+  // `configured: false` matches exactly how the real backend responds when
+  // OPENAI_ADMIN_API_KEY isn't set, so DashboardPage's "not configured"
+  // state is exercised the same way here as it would be for real.
+  async getOpenAiSpend() {
+    return {
+      day: 0,
+      week: 0,
+      month: 0,
+      year: 0,
+      tokens: {
+        day: { input: 0, output: 0 },
+        week: { input: 0, output: 0 },
+        month: { input: 0, output: 0 },
+        year: { input: 0, output: 0 },
+      },
+      currency: 'usd',
+      configured: false,
+    }
+  },
 }

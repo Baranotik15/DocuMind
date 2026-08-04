@@ -30,7 +30,7 @@ vi.mock('3d-force-graph', () => ({
       camera: vi.fn(() => ({ fov: 50 })),
       cameraPosition: vi.fn(() => ({ x: 0, y: 0, z: 100 })),
     }
-    for (const method of ['backgroundColor', 'width', 'height', 'nodeLabel', 'nodeRelSize', 'nodeColor', 'linkOpacity', 'linkColor', 'linkWidth', 'showNavInfo', 'enableNodeDrag', 'onNodeClick', 'graphData']) {
+    for (const method of ['backgroundColor', 'width', 'height', 'nodeLabel', 'nodeThreeObject', 'linkMaterial', 'linkWidth', 'showNavInfo', 'enableNodeDrag', 'onNodeClick', 'graphData']) {
       stub[method] = vi.fn(() => stub)
     }
     return stub
@@ -88,7 +88,7 @@ function toLocalDateTimeParts(iso: string): { date: string; time: string } {
   }
 }
 
-const STATS_BUCKET_COUNTS: Record<DashboardStatsRange, number> = { day: 12, '7days': 7, month: 5, year: 12 }
+const STATS_BUCKET_COUNTS: Record<DashboardStatsRange, number> = { day: 24, '7days': 7, month: 5, year: 12 }
 
 function makeStatsFixture(range: DashboardStatsRange): DashboardStats {
   const bucketCount = STATS_BUCKET_COUNTS[range]
@@ -122,6 +122,26 @@ describe('DashboardPage', () => {
       }
       if (url.endsWith('/internal/dashboard/chunk-graph')) {
         return Promise.resolve({ ok: true, status: 200, json: async () => ({ nodes: [] }) } as Response)
+      }
+      if (url.endsWith('/internal/dashboard/openai-spend')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            day: 0,
+            week: 0,
+            month: 0,
+            year: 0,
+            tokens: {
+              day: { input: 0, output: 0 },
+              week: { input: 0, output: 0 },
+              month: { input: 0, output: 0 },
+              year: { input: 0, output: 0 },
+            },
+            currency: 'usd',
+            configured: false,
+          }),
+        } as Response)
       }
       return Promise.resolve({ ok: true, status: 200, json: async () => documents } as Response)
     })
@@ -174,24 +194,24 @@ describe('DashboardPage', () => {
 
     expect(statsButton).toHaveAttribute('aria-pressed', 'true')
     expect(logsButton).toHaveAttribute('aria-pressed', 'false')
-    expect(await screen.findByText('Documents')).toBeInTheDocument()
+    expect(await screen.findByText('Total Documents')).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
   it('switching to the Logs tab shows the events table and hides stats, and back again', async () => {
     renderWithProviders(<DashboardPage />)
-    await screen.findByText('Documents')
+    await screen.findByText('Total Documents')
 
     fireEvent.click(screen.getByRole('button', { name: 'Logs' }))
 
-    expect(screen.queryByText('Documents')).not.toBeInTheDocument()
+    expect(screen.queryByText('Total Documents')).not.toBeInTheDocument()
     expect(await screen.findByRole('table')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Logs' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Stats' })).toHaveAttribute('aria-pressed', 'false')
 
     fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
 
-    expect(await screen.findByText('Documents')).toBeInTheDocument()
+    expect(await screen.findByText('Total Documents')).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
@@ -408,23 +428,100 @@ describe('DashboardPage', () => {
   it('shows Users, Chunks, and Dislikes stat cards sourced from the stats endpoint', async () => {
     renderWithProviders(<DashboardPage />)
 
-    expect(await screen.findByText('Chunks')).toBeInTheDocument()
-    expect(screen.getByText('Users')).toBeInTheDocument()
+    expect(await screen.findByText('Total Chunks')).toBeInTheDocument()
+    expect(screen.getByText('Total Users')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
-    // "Dislikes" also labels the bar chart title below - the stat card is
-    // one of two matches, not the only one.
-    expect(screen.getAllByText('Dislikes')).toHaveLength(2)
+    // Unlike the stat card's own "Total Dislikes" label, the bar chart
+    // title below is still the bare "Dislikes" - only one match now.
+    expect(screen.getByText('Total Dislikes')).toBeInTheDocument()
+  })
+
+  it('shows an explicit "not configured" message in both OpenAI spend blocks when the backend has no admin key set', async () => {
+    // beforeEach's own default openai-spend stub already returns
+    // configured: false - this is that default case, not an override.
+    renderWithProviders(<DashboardPage />)
+
+    expect(await screen.findByText('Tokens Spend')).toBeInTheDocument()
+    expect(screen.getByText('Money Spend')).toBeInTheDocument()
+    // One "not configured" message per block (Tokens + Spend), not a
+    // single shared one.
+    expect(screen.getAllByText('Admin key not configured')).toHaveLength(2)
+    expect(screen.queryByText('$0.00')).not.toBeInTheDocument()
+  })
+
+  it('shows the selected period\'s tokens/spend, switching via the Tokens/Spend blocks\' own Day/Week/Month/Year toggle', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/internal/dashboard/openai-spend')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            day: 0.42,
+            week: 3.1,
+            month: 12.55,
+            year: 87.2,
+            tokens: {
+              day: { input: 800, output: 400 },
+              week: { input: 5600, output: 2800 },
+              month: { input: 23000, output: 12000 },
+              year: { input: 270000, output: 140000 },
+            },
+            currency: 'usd',
+            configured: true,
+          }),
+        } as Response)
+      }
+      if (url.endsWith('/internal/dashboard/events')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => events } as Response)
+      }
+      if (url.includes('/internal/dashboard/stats')) {
+        const range = new URL(url).searchParams.get('range') as DashboardStatsRange
+        return Promise.resolve({ ok: true, status: 200, json: async () => makeStatsFixture(range) } as Response)
+      }
+      if (url.endsWith('/internal/dashboard/chunk-graph')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ nodes: [] }) } as Response)
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => documents } as Response)
+    })
+
+    renderWithProviders(<DashboardPage />)
+
+    // Defaults to the "Day" period. Tokens Spend now renders as two
+    // separate Input/Output sub-values (see SpendBlock's `split` prop)
+    // rather than one combined count.
+    expect(await screen.findByText('800')).toBeInTheDocument()
+    expect(screen.getByText('400')).toBeInTheDocument()
+    expect(screen.getByText('$0.42')).toBeInTheDocument()
+    expect(screen.queryByText('Admin key not configured')).not.toBeInTheDocument()
+
+    // The spend toggle's "Month" button is distinct from the charts'
+    // Day/Week/Month/Year toggle further down the page (two separate
+    // SegmentedToggle instances, both currently on "Day"/its own default -
+    // getAllByRole picks the first, which is this spend block's own one,
+    // rendered first in the page).
+    fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
+
+    expect(await screen.findByText('23,000')).toBeInTheDocument()
+    expect(screen.getByText('12,000')).toBeInTheDocument()
+    expect(screen.getByText('$12.55')).toBeInTheDocument()
   })
 
   it('shows Messages sent and Dislikes bar charts with a Day/7 Days/Month/Year range toggle', async () => {
     renderWithProviders(<DashboardPage />)
 
     expect(await screen.findByText('Messages sent')).toBeInTheDocument()
-    expect(screen.getAllByText('Dislikes')).toHaveLength(2)
+    expect(screen.getByText('Dislikes')).toBeInTheDocument()
+    // Day/Week/Month/Year now also labels the OpenAI spend blocks' own,
+    // separate toggle (added in this same session) - every label below is
+    // a two-match ambiguity, not a typo.
     for (const label of ['Day', 'Week', 'Month', 'Year']) {
-      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+      expect(screen.getAllByRole('button', { name: label })).toHaveLength(2)
     }
-    expect(screen.getByRole('button', { name: 'Day' })).toHaveAttribute('aria-pressed', 'true')
+    // getAllByRole(...)[1] is this chart toggle specifically - the spend
+    // blocks' own toggle (see the "OpenAI Spend" block tests above) is
+    // rendered first in the page/DOM, so index 0 belongs to it, not this
+    // one.
+    expect(screen.getAllByRole('button', { name: 'Day' })[1]).toHaveAttribute('aria-pressed', 'true')
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/internal/dashboard/stats?range=day'), expect.anything())
@@ -435,12 +532,15 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />)
     await screen.findByText('Messages sent')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Week' }))
+    // [1] - this chart toggle specifically, not the OpenAI spend blocks'
+    // own separate Day/Week/Month/Year toggle (index 0 - see this file's
+    // other Day/Week/Month/Year tests for the same disambiguation).
+    fireEvent.click(screen.getAllByRole('button', { name: 'Week' })[1])
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/internal/dashboard/stats?range=7days'), expect.anything())
     })
-    expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'Day' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getAllByRole('button', { name: 'Week' })[1]).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getAllByRole('button', { name: 'Day' })[1]).toHaveAttribute('aria-pressed', 'false')
   })
 })
