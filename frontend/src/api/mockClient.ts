@@ -1,5 +1,13 @@
 import type { ApiClient } from './client'
-import type { Chunk, ChatMessage, DashboardEvent, DocumentSummary } from './types'
+import type {
+  ChatMessage,
+  Chunk,
+  ChunkGraphNode,
+  DashboardEvent,
+  DashboardStatsBucket,
+  DashboardStatsRange,
+  DocumentSummary,
+} from './types'
 
 // In-memory mock store. This module stands in for the real backend during
 // Phase 1 - `apiClient` (see client.ts) is the only supported way to reach
@@ -107,6 +115,27 @@ const dashboardEvents: DashboardEvent[] = [
 let nextDocumentId = documents.length + 1
 let nextMessageId = chatMessages.length + 1
 
+// Bucket counts/spacing per range, ending at "now" - unlike the real
+// backend (see routers/dashboard.py's get_dashboard_stats), this mock
+// doesn't calendar-align buckets to the caller's tz, since it's just
+// standing in for local/offline dev and has no real event timestamps to
+// align in the first place.
+const STATS_BUCKET_CONFIG: Record<DashboardStatsRange, { count: number; stepMs: number }> = {
+  day: { count: 24, stepMs: 60 * 60 * 1000 },
+  '7days': { count: 7, stepMs: 24 * 60 * 60 * 1000 },
+  month: { count: 30, stepMs: 24 * 60 * 60 * 1000 },
+  year: { count: 12, stepMs: 30 * 24 * 60 * 60 * 1000 },
+}
+
+function buildStatsBuckets(range: DashboardStatsRange, seedCounts: number[]): DashboardStatsBucket[] {
+  const { count, stepMs } = STATS_BUCKET_CONFIG[range]
+  const now = Date.now()
+  return Array.from({ length: count }, (_, index) => ({
+    bucketStart: new Date(now - (count - 1 - index) * stepMs).toISOString(),
+    count: seedCounts[index % seedCounts.length],
+  }))
+}
+
 export const mockApiClient: ApiClient = {
   async listDocuments() {
     return documents.map((document) => ({ ...document }))
@@ -187,6 +216,41 @@ export const mockApiClient: ApiClient = {
 
   async getDashboardEvents() {
     return dashboardEvents.map((event) => ({ ...event }))
+  },
+
+  async getDashboardStats(range) {
+    return {
+      totalUsers: 0,
+      totalChunks: chunks.length,
+      totalDocuments: documents.length,
+      totalDislikes: chatMessages.filter((message) => message.disliked).length,
+      messageBuckets: buildStatsBuckets(range, [2, 0, 1, 3, 1, 0, 2]),
+      dislikeBuckets: buildStatsBuckets(range, [0, 0, 1, 0, 0, 0, 0]),
+    }
+  },
+
+  // x/y/z stand in for the real backend's UMAP projection of each chunk's
+  // embedding (see routers/dashboard.py's get_chunk_graph) - just spread
+  // deterministically around a circle so same-document chunks (chained by
+  // `position`) render as a visibly connected path in ChunkGraphPanel.
+  async getChunkGraph() {
+    const positionByDocument = new Map<string, number>()
+    const nodes: ChunkGraphNode[] = chunks.map((chunk) => {
+      const position = (positionByDocument.get(chunk.documentId) ?? 0) + 1
+      positionByDocument.set(chunk.documentId, position)
+      const document = documents.find((candidate) => candidate.id === chunk.documentId)
+      const angle = (position / chunks.length) * Math.PI * 2
+      return {
+        id: chunk.id,
+        documentId: chunk.documentId,
+        filename: document?.filename ?? 'unknown',
+        x: Math.cos(angle) * 10,
+        y: Math.sin(angle) * 10,
+        z: position,
+        position,
+      }
+    })
+    return { nodes }
   },
 
   // No mock spend data - this mock client backs local/offline dev, where

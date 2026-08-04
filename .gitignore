@@ -14,3 +14,6 @@ __pycache__/
 venv/
 .claude/settings.local.json
 backend/data/
+coverage/
+coverage.xml
+.coverage
