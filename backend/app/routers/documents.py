@@ -6,11 +6,11 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_session
+from app.db.session import get_session
 from app.deps import get_storage
-from app.events import record_event_async
-from app.storage import StorageAdapter, StorageKeyNotFoundError
-from app.tasks import run_document_pipeline
+from app.services.events import record_event_async
+from app.services.storage import StorageAdapter, StorageKeyNotFoundError
+from app.worker.tasks import run_document_pipeline
 
 router = APIRouter()
 
@@ -35,7 +35,7 @@ class SaveChunksRequest(BaseModel):
     # reconstruction (`"".join(...)`) followed by a full algorithmic
     # re-chunk.
 
-# Mirrors app.documents.extract_text's supported extension set - kept as a
+# Mirrors app.services.documents.extract_text's supported extension set - kept as a
 # local constant (rather than importing that module's private set) so this
 # router only ever validates the *extension*, never triggers extraction
 # itself. Actual parsing (and its failure handling) stays entirely on the

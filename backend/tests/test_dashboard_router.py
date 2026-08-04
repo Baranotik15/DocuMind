@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.config import Settings
-from app.db_sync import SyncSessionLocal
+from app.db.sync_session import SyncSessionLocal
 from app.routers import dashboard
 from app.routers.dashboard import (
     _bucket_completions_input_tokens,
@@ -20,7 +20,7 @@ from app.routers.dashboard import (
     _summarize_openai_spend,
     _summarize_openai_tokens,
 )
-from app.vectors import format_vector
+from app.services.vectors import format_vector
 
 
 def _insert_event(event_type: str, detail: str, created_at: str) -> str:

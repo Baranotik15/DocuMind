@@ -58,7 +58,7 @@ services:
       retries: 5
     volumes:
       # Shared with worker so uploaded documents (written here via
-      # app.storage.LocalDiskStorage, rooted at Settings.storage_base_dir =
+      # app.services.storage.LocalDiskStorage, rooted at Settings.storage_base_dir =
       # "./data/documents", i.e. /app/data/documents given WORKDIR /app) are
       # visible to the worker's Celery task, which reads the same files back
       # by storage_key. Without this, backend and worker each have their own
@@ -67,7 +67,7 @@ services:
 
   worker:
     build: ./backend
-    command: celery -A app.celery_app worker --loglevel=info
+    command: celery -A app.worker.celery_app worker --loglevel=info
     env_file: .env
     depends_on:
       postgres:

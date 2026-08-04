@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.storage import LocalDiskStorage, StorageKeyNotFoundError
+from app.services.storage import LocalDiskStorage, StorageKeyNotFoundError
 
 
 def test_save_then_read_returns_same_bytes(tmp_path: Path) -> None:

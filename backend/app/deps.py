@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from app.config import get_settings
-from app.storage import LocalDiskStorage, StorageAdapter
+from app.services.storage import LocalDiskStorage, StorageAdapter
 
 
 def get_storage() -> StorageAdapter:

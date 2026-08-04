@@ -4,7 +4,7 @@ import pytest
 
 from app import deps
 from app.config import Settings
-from app.storage import LocalDiskStorage, StorageKeyNotFoundError
+from app.services.storage import LocalDiskStorage, StorageKeyNotFoundError
 
 
 def test_get_storage_returns_local_disk_storage(

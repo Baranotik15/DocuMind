@@ -3,10 +3,10 @@ import uuid
 import pytest
 from sqlalchemy import text
 
-from app.db_sync import SyncSessionLocal
-from app.pipeline import DocumentProcessingError
-from app.storage import StorageKeyNotFoundError
-from app.tasks import run_document_pipeline
+from app.db.sync_session import SyncSessionLocal
+from app.services.pipeline import DocumentProcessingError
+from app.services.storage import StorageKeyNotFoundError
+from app.worker.tasks import run_document_pipeline
 
 
 @pytest.fixture(autouse=True)
@@ -14,7 +14,7 @@ def _celery_eager() -> None:
     # Matches the project-wide convention (test_smoke_job.py, test_pipeline.py)
     # of forcing eager execution, even though this file calls the task
     # function directly rather than via .delay().
-    from app.celery_app import celery_app
+    from app.worker.celery_app import celery_app
 
     celery_app.conf.task_always_eager = True
     celery_app.conf.task_eager_propagates = True

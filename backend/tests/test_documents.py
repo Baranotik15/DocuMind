@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from docx import Document as DocxDocument
 
-from app.documents import UnsupportedFileTypeError, extract_text, split_into_chunks
+from app.services.documents import UnsupportedFileTypeError, extract_text, split_into_chunks
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

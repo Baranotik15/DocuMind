@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import text
 
-from app.db_sync import SyncSessionLocal
-from app.pipeline import (
+from app.db.sync_session import SyncSessionLocal
+from app.services.pipeline import (
     DocumentProcessingError,
     run_pipeline,
     run_pipeline_with_manual_chunks,
@@ -19,7 +19,7 @@ def _celery_eager() -> None:
     # run_pipeline itself is plain sync code, not a Celery task, but this
     # matches the project-wide convention (test_smoke_job.py) of forcing
     # eager execution so no test ever waits on a broker/worker round trip.
-    from app.celery_app import celery_app
+    from app.worker.celery_app import celery_app
 
     celery_app.conf.task_always_eager = True
     celery_app.conf.task_eager_propagates = True
@@ -86,7 +86,7 @@ def test_run_pipeline_success_leaves_document_ready_with_exact_reconstruction() 
 
     try:
         with patch(
-            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 run_pipeline(document_id, source_text, session)
@@ -125,7 +125,7 @@ def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -
 
     try:
         with patch(
-            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
@@ -164,7 +164,7 @@ def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouc
 
     try:
         failing_embed_texts = AsyncMock(side_effect=RuntimeError("embedding API down"))
-        with patch("app.pipeline.embed_texts", new=failing_embed_texts):
+        with patch("app.services.pipeline.embed_texts", new=failing_embed_texts):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
                     run_pipeline(document_id, "some new source text", session)
@@ -203,7 +203,7 @@ def test_run_pipeline_with_manual_chunks_skips_split_and_embeds_exact_chunks() -
 
     try:
         with patch(
-            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 run_pipeline_with_manual_chunks(document_id, chunk_texts, session)
@@ -250,7 +250,7 @@ def test_run_pipeline_with_manual_chunks_empty_list_marks_document_failed() -> N
 
     try:
         with patch(
-            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
@@ -292,7 +292,7 @@ def test_run_pipeline_with_manual_chunks_whitespace_only_chunk_marks_document_fa
 
     try:
         with patch(
-            "app.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
@@ -336,7 +336,7 @@ def test_run_pipeline_with_manual_chunks_failure_marks_document_failed_and_leave
 
     try:
         failing_embed_texts = AsyncMock(side_effect=RuntimeError("embedding API down"))
-        with patch("app.pipeline.embed_texts", new=failing_embed_texts):
+        with patch("app.services.pipeline.embed_texts", new=failing_embed_texts):
             with SyncSessionLocal() as session:
                 with pytest.raises(DocumentProcessingError):
                     run_pipeline_with_manual_chunks(

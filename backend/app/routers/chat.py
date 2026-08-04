@@ -4,10 +4,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import get_session
-from app.events import record_event_async
-from app.llm import LLMError, embed_texts, generate_reply
-from app.vectors import format_vector
+from app.db.session import get_session
+from app.services.events import record_event_async
+from app.services.llm import LLMError, embed_texts, generate_reply
+from app.services.vectors import format_vector
 
 router = APIRouter()
 
