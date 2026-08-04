@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     chat_retrieval_top_k: int = 5
 
     storage_base_dir: str = "./data/documents"
+    # Rejected with 413 before the file is written anywhere - enforced by
+    # reading the upload in bounded chunks (see documents/router.py), not
+    # by trusting a client-supplied Content-Length.
+    max_upload_size_bytes: int = 10 * 1024 * 1024
 
 
 @lru_cache

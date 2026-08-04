@@ -1,4 +1,5 @@
 import io
+import threading
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -7,7 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.config import get_settings
+from app.config import Settings, get_settings
+from app.documents import router as documents_router
 from app.db.sync_session import SyncSessionLocal
 from app.documents.deps import get_storage
 from app.documents.storage import StorageKeyNotFoundError
@@ -116,6 +118,29 @@ def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
         assert resolved.is_file()
     finally:
         _cleanup(malicious_filename)
+
+
+def test_upload_over_size_limit_returns_413_and_is_not_listed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        documents_router, "get_settings", lambda: Settings(max_upload_size_bytes=10)
+    )
+    filename = _unique_filename()
+
+    response = client.post(
+        "/internal/documents",
+        files={
+            "file": (filename, io.BytesIO(b"this payload is over ten bytes"), "text/plain")
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "file_too_large"
+
+    list_response = client.get("/internal/documents")
+    filenames = [doc["filename"] for doc in list_response.json()]
+    assert filename not in filenames
 
 
 def test_upload_unsupported_extension_returns_400_and_is_not_listed(
@@ -312,6 +337,57 @@ def test_delete_nonexistent_document_returns_404(client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"] == "document_not_found"
+
+
+def test_delete_malformed_document_id_returns_422_not_500(client: TestClient) -> None:
+    response = client.delete("/internal/documents/not-a-uuid")
+
+    assert response.status_code == 422
+
+
+def test_concurrent_uploads_of_a_new_filename_never_500(client: TestClient) -> None:
+    # Two requests racing to insert the same brand-new filename: the
+    # documents.filename UNIQUE constraint means one of them loses at the
+    # DB level. Asserts the loser gets a clean 409 (see the IntegrityError
+    # handler in documents/router.py's upload_document), never a raw 500,
+    # and that exactly one document row survives either way.
+    filename = _unique_filename()
+    barrier = threading.Barrier(2)
+    results: list[int] = []
+    results_lock = threading.Lock()
+
+    def _upload() -> None:
+        barrier.wait()
+        response = client.post(
+            "/internal/documents",
+            files={"file": (filename, io.BytesIO(b"Race payload."), "text/plain")},
+        )
+        with results_lock:
+            results.append(response.status_code)
+
+    try:
+        # Patched once around both threads, not once per thread -
+        # unittest.mock.patch's enter/exit isn't safe for two threads
+        # concurrently patching the same attribute (one thread's __exit__
+        # can restore the real function while the other thread's request
+        # is still relying on the mock still being installed).
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            threads = [threading.Thread(target=_upload) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        assert 500 not in results
+        assert sorted(results) == [200, 409]
+
+        list_response = client.get("/internal/documents")
+        matching = [doc for doc in list_response.json() if doc["filename"] == filename]
+        assert len(matching) == 1
+    finally:
+        _cleanup(filename)
 
 
 def test_delete_document_records_document_deleted_dashboard_event(

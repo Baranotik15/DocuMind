@@ -100,6 +100,18 @@ def _cleanup(document_id: str) -> None:
         session.commit()
 
 
+def test_get_chunks_malformed_document_id_returns_422_not_500(client: TestClient) -> None:
+    response = client.get("/internal/documents/not-a-uuid/chunks")
+
+    assert response.status_code == 422
+
+
+def test_post_chunks_malformed_document_id_returns_422_not_500(client: TestClient) -> None:
+    response = client.post("/internal/documents/not-a-uuid/chunks", json={"chunks": []})
+
+    assert response.status_code == 422
+
+
 def test_get_chunks_returns_them_in_position_order_with_isdirty_false(
     client: TestClient,
 ) -> None:

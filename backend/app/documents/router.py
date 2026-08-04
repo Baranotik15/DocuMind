@@ -1,11 +1,13 @@
 import asyncio
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.dashboard_events.constants import DashboardEventType
 from app.dashboard_events.recording import record_event_async
 from app.db.session import get_session
@@ -24,6 +26,28 @@ router = APIRouter()
 # endpoints also use).
 _DOCUMENT_PROCESSING_ERROR = "document_processing"
 _DOCUMENT_NOT_FOUND_ERROR = "document_not_found"
+_FILE_TOO_LARGE_ERROR = "file_too_large"
+
+# Read in bounded chunks rather than a single file.read() - the client's
+# stated Content-Length can't be trusted, so the only reliable cap is one
+# enforced while streaming the body in, aborting as soon as the running
+# total crosses the configured limit instead of buffering an oversized
+# upload in full before rejecting it.
+_UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
+
+
+async def _read_upload_within_limit(file: UploadFile, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail=_FILE_TOO_LARGE_ERROR)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _document_summary(row) -> DocumentSummary:
@@ -51,7 +75,7 @@ async def upload_document(
     if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
         raise HTTPException(status_code=400, detail="unsupported_file_type")
 
-    data = await file.read()
+    data = await _read_upload_within_limit(file, get_settings().max_upload_size_bytes)
 
     existing = (
         await session.execute(
@@ -76,16 +100,26 @@ async def upload_document(
         # steer where on disk this gets written. `filename` itself is kept
         # only as display/lookup metadata in the `documents` row.
         storage_key = f"docs/{uuid4()}{extension}"
-        row = (
-            await session.execute(
-                text(
-                    "INSERT INTO documents (filename, storage_key, status) "
-                    f"VALUES (:filename, :storage_key, '{DocumentStatus.UPLOADED}') "
-                    "RETURNING id, filename, status, uploaded_at"
-                ),
-                {"filename": filename, "storage_key": storage_key},
-            )
-        ).one()
+        try:
+            row = (
+                await session.execute(
+                    text(
+                        "INSERT INTO documents (filename, storage_key, status) "
+                        f"VALUES (:filename, :storage_key, '{DocumentStatus.UPLOADED}') "
+                        "RETURNING id, filename, status, uploaded_at"
+                    ),
+                    {"filename": filename, "storage_key": storage_key},
+                )
+            ).one()
+        except IntegrityError:
+            # Lost a race against a concurrent upload of the same brand-new
+            # filename between the SELECT above and this INSERT - the
+            # unique constraint on documents.filename is what actually
+            # prevents the duplicate row; this just turns the resulting
+            # constraint violation into the same 409 a sequential second
+            # upload would get, instead of a raw 500.
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="duplicate_filename")
         storage.save(storage_key, data)
         await record_event_async(
             session, DashboardEventType.DOCUMENT_UPLOADED, f"document_id={row.id}"
@@ -141,7 +175,7 @@ async def list_documents(session: AsyncSession = Depends(get_session)) -> list[D
 
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
-    document_id: str,
+    document_id: UUID,
     session: AsyncSession = Depends(get_session),
     storage: StorageAdapter = Depends(get_storage),
 ) -> None:
@@ -152,14 +186,20 @@ async def delete_document(
 
     Blocked (409) while a pipeline run is actively writing to the
     document (status == 'chunking'), mirroring the same busy-guard
-    reasoning used for Save/overwrite elsewhere in this router."""
+    reasoning used for Save/overwrite elsewhere in this router.
+
+    `document_id` is typed as UUID (not str) so a malformed id 422s via
+    FastAPI's own path-param validation before ever reaching the DB -
+    passing a non-UUID string straight into the raw SQL below would
+    otherwise fail as an unhandled Postgres error (500) instead of a
+    clean 404/422."""
     row = (
         await session.execute(
             text(
                 "SELECT filename, storage_key, status FROM documents "
                 "WHERE id = :document_id"
             ),
-            {"document_id": document_id},
+            {"document_id": str(document_id)},
         )
     ).one_or_none()
 
@@ -179,7 +219,7 @@ async def delete_document(
 
     await session.execute(
         text("DELETE FROM documents WHERE id = :document_id"),
-        {"document_id": document_id},
+        {"document_id": str(document_id)},
     )
     await record_event_async(
         session,

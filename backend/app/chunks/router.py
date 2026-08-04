@@ -1,4 +1,5 @@
 import asyncio
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import text
@@ -36,18 +37,22 @@ def _chunk_summary(row) -> ChunkSummary:
 
 @router.get("/documents/{document_id}/chunks")
 async def get_chunks(
-    document_id: str, session: AsyncSession = Depends(get_session)
+    document_id: UUID, session: AsyncSession = Depends(get_session)
 ) -> list[ChunkSummary]:
     """Returns chunks for document_id ordered by position. `isDirty` is
     always False from the server - it's a purely client-side concept while
-    unsaved edits haven't been sent yet."""
+    unsaved edits haven't been sent yet.
+
+    `document_id` is typed as UUID (not str) so a malformed id 422s via
+    FastAPI's own path-param validation rather than reaching the DB as an
+    unhandled 500."""
     rows = (
         await session.execute(
             text(
                 "SELECT id, document_id, original_content, edited_content "
                 "FROM chunks WHERE document_id = :document_id ORDER BY position"
             ),
-            {"document_id": document_id},
+            {"document_id": str(document_id)},
         )
     ).all()
     return [_chunk_summary(row) for row in rows]
@@ -55,7 +60,7 @@ async def get_chunks(
 
 @router.post("/documents/{document_id}/chunks", status_code=202)
 async def save_chunks(
-    document_id: str,
+    document_id: UUID,
     body: SaveChunksRequest,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -71,7 +76,7 @@ async def save_chunks(
             f"('{DocumentStatus.READY}', '{DocumentStatus.FAILED}') "
             "RETURNING id"
         ),
-        {"document_id": document_id},
+        {"document_id": str(document_id)},
     )
     row = result.one_or_none()
 
@@ -84,7 +89,7 @@ async def save_chunks(
         exists = (
             await session.execute(
                 text("SELECT 1 FROM documents WHERE id = :document_id"),
-                {"document_id": document_id},
+                {"document_id": str(document_id)},
             )
         ).one_or_none()
         if exists is None:
@@ -105,13 +110,15 @@ async def save_chunks(
         # as given, none re-split, none merged.
         manual_chunks = [chunk.editedContent for chunk in body.chunks]
         await asyncio.to_thread(
-            run_document_pipeline.delay, document_id, manual_chunks=manual_chunks
+            run_document_pipeline.delay, str(document_id), manual_chunks=manual_chunks
         )
     else:
         # Request array order IS document order, as sent by the frontend -
         # not re-sorted here.
         source_text = "".join(chunk.editedContent for chunk in body.chunks)
-        await asyncio.to_thread(run_document_pipeline.delay, document_id, source_text)
+        await asyncio.to_thread(
+            run_document_pipeline.delay, str(document_id), source_text
+        )
 
     # Returned as a bare Response (rather than `None`) so the body is
     # truly empty, per the spec's "return 202 with no body" - FastAPI would

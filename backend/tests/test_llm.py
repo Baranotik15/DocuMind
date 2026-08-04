@@ -113,6 +113,27 @@ def test_generate_reply_raises_llm_error_on_sdk_failure() -> None:
         asyncio.run(generate_reply("hi", [], client=client))
 
 
+def test_generate_reply_raises_llm_error_on_none_content() -> None:
+    # A real OpenAI response shape (e.g. a content-filter refusal), not a
+    # made-up edge case - content=None must become the same LLMError/502
+    # contract as an outright SDK failure, not a silent None return.
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response(None)
+    )
+
+    with pytest.raises(LLMError):
+        asyncio.run(generate_reply("hi", [], client=client))
+
+
+def test_generate_reply_raises_llm_error_on_empty_choices() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[]))
+
+    with pytest.raises(LLMError):
+        asyncio.run(generate_reply("hi", [], client=client))
+
+
 def test_embed_texts_raises_llm_error_when_api_key_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

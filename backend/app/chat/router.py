@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,7 +119,7 @@ async def list_messages(session: AsyncSession = Depends(get_session)) -> list[Ch
 
 @router.post("/chat/messages/{message_id}/dislike", status_code=204)
 async def dislike_message(
-    message_id: str, session: AsyncSession = Depends(get_session)
+    message_id: UUID, session: AsyncSession = Depends(get_session)
 ) -> None:
     """UPDATE chat_messages SET disliked = NOT disliked WHERE id=:id - a
     toggle, not a one-way flag: each call flips the current value, so a
@@ -125,10 +127,16 @@ async def dislike_message(
     accidental double-clicks on the frontend's dislike button). Still 204
     with no body either way, and still a no-op (not a 404), if the id
     doesn't exist - deliberately not a 404, unlike other "not found" cases
-    elsewhere in this codebase."""
+    elsewhere in this codebase.
+
+    `message_id` is typed as UUID (not str) purely so a malformed id 422s
+    via FastAPI's own path-param validation instead of reaching the DB as
+    an unhandled 500 - this doesn't change the "well-formed but missing id
+    still 204s" behavior described above, it only rejects garbage input
+    earlier."""
     await session.execute(
         text("UPDATE chat_messages SET disliked = NOT disliked WHERE id = :id"),
-        {"id": message_id},
+        {"id": str(message_id)},
     )
     await session.commit()
 
