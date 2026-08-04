@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     # by trusting a client-supplied Content-Length.
     max_upload_size_bytes: int = 10 * 1024 * 1024
 
+    # Fixed session lifetime in hours, measured from creation (see
+    # app/auth/router.py) - no sliding/renewal-on-activity behavior.
+    session_ttl_hours: int = 24
+    # Whether the `session` cookie is marked Secure (HTTPS-only). False for
+    # now: the dev stack runs over plain http on both localhost:5173 and
+    # localhost:8000, and a Secure cookie would silently never be sent in
+    # that setup. Flip this to True once the app runs behind real HTTPS.
+    session_cookie_secure: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

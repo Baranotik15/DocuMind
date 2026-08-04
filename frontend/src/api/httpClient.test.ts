@@ -302,4 +302,70 @@ describe('httpApiClient', () => {
     await expect(promise).rejects.not.toBeInstanceOf(ApiConflictError)
     await expect(promise).rejects.not.toBeInstanceOf(ChatCompletionError)
   })
+
+  it('getCurrentUser GETs /internal/auth/me with credentials included and returns the parsed user', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ email: 'admin@documind.dev' }))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getCurrentUser()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/auth/me',
+      expect.objectContaining({ method: 'GET', credentials: 'include' }),
+    )
+    expect(result).toEqual({ email: 'admin@documind.dev' })
+  })
+
+  // Every `/internal/*` endpoint now requires a valid session (see
+  // feature/admin-auth's final slice) - a 401 from any of them means "you're
+  // not (or no longer) logged in" and should bounce the whole app back to
+  // /login via a hard navigation, except the login endpoint's own 401 (its
+  // expected "wrong credentials" outcome, asserted separately below).
+  describe('redirect-on-401', () => {
+    let originalLocation: Location
+
+    beforeEach(() => {
+      originalLocation = window.location
+      // jsdom logs "Not implemented: navigation" (and doesn't let assertions
+      // observe the assignment) for a real `window.location.href = ...` -
+      // swap in a plain writable stand-in so the redirect can be asserted on
+      // directly, then restore the real one afterward.
+      // @ts-expect-error test-only override of a read-only-by-type global
+      delete window.location
+      // @ts-expect-error test-only override of a read-only-by-type global
+      window.location = { href: 'http://localhost:5173/dashboard' }
+    })
+
+    afterEach(() => {
+      // @ts-expect-error test-only restore of a read-only-by-type global
+      window.location = originalLocation
+    })
+
+    it('redirects to /login on a 401 from an ordinary endpoint', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'not_authenticated' }, 401))
+
+      const { httpApiClient } = await import('./httpClient')
+
+      await expect(httpApiClient.listDocuments()).rejects.toThrow('not_authenticated')
+      expect(window.location.href).toBe('/login')
+    })
+
+    it('redirects to /login on a 401 from getCurrentUser itself', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'not_authenticated' }, 401))
+
+      const { httpApiClient } = await import('./httpClient')
+
+      await expect(httpApiClient.getCurrentUser()).rejects.toThrow('not_authenticated')
+      expect(window.location.href).toBe('/login')
+    })
+
+    it('does NOT redirect on a 401 from /internal/auth/login - LoginPage handles that case itself', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'invalid_credentials' }, 401))
+
+      const { httpApiClient } = await import('./httpClient')
+
+      await expect(httpApiClient.login('admin@documind.dev', 'wrong')).rejects.toThrow('invalid_credentials')
+      expect(window.location.href).toBe('http://localhost:5173/dashboard')
+    })
+  })
 })

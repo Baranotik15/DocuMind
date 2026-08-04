@@ -23,6 +23,14 @@ from app.dashboard.router import (
 from app.db.sync_session import SyncSessionLocal
 
 
+@pytest.fixture
+def client(authenticated_client: TestClient) -> TestClient:
+    # dashboard_router and dashboard_events_router now require a session
+    # (see app/main.py) - overrides conftest.py's plain, unauthenticated
+    # `client` fixture for every test in this module.
+    return authenticated_client
+
+
 def _insert_event(event_type: str, detail: str, created_at: str) -> str:
     # Raw SQL (rather than record_event_async/record_event_sync, which both
     # always default created_at to now()) so the two seeded events get

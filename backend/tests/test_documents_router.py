@@ -14,6 +14,19 @@ from app.db.sync_session import SyncSessionLocal
 from app.documents.deps import get_storage
 from app.documents.storage import StorageKeyNotFoundError
 from app.documents.tasks import run_document_pipeline
+from app.main import app
+
+
+@pytest.fixture
+def client(authenticated_client: TestClient) -> TestClient:
+    # GET /internal/documents and friends now require a session (see
+    # app/main.py's include_router(..., dependencies=[Depends(require_session)])) -
+    # this overrides the plain, unauthenticated `client` fixture from
+    # conftest.py for every test in this module, so none of the test
+    # bodies below had to change. test_list_documents_without_session_cookie_returns_401
+    # further down builds its own bare TestClient directly to prove the
+    # guard is actually wired up, rather than relying on this override.
+    return authenticated_client
 
 
 @pytest.fixture(autouse=True)
@@ -503,3 +516,17 @@ def test_delete_document_records_document_deleted_dashboard_event(
         # here would find nothing, and the document.uploaded/chunking_*/
         # deleted events this test's own requests created would leak.
         _cleanup(filename, document_id)
+
+
+def test_list_documents_without_session_cookie_returns_401() -> None:
+    # A bare TestClient built directly (not via this module's `client`
+    # fixture override, which is always pre-authenticated) so this request
+    # genuinely carries no `session` cookie - proving require_session is
+    # actually wired up on documents_router's include_router(...) call,
+    # not just incidentally satisfied by every other test using the
+    # authenticated fixture.
+    with TestClient(app) as bare_client:
+        response = bare_client.get("/internal/documents")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "not_authenticated"}
