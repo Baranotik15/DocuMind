@@ -5,15 +5,15 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.chunks.embedding import LLMError
+from app.chunks.vectors import format_vector
 from app.db.sync_session import SyncSessionLocal
-from app.services.llm import LLMError
-from app.services.vectors import format_vector
 
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 
 
 async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
-    # External-boundary mock (app.routers.chat.embed_texts) so no real
+    # External-boundary mock (app.chat.router.embed_texts) so no real
     # OpenAI call happens - same pattern as test_pipeline.py /
     # test_documents_router.py / test_chunks_router.py.
     return [[0.1] * 1536 for _ in texts]
@@ -89,10 +89,10 @@ def test_send_message_with_ready_document_returns_mocked_reply_and_appears_in_li
         user_content = f"question {uuid.uuid4()}"
         with (
             patch(
-                "app.routers.chat.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+                "app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
             ),
             patch(
-                "app.routers.chat.generate_reply",
+                "app.chat.router.generate_reply",
                 new=AsyncMock(return_value="mocked reply"),
             ) as mock_generate_reply,
         ):
@@ -134,9 +134,9 @@ def test_send_message_with_zero_ready_documents_calls_generate_reply_with_empty_
     message_ids: list[str] = []
     user_content = f"lonely question {uuid.uuid4()}"
     with (
-        patch("app.routers.chat.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
+        patch("app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
         patch(
-            "app.routers.chat.generate_reply",
+            "app.chat.router.generate_reply",
             new=AsyncMock(return_value="fallback reply"),
         ) as mock_generate_reply,
     ):
@@ -168,9 +168,9 @@ def test_send_message_llm_error_returns_502_and_user_message_persisted_without_r
     message_ids: list[str] = []
     user_content = f"doomed question {uuid.uuid4()}"
     with (
-        patch("app.routers.chat.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
+        patch("app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
         patch(
-            "app.routers.chat.generate_reply",
+            "app.chat.router.generate_reply",
             new=AsyncMock(side_effect=LLMError("boom")),
         ),
     ):
@@ -203,10 +203,10 @@ def test_send_message_embed_texts_llm_error_returns_502_and_user_message_persist
     user_content = f"doomed embed question {uuid.uuid4()}"
     with (
         patch(
-            "app.routers.chat.embed_texts", new=AsyncMock(side_effect=LLMError("boom"))
+            "app.chat.router.embed_texts", new=AsyncMock(side_effect=LLMError("boom"))
         ),
         patch(
-            "app.routers.chat.generate_reply", new=AsyncMock()
+            "app.chat.router.generate_reply", new=AsyncMock()
         ) as mock_generate_reply,
     ):
         response = client.post("/internal/chat/messages", json={"content": user_content})
@@ -235,9 +235,9 @@ def test_dislike_message_toggles_disliked_flag_on_and_off(client: TestClient) ->
     message_ids: list[str] = []
     user_content = f"dislike me {uuid.uuid4()}"
     with (
-        patch("app.routers.chat.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
+        patch("app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
         patch(
-            "app.routers.chat.generate_reply", new=AsyncMock(return_value="a reply")
+            "app.chat.router.generate_reply", new=AsyncMock(return_value="a reply")
         ),
     ):
         response = client.post("/internal/chat/messages", json={"content": user_content})
@@ -331,7 +331,7 @@ def test_top_chunks_returns_up_to_5_ordered_by_match_percent_desc(
             _insert_chunk(document_id, position, content, content, embedding=embedding)
 
         with patch(
-            "app.routers.chat.embed_texts", new=AsyncMock(side_effect=_fake_embed_axis0)
+            "app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_axis0)
         ):
             response = client.post(
                 "/internal/chat/top-chunks", json={"content": f"probe {suffix}"}
@@ -377,7 +377,7 @@ def test_top_chunks_response_item_has_exactly_the_five_camelcase_keys(
         _insert_chunk(document_id, 0, content, content, embedding=_axis_embedding(1.0, 0.0))
 
         with patch(
-            "app.routers.chat.embed_texts", new=AsyncMock(side_effect=_fake_embed_axis0)
+            "app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_axis0)
         ):
             response = client.post(
                 "/internal/chat/top-chunks", json={"content": f"probe {suffix}"}
@@ -408,7 +408,7 @@ def test_top_chunks_with_zero_ready_documents_returns_empty_list(
     client: TestClient,
 ) -> None:
     with patch(
-        "app.routers.chat.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        "app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
     ):
         response = client.post(
             "/internal/chat/top-chunks",
@@ -421,7 +421,7 @@ def test_top_chunks_with_zero_ready_documents_returns_empty_list(
 
 def test_top_chunks_embed_texts_llm_error_returns_502(client: TestClient) -> None:
     with patch(
-        "app.routers.chat.embed_texts", new=AsyncMock(side_effect=LLMError("boom"))
+        "app.chat.router.embed_texts", new=AsyncMock(side_effect=LLMError("boom"))
     ):
         response = client.post(
             "/internal/chat/top-chunks",

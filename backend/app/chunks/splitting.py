@@ -1,11 +1,4 @@
-import io
 import re
-from pathlib import Path
-
-from docx import Document as DocxDocument
-from pypdf import PdfReader
-
-from app.constants import SUPPORTED_DOCUMENT_EXTENSIONS
 
 # A "blank line" paragraph separator: a newline, optional horizontal
 # whitespace, then another newline. Deliberately excludes further `\n`
@@ -20,24 +13,6 @@ _PARAGRAPH_SEPARATOR_RE = re.compile(r"\n[ \t\r]*\n")
 # to choose *where* to cut an oversized paragraph - matched positions are
 # cut points, not text that gets removed.
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
-
-
-class UnsupportedFileTypeError(Exception):
-    """Raised by extract_text for any extension other than .pdf, .docx,
-    .md, .txt (case-insensitive)."""
-
-
-def extract_text(filename: str, data: bytes) -> str:
-    """Extracts plain text from `data` based on filename's extension.
-    .pdf via pypdf, .docx via python-docx, .md/.txt via UTF-8 decode."""
-    extension = Path(filename).suffix.lower()
-    if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
-        raise UnsupportedFileTypeError(f"Unsupported file type: {filename}")
-    if extension == ".pdf":
-        return _extract_pdf_text(data)
-    if extension == ".docx":
-        return _extract_docx_text(data)
-    return data.decode("utf-8")
 
 
 def split_into_chunks(text: str, max_chars: int = 1500) -> list[str]:
@@ -72,16 +47,6 @@ def split_into_chunks(text: str, max_chars: int = 1500) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
-
-
-def _extract_pdf_text(data: bytes) -> str:
-    reader = PdfReader(io.BytesIO(data))
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
-
-
-def _extract_docx_text(data: bytes) -> str:
-    document = DocxDocument(io.BytesIO(data))
-    return "\n".join(paragraph.text for paragraph in document.paragraphs)
 
 
 def _split_into_paragraph_segments(text: str) -> list[str]:

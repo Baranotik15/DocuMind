@@ -3,19 +3,22 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from app.chat.completion import generate_reply
+from app.chunks import embedding
+from app.chunks.embedding import LLMError, embed_texts
 from app.config import Settings
-from app.services import llm
-from app.services.llm import LLMError, embed_texts, generate_reply
 
 
 @pytest.fixture(autouse=True)
 def _clear_client_cache() -> None:
-    """get_client() is @lru_cache'd at module level. Clear before and after
-    each test so a client built against monkeypatched settings in one test
-    never leaks into another test running later in the same process."""
-    llm.get_client.cache_clear()
+    """get_client() is @lru_cache'd at module level (app.chunks.embedding,
+    shared by embed_texts here and generate_reply's own call into it).
+    Clear before and after each test so a client built against
+    monkeypatched settings in one test never leaks into another test
+    running later in the same process."""
+    embedding.get_client.cache_clear()
     yield
-    llm.get_client.cache_clear()
+    embedding.get_client.cache_clear()
 
 
 def _make_embedding_response(vectors: list[list[float]]) -> MagicMock:
@@ -118,7 +121,7 @@ def test_embed_texts_raises_llm_error_when_api_key_missing(
     the key is missing/empty - not just when an API call fails. That error
     must be wrapped as LLMError like any other SDK failure, so callers only
     ever have to catch LLMError."""
-    monkeypatch.setattr(llm, "get_settings", lambda: Settings(openai_api_key=""))
+    monkeypatch.setattr(embedding, "get_settings", lambda: Settings(openai_api_key=""))
 
     with pytest.raises(LLMError):
         asyncio.run(embed_texts(["a"]))
@@ -127,7 +130,12 @@ def test_embed_texts_raises_llm_error_when_api_key_missing(
 def test_generate_reply_raises_llm_error_when_api_key_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(llm, "get_settings", lambda: Settings(openai_api_key=""))
+    # generate_reply (app.chat.completion) calls the same shared get_client()
+    # as embed_texts, defined in app.chunks.embedding - so that's the
+    # module whose get_settings must be patched here too, not
+    # app.chat.completion's own (only used for openai_chat_model, which
+    # this failure path never reaches).
+    monkeypatch.setattr(embedding, "get_settings", lambda: Settings(openai_api_key=""))
 
     with pytest.raises(LLMError):
         asyncio.run(generate_reply("hi", []))

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.db.sync_session import SyncSessionLocal
-from app.services.pipeline import DocumentProcessingError
+from app.documents.pipeline import DocumentProcessingError
 
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 
@@ -24,7 +24,7 @@ def _celery_eager() -> None:
 
 
 async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
-    # External-boundary mock (app.services.pipeline.embed_texts) so no real OpenAI
+    # External-boundary mock (app.documents.pipeline.embed_texts) so no real OpenAI
     # call happens - same pattern as test_pipeline.py /
     # test_documents_router.py.
     return [[0.1] * 1536 for _ in texts]
@@ -140,7 +140,7 @@ def test_post_chunks_rechunks_document_and_reflects_edited_content(
 
         new_text_parts = ["Edited paragraph one.\n\n", "Edited paragraph two."]
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             response = client.post(
                 f"/internal/documents/{document_id}/chunks",
@@ -223,7 +223,7 @@ def test_post_chunks_with_manual_boundaries_skips_rechunk_and_saves_exact_chunks
             "Manually placed chunk three.",
         ]
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             response = client.post(
                 f"/internal/documents/{document_id}/chunks",
@@ -309,7 +309,7 @@ def test_post_chunks_with_manual_boundaries_failing_embedding_marks_document_fai
         before = _chunk_rows(document_id)
 
         failing_embed_texts = AsyncMock(side_effect=RuntimeError("embedding API down"))
-        with patch("app.services.pipeline.embed_texts", new=failing_embed_texts):
+        with patch("app.documents.pipeline.embed_texts", new=failing_embed_texts):
             # Celery is eager with task_eager_propagates=True (project-wide
             # convention, see test_tasks.py), so the task runs inline
             # inside .delay() and its DocumentProcessingError propagates

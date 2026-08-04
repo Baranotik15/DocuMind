@@ -9,8 +9,8 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.db.sync_session import SyncSessionLocal
-from app.deps import get_storage
-from app.services.storage import StorageKeyNotFoundError
+from app.documents.deps import get_storage
+from app.documents.storage import StorageKeyNotFoundError
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ def _celery_eager() -> None:
 
 
 async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
-    # External-boundary mock (app.services.pipeline.embed_texts) so no real OpenAI
+    # External-boundary mock (app.documents.pipeline.embed_texts) so no real OpenAI
     # call happens - same pattern as test_pipeline.py.
     return [[0.1] * 1536 for _ in texts]
 
@@ -56,7 +56,7 @@ def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
     filename = _unique_filename()
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             response = client.post(
                 "/internal/documents",
@@ -86,7 +86,7 @@ def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
     malicious_filename = "../../../../evil-traversal.txt"
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             response = client.post(
                 "/internal/documents",
@@ -141,7 +141,7 @@ def test_upload_duplicate_filename_without_overwrite_returns_409(
     filename = _unique_filename()
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             first = client.post(
                 "/internal/documents",
@@ -172,7 +172,7 @@ def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
     filename = _unique_filename()
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             first = client.post(
                 "/internal/documents",
@@ -205,7 +205,7 @@ def test_upload_overwrite_while_chunking_returns_409_document_processing(
     filename = _unique_filename()
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             first = client.post(
                 "/internal/documents",
@@ -235,7 +235,7 @@ def test_delete_ready_document_returns_204_and_removes_document_chunks_and_file(
     filename = _unique_filename()
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             upload = client.post(
                 "/internal/documents",
@@ -280,7 +280,7 @@ def test_delete_chunking_document_returns_409_and_leaves_it_and_chunks_intact(
     filename = _unique_filename()
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             upload = client.post(
                 "/internal/documents",
@@ -320,7 +320,7 @@ def test_delete_document_records_document_deleted_dashboard_event(
     filename = _unique_filename()
     try:
         with patch(
-            "app.services.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             upload = client.post(
                 "/internal/documents",
