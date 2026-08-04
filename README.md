@@ -51,7 +51,10 @@ chunk embeddings.
 ```
 Upload (frontend) -> POST /internal/documents -> StorageAdapter (local disk)
                                                 -> documents row (status: uploaded)
-                                                -> Celery job enqueued
+                                                -> Celery job enqueued via Redis
+                                                          |
+                                                          v
+                                              Redis (Celery broker)
                                                           |
                                                           v
 Celery worker: extract text (pypdf/docx) -> split into paragraph-based
@@ -65,6 +68,13 @@ Chat: POST /internal/chat/messages -> top-K similar chunks retrieved via
 pgvector cosine similarity across all "ready" documents -> fed to the
 OpenAI chat model as context -> reply persisted alongside the user message
 ```
+
+Redis sits between the API and the Celery worker purely as the task
+**broker** (transport for enqueued jobs) - there is no Celery result
+backend configured. Task outcomes (status transitions, chunk/vector
+writes) are written straight to Postgres, never read back from Redis, so
+the broker itself stays swappable (e.g. to RabbitMQ) via configuration
+alone if that's ever needed.
 
 Every pipeline/chat event is recorded to a `dashboard_events` table. The
 built-in Dashboard reads directly from Postgres to show an event log,
