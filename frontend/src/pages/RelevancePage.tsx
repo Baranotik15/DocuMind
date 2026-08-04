@@ -82,7 +82,20 @@ export function RelevancePage(): JSX.Element {
   }
 
   return (
-    <Stack gap="lg" w="100%" maw={900} mx="auto">
+    // Fixed to the viewport height below the AppShell header (same
+    // `calc(100dvh - ...)` device as ChatPage's own outer Stack) so only
+    // the results list below scrolls internally - previously this whole
+    // page had no scroll container of its own and just scrolled the
+    // document/body, putting the scrollbar at the far edge of the browser
+    // window instead of against this page's own (centered, maw={900})
+    // content column, per explicit request to move it there.
+    <Stack
+      gap="lg"
+      w="100%"
+      maw={900}
+      mx="auto"
+      style={{ height: 'calc(100dvh - var(--app-shell-header-height, 68px) - 2 * var(--mantine-spacing-lg))' }}
+    >
       <Title order={2}>Relevance Preview</Title>
       <Text size="sm" c="dimmed">
         See which chunks would be retrieved for a question, and how closely each one matches, before it ever
@@ -126,7 +139,17 @@ export function RelevancePage(): JSX.Element {
         <Text c="dimmed">No matching chunks found - upload a ready document first, then try again.</Text>
       ) : null}
 
-      <Stack gap="md">
+      {/* The one scrollable region on this page - flex: 1 claims whatever
+          height the header content above didn't use, minHeight: 0 lets it
+          actually shrink below its content's natural size instead of
+          forcing the outer Stack to overflow (a flex item's default
+          min-height is `auto`, i.e. its content's full height, which would
+          otherwise defeat overflowY: auto here the same way it would on
+          ChatPage's own message list - see that page's identical
+          minHeight: 0 comment). pr="md" gives the scrollbar the same
+          breathing room from the cards as ChatPage's message list gives it
+          from the message bubbles. */}
+      <Stack gap="md" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }} pr="md">
         {results.map((match, index) => (
           <Paper key={match.chunkId} radius="lg" p="lg" bg="var(--doc-surface)" withBorder>
             <Stack gap="sm">
