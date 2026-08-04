@@ -512,13 +512,25 @@ export function DashboardPage(): JSX.Element {
   // the whole story here).
   const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE)
   const [stats, setStats] = useState<DashboardStats | null>(null)
-  // True only for the duration of a refetch explicitly triggered by a
-  // timezone change (see handleTimezoneChange/timezoneChangeShouldShowLoadingRef
-  // below) - never for the initial mount fetch, a statsRange change, or the
-  // periodic 10s poll tick, per explicit request. Swaps both bar charts'
-  // bars for a spinner (see StatsBarChart's own `loading` prop) the same way
-  // spendRangeLoading already does for the Tokens/Spend blocks.
-  const [statsLoading, setStatsLoading] = useState(false)
+  // True during the very first stats fetch ever (so the charts show a
+  // spinner instead of a blank/zeroed area while first loading, per
+  // explicit request) AND for the duration of a refetch explicitly
+  // triggered by a timezone change (see handleTimezoneChange/
+  // timezoneChangeShouldShowLoadingRef below) - never for an ordinary
+  // statsRange change or the periodic 10s poll tick otherwise. Swaps both
+  // bar charts' bars for a spinner (see StatsBarChart's own `loading` prop)
+  // the same way spendRangeLoading already does for the Tokens/Spend
+  // blocks.
+  const [statsLoading, setStatsLoading] = useState(true)
+  // Flips true the instant the FIRST stats fetch resolves (see the
+  // stats-polling effect's own refresh() below) - a ref (not inferred from
+  // `stats !== null`) because refresh() is a plain function re-invoked by
+  // window.setInterval across many ticks within one effect lifetime;
+  // `stats` read through that closure would still reflect whatever it was
+  // when the effect itself was (re)created, not the latest value, the same
+  // staleness problem timezoneChangeShouldShowLoadingRef's own comment
+  // below already explains for a different trigger.
+  const hasLoadedStatsOnceRef = useRef(false)
   // Set by handleTimezoneChange right before setTimezone, read (and cleared)
   // by the stats-polling effect's own refresh() below. A ref rather than a
   // plain "did timezone change since last run" effect-dependency check
@@ -694,13 +706,15 @@ export function DashboardPage(): JSX.Element {
       // so only the one refetch an explicit timezone change actually caused
       // ever shows the spinner - not the poll, and not a statsRange change.
       const isTimezoneTriggered = timezoneChangeShouldShowLoadingRef.current
-      if (isTimezoneTriggered) {
+      const isInitialLoad = !hasLoadedStatsOnceRef.current
+      if (isTimezoneTriggered || isInitialLoad) {
         setStatsLoading(true)
       }
       void apiClient.getDashboardStats(statsRange, timezone).then((result) => {
         if (!cancelled) {
           setStats(result)
-          if (isTimezoneTriggered) {
+          hasLoadedStatsOnceRef.current = true
+          if (isTimezoneTriggered || isInitialLoad) {
             setStatsLoading(false)
             timezoneChangeShouldShowLoadingRef.current = false
           }

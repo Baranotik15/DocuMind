@@ -4,7 +4,7 @@ import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js
 
 import { useEffect, useRef, useState } from 'react'
 
-import { Alert, Box, Button, Group, Modal, Stack, Text, Title } from '@mantine/core'
+import { Alert, Box, Button, Group, Loader, Modal, Stack, Text, Title } from '@mantine/core'
 import ForceGraph3D from '3d-force-graph'
 import { useNavigate } from 'react-router-dom'
 import { BackSide, Group as ThreeGroup, Mesh, MeshBasicMaterial, MOUSE, SphereGeometry, Vector3 } from 'three'
@@ -272,6 +272,12 @@ export function ChunkGraphPanel(): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
 
+  // True until the one-shot getChunkGraph() fetch below resolves - shows a
+  // spinner over the (otherwise blank) canvas area while it's in flight,
+  // per explicit request, the same treatment DashboardPage's own stat
+  // charts got for their own first load.
+  const [isGraphDataLoading, setIsGraphDataLoading] = useState(true)
+
   // The clicked node (if any) driving the modal below - null means the
   // modal is closed. Set synchronously by onNodeClick (see the effect
   // below); the chunk's actual TEXT is fetched separately (chunkText/
@@ -445,6 +451,7 @@ export function ChunkGraphPanel(): JSX.Element {
       if (cancelled) {
         return
       }
+      setIsGraphDataLoading(false)
       const documentColors = buildDocumentColors(data.nodes)
       const nodes: GraphNodeDatum[] = data.nodes.map((node) => ({
         id: node.id,
@@ -519,18 +526,43 @@ export function ChunkGraphPanel(): JSX.Element {
 
   return (
     <>
-      {/* `position: 'relative'` is load-bearing, not decorative: three.js/
-          three-render-objects position the actual WebGL canvas (and any
-          overlay elements) with `position: absolute`, which anchors to the
-          nearest *positioned* ancestor - without one here, that anchor was
-          some unrelated ancestor further up the page (or the viewport
-          itself), which is why the rendered graph was showing up detached
-          from this card entirely instead of filling it. No minHeight here
-          deliberately - this should fill its parent Paper exactly (which
-          itself is stretched by the outer Group to match the Messages/
-          Dislikes chart stack's height precisely), not impose its own
-          floor that could make it taller than that stack. */}
-      <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }} />
+      {/* Outer wrapper is ALSO `position: 'relative'` (redundant with the
+          inner div's own, but harmless) purely so the loading overlay below
+          can anchor to it via `position: 'absolute'` - the overlay is
+          deliberately a SIBLING of the graph div, not a React child inside
+          it, since that div's own children are owned entirely by
+          3d-force-graph's direct DOM manipulation (it replaceChildren()s
+          this div on cleanup and appends its own canvas into it) - a React
+          child living inside the same node would fight that instead of
+          just sitting visually on top of it. */}
+      <Box style={{ width: '100%', height: '100%', position: 'relative' }}>
+        {/* `position: 'relative'` here is load-bearing, not decorative:
+            three.js/three-render-objects position the actual WebGL canvas
+            (and any overlay elements) with `position: absolute`, which
+            anchors to the nearest *positioned* ancestor - without one here,
+            that anchor was some unrelated ancestor further up the page (or
+            the viewport itself), which is why the rendered graph was
+            showing up detached from this card entirely instead of filling
+            it. No minHeight here deliberately - this should fill its parent
+            Paper exactly (which itself is stretched by the outer Group to
+            match the Messages/Dislikes chart stack's height precisely),
+            not impose its own floor that could make it taller than that
+            stack. */}
+        <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }} />
+        {isGraphDataLoading ? (
+          <Box
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Loader color="sparkOrange" />
+          </Box>
+        ) : null}
+      </Box>
 
       {/* Same Modal convention as ChatPage/ChunkPreviewPage/UploadPage
           (opened/onClose, radius="lg"). `size="1200px"` - twice this app's
