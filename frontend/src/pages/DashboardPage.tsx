@@ -537,6 +537,15 @@ export function DashboardPage(): JSX.Element {
   // response ({ configured: false, ...zeros }) - the former renders
   // nothing yet, the latter renders the explicit "not configured" state.
   const [openAiSpend, setOpenAiSpend] = useState<OpenAiSpend | null>(null)
+  // True while the fetch effect below is actually in flight - the three
+  // OpenAI Admin API calls it awaits (costs/completions/embeddings, see
+  // GET /internal/dashboard/openai-spend) are real external network calls,
+  // several seconds slower than this app's own local-DB-backed endpoints,
+  // so without this the two SpendBlocks below would flash a misleading "0"
+  // for that whole stretch on every Stats-tab activation - same spinner
+  // treatment as spendRangeLoading below, just gated on a real fetch
+  // rather than a cosmetic delay.
+  const [openAiSpendLoading, setOpenAiSpendLoading] = useState(false)
   // Which of openAiSpend's already-fetched rolling windows the two spend
   // blocks currently display - purely a display selector, changing it
   // never refetches (unlike statsRange above, which drives the
@@ -710,15 +719,20 @@ export function DashboardPage(): JSX.Element {
   // for why) of GET /internal/dashboard/openai-spend, scoped to the Stats
   // tab the same way the stats polling effect above is. `cancelled` guards
   // against a fetch still in flight if the tab switches away before it
-  // resolves, same idiom as the stats effect above.
+  // resolves, same idiom as the stats effect above. openAiSpendLoading is
+  // set true right away and only cleared inside the `!cancelled` guard, so
+  // a stale in-flight fetch from a since-abandoned tab activation can
+  // never clear a NEWER activation's own loading state.
   useEffect(() => {
     if (activeTab !== 'stats') {
       return
     }
     let cancelled = false
+    setOpenAiSpendLoading(true)
     void apiClient.getOpenAiSpend().then((result) => {
       if (!cancelled) {
         setOpenAiSpend(result)
+        setOpenAiSpendLoading(false)
       }
     })
     return () => {
@@ -875,13 +889,13 @@ export function DashboardPage(): JSX.Element {
                     output: formatTokenCount(openAiSpend?.tokens?.[spendRange]?.output ?? 0),
                   }}
                   configured={openAiSpend?.configured ?? true}
-                  loading={spendRangeLoading}
+                  loading={openAiSpendLoading || spendRangeLoading}
                 />
                 <SpendBlock
                   label="Money Spend"
                   value={formatSpendAmount(openAiSpend?.[spendRange] ?? 0, openAiSpend?.currency ?? 'usd')}
                   configured={openAiSpend?.configured ?? true}
-                  loading={spendRangeLoading}
+                  loading={openAiSpendLoading || spendRangeLoading}
                 />
               </Group>
             </Stack>
