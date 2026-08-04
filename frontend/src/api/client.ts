@@ -1,4 +1,4 @@
-import type { ChatMessage, Chunk, ChunkGraph, DashboardEvent, DashboardStats, DashboardStatsRange, DocumentSummary, RelevantChunkMatch } from './types'
+import type { ChatMessage, Chunk, ChunkGraph, DashboardEvent, DashboardStats, DashboardStatsRange, DocumentSummary, OpenAiSpend, RelevantChunkMatch } from './types'
 
 import { httpApiClient } from './httpClient'
 
@@ -15,6 +15,7 @@ export interface ApiClient {
   getDashboardEvents(): Promise<DashboardEvent[]>
   getDashboardStats(range: DashboardStatsRange): Promise<DashboardStats>
   getChunkGraph(): Promise<ChunkGraph>
+  getOpenAiSpend(): Promise<OpenAiSpend>
 }
 
 // Bound to the real HTTP-backed implementation. Page components always

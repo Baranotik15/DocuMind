@@ -2,13 +2,13 @@ import type { JSX } from 'react'
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Box, Button, Group, Paper, SimpleGrid, Stack, Table, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
+import { Box, Button, Group, Paper, Select, SimpleGrid, Stack, Table, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
 import { DateInput, TimePicker } from '@mantine/dates'
 
 import { ChunkGraphPanel } from './ChunkGraphPanel'
 import classes from './DashboardPage.module.css'
 import { apiClient } from '../api/client'
-import type { DashboardEvent, DashboardStats, DashboardStatsBucket, DashboardStatsRange } from '../api/types'
+import type { DashboardEvent, DashboardStats, DashboardStatsBucket, DashboardStatsRange, OpenAiSpend } from '../api/types'
 import { formatDateTime } from '../utils/formatDateTime'
 
 type DashboardTab = 'logs' | 'stats'
@@ -110,17 +110,67 @@ interface StatCardProps {
   value: number
 }
 
-/** Large-number stat card - the one place in the app that gets an explicit "big number" treatment, per the design brief. */
+/** Large-number stat card - the one place in the app that gets an explicit "big number" treatment, per the design brief. Half its original size (padding/font) - per explicit request, so all four fit in half the page width next to the placeholder chart block below. */
 function StatCard({ label, value }: StatCardProps): JSX.Element {
   return (
-    <Paper radius="lg" p="lg" bg="var(--doc-surface)" style={{ border: '1px solid var(--doc-hairline)' }}>
-      <Stack gap={4}>
-        <Text size="sm" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
+    <Paper radius="lg" p="sm" bg="var(--doc-surface)" style={{ border: '1px solid var(--doc-hairline)' }}>
+      <Stack gap={2}>
+        <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
           {label}
         </Text>
-        <Text fw={700} style={{ fontSize: '3rem', lineHeight: 1.1 }}>
+        <Text fw={700} style={{ fontSize: '1.5rem', lineHeight: 1.1 }}>
           {value}
         </Text>
+      </Stack>
+    </Paper>
+  )
+}
+
+/** `$1.23`-style formatting for an OpenAiSpend amount, in whichever currency the backend reports (falls back to "usd" itself when there's no spend to read a currency off of - see OpenAiSpend's own doc comment). */
+function formatSpendAmount(amount: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency.toUpperCase() }).format(amount)
+}
+
+/** `12,345`-style grouped-digit formatting for a token count - plain (no currency/units suffix), matching how this app already formats other large counts. */
+function formatTokenCount(count: number): string {
+  return new Intl.NumberFormat(undefined).format(count)
+}
+
+/** The OpenAI spend blocks' own Day/Week/Month/Year range - deliberately a separate type/state from DashboardStatsRange above (which spells its 7-day option "7days", the bucketed-chart key) rather than reusing it: OpenaiSpend's own rolling windows are keyed "week" (see OpenAiSpend/OpenAiSpendTokens), a different string, and the two toggles control entirely unrelated data (this range never triggers a refetch either - see its own effect below, it only picks which already-fetched window to display). */
+type OpenAiSpendRange = 'day' | 'week' | 'month' | 'year'
+
+const OPENAI_SPEND_RANGE_OPTIONS: { value: OpenAiSpendRange; label: string }[] = [
+  { value: 'day', label: 'Day' },
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+  { value: 'year', label: 'Year' },
+]
+
+interface SpendBlockProps {
+  label: string
+  /** Already-formatted display string (see formatSpendAmount/formatTokenCount) for the currently selected OpenAiSpendRange - callers pick which formatter, this component just centers/sizes whatever string it's handed. */
+  value: string
+  configured: boolean
+}
+
+/** One big-number block (tokens or money, picked by the caller) for the OpenAI spend area - large, centered text filling the block, same "big number" idiom as StatCard above but centered both axes (StatCard is left-aligned/stacked) since this block has nothing else competing for space once it's down to a single value. */
+/** Left-aligned (not centered) label + value, per explicit correction - matches StatCard's own left-aligned convention elsewhere in this same stat-card row, rather than standing out as the one centered block. justify="center" still vertically centers the pair within the block's own height (only the horizontal axis changed). */
+function SpendBlock({ label, value, configured }: SpendBlockProps): JSX.Element {
+  return (
+    <Paper radius="lg" p="md" bg="var(--doc-surface)" withBorder style={{ flex: 1, minWidth: 140, display: 'flex' }}>
+      <Stack gap={4} justify="center" style={{ width: '100%' }}>
+        <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
+          {label}
+        </Text>
+        {configured ? (
+          <Text fw={700} ta="center" style={{ fontSize: '2.5rem', lineHeight: 1.1 }}>
+            {value}
+          </Text>
+        ) : (
+          <Text size="xs" c="dimmed">
+            Admin key not configured
+          </Text>
+        )}
       </Stack>
     </Paper>
   )
@@ -133,6 +183,37 @@ const STATS_RANGE_OPTIONS: { value: DashboardStatsRange; label: string }[] = [
   { value: 'year', label: 'Year' },
 ]
 
+// A curated handful of IANA zone identifiers (not literal fixed-offset
+// names like "EST" - those don't observe DST, which would silently drift
+// wrong twice a year) covering the timezones an operator of this app is
+// actually likely to want, per explicit request ("Kyiv, EST, etc."). The
+// viewer's own local zone is added as the first/default option at render
+// time (see DEFAULT_TIMEZONE below) rather than listed here, so it's never
+// duplicated if it happens to already be one of these.
+const TIMEZONE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'Europe/Kyiv', label: 'Kyiv' },
+  { value: 'America/New_York', label: 'Eastern - EST/EDT (New York)' },
+  { value: 'America/Los_Angeles', label: 'Pacific - PST/PDT (Los Angeles)' },
+  { value: 'Europe/London', label: 'London (GMT/BST)' },
+  { value: 'Europe/Berlin', label: 'Berlin (CET/CEST)' },
+  { value: 'Asia/Tokyo', label: 'Tokyo' },
+  { value: 'UTC', label: 'UTC' },
+]
+
+// The viewer's own local timezone, per `Intl`'s own detection - the
+// default selection, so bucket labels look exactly like they always did
+// (viewer-local time) until an operator explicitly picks a different zone.
+const DEFAULT_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+// The timezone Select's actual option list - DEFAULT_TIMEZONE prepended
+// (labeled as "Local") unless it already happens to be one of
+// TIMEZONE_OPTIONS, so whatever zone a given viewer's browser resolves to
+// (there are ~400 IANA zones - TIMEZONE_OPTIONS only curates a handful) is
+// always a valid, selectable, non-blank option, not just the initial value.
+const TIMEZONE_SELECT_DATA = TIMEZONE_OPTIONS.some((option) => option.value === DEFAULT_TIMEZONE)
+  ? TIMEZONE_OPTIONS
+  : [{ value: DEFAULT_TIMEZONE, label: `Local (${DEFAULT_TIMEZONE})` }, ...TIMEZONE_OPTIONS]
+
 // How often the Stats tab's numbers/charts refresh themselves - frequent
 // enough to feel live, not so frequent it hammers the backend for an
 // internal admin dashboard's data volume.
@@ -140,23 +221,25 @@ const STATS_POLL_INTERVAL_MS = 10_000
 
 /**
  * Bucket label shown under each bar - derived from `bucketStart` (a UTC ISO
- * timestamp the backend returns) in the viewer's own local time/locale via
- * `Intl.DateTimeFormat`, not hardcoded. Matches each range's own bucket
- * width (see GET /internal/dashboard/stats's contract): a 2-hour bucket
- * gets a clock time, a 1-day bucket gets a weekday, a 7-day bucket gets its
- * start date, a 1-month bucket gets a month name.
+ * timestamp the backend returns) and rendered in whichever `timezone` is
+ * currently selected (see the Select next to the Day/Week/Month/Year
+ * toggle) via `Intl.DateTimeFormat`'s own `timeZone` option, not hardcoded.
+ * Matches each range's own bucket width (see GET /internal/dashboard/stats's
+ * contract): a 2-hour bucket gets a clock time, a 1-day bucket gets a
+ * weekday, a 7-day bucket gets its start date, a 1-month bucket gets a
+ * month name.
  */
-function formatBucketLabel(bucketStart: string, range: DashboardStatsRange): string {
+function formatBucketLabel(bucketStart: string, range: DashboardStatsRange, timezone: string): string {
   const date = new Date(bucketStart)
   switch (range) {
     case 'day':
-      return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(date)
+      return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', timeZone: timezone }).format(date)
     case '7days':
-      return new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date)
+      return new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: timezone }).format(date)
     case 'month':
-      return new Intl.DateTimeFormat(undefined, { day: '2-digit', month: '2-digit' }).format(date)
+      return new Intl.DateTimeFormat(undefined, { day: '2-digit', month: '2-digit', timeZone: timezone }).format(date)
     case 'year':
-      return new Intl.DateTimeFormat(undefined, { month: 'short' }).format(date)
+      return new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: timezone }).format(date)
   }
 }
 
@@ -164,6 +247,7 @@ interface StatsBarChartProps {
   title: string
   data: DashboardStatsBucket[]
   range: DashboardStatsRange
+  timezone: string
   color: string
   glow: string
 }
@@ -177,14 +261,32 @@ interface StatsBarChartProps {
  * minimum sliver height so a genuine zero-count bucket still reads as
  * "present" (a real empty bar) rather than invisible.
  */
-function StatsBarChart({ title, data, range, color, glow }: StatsBarChartProps): JSX.Element {
+function StatsBarChart({ title, data, range, timezone, color, glow }: StatsBarChartProps): JSX.Element {
   const max = Math.max(1, ...data.map((bucket) => bucket.count))
   return (
     <Stack gap="sm">
       <Title order={4}>{title}</Title>
-      <Group align="flex-end" gap="xs" wrap="nowrap" style={{ height: 160 }}>
+      {/* overflow: 'hidden' on the row + minWidth: 0 on each bucket below
+          are both load-bearing, not decoration: flex items default to
+          min-width: auto, which floors a bucket's width at its own
+          content's natural size (here, the nowrap time label's full text
+          width) REGARDLESS of flex: 1 - with enough buckets (the "Day"
+          range shows 12), those floors summed together used to exceed
+          this column's actual width and silently overflow rightward,
+          bleeding under the 3D panel next to it instead of clipping or
+          proportionally shrinking. minWidth: 0 removes that floor so
+          flex: 1 actually is what it claims - a genuine, non-overflowing
+          percentage share of the row for every bucket - and overflow:
+          hidden on the row is the backstop in case a browser still
+          computes a fractional pixel over. */}
+      <Group align="flex-end" gap="xs" wrap="nowrap" style={{ height: 160, overflow: 'hidden' }}>
         {data.map((bucket) => (
-          <Stack key={bucket.bucketStart} gap={4} align="center" style={{ flex: 1, height: '100%', justifyContent: 'flex-end' }}>
+          <Stack
+            key={bucket.bucketStart}
+            gap={4}
+            align="center"
+            style={{ flex: 1, minWidth: 0, height: '100%', justifyContent: 'flex-end' }}
+          >
             <Text size="xs" c="dimmed">
               {bucket.count}
             </Text>
@@ -198,8 +300,24 @@ function StatsBarChart({ title, data, range, color, glow }: StatsBarChartProps):
                 transition: 'height 200ms ease',
               }}
             />
-            <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
-              {formatBucketLabel(bucket.bucketStart, range)}
+            {/* fontSize: clamp(...) (not Mantine's fixed size="xs") - per
+                explicit request: as the viewport narrows (or browser zoom
+                goes up, which has the same effect on available CSS px),
+                shrinking a little first buys these labels more room to
+                still show their full text before the ellipsis fallback
+                above ever needs to kick in - 12 buckets' worth of "Day"
+                range time labels are the tightest case this chart has. */}
+            <Text
+              c="dimmed"
+              style={{
+                fontSize: 'clamp(0.5625rem, 0.9vw, 0.75rem)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                maxWidth: '100%',
+              }}
+            >
+              {formatBucketLabel(bucket.bucketStart, range, timezone)}
             </Text>
           </Stack>
         ))}
@@ -312,7 +430,25 @@ export function DashboardPage(): JSX.Element {
   // Shared by both the "Messages sent" and "Dislikes" bar charts below - one
   // toggle controls both at once, per explicit request.
   const [statsRange, setStatsRange] = useState<DashboardStatsRange>('day')
+  // Also shared by both charts (their bucket labels, specifically) - picking
+  // a different zone here doesn't refetch anything, it just re-renders the
+  // existing bucketStart timestamps in that zone instead of the viewer's
+  // own local one (see formatBucketLabel/DEFAULT_TIMEZONE above).
+  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE)
   const [stats, setStats] = useState<DashboardStats | null>(null)
+  // Fetched once per Stats-tab activation (not polled like `stats` above) -
+  // OpenAI spend only moves as real API usage accrues, not from anything a
+  // viewer does inside this app locally, so there's no reason to hammer it
+  // every STATS_POLL_INTERVAL_MS the way the live message/dislike counts
+  // are. null (not yet fetched) is distinct from a fetched-but-unconfigured
+  // response ({ configured: false, ...zeros }) - the former renders
+  // nothing yet, the latter renders the explicit "not configured" state.
+  const [openAiSpend, setOpenAiSpend] = useState<OpenAiSpend | null>(null)
+  // Which of openAiSpend's already-fetched rolling windows the two spend
+  // blocks currently display - purely a display selector, changing it
+  // never refetches (unlike statsRange above, which drives the
+  // stats-polling effect's own dependency array).
+  const [spendRange, setSpendRange] = useState<OpenAiSpendRange>('day')
   // Реальная измеренная высота левой колонки (Messages sent + Dislikes) -
   // единственный источник высоты для 3D-панели справа, см. ResizeObserver
   // ниже и Paper, которому эта высота выставляется напрямую через style.
@@ -427,6 +563,26 @@ export function DashboardPage(): JSX.Element {
     }
   }, [activeTab, statsRange])
 
+  // One-shot fetch (not polled - see openAiSpend's own state comment above
+  // for why) of GET /internal/dashboard/openai-spend, scoped to the Stats
+  // tab the same way the stats polling effect above is. `cancelled` guards
+  // against a fetch still in flight if the tab switches away before it
+  // resolves, same idiom as the stats effect above.
+  useEffect(() => {
+    if (activeTab !== 'stats') {
+      return
+    }
+    let cancelled = false
+    void apiClient.getOpenAiSpend().then((result) => {
+      if (!cancelled) {
+        setOpenAiSpend(result)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab])
+
   // Меряем реальную высоту левой колонки с графиками и кладём её в state -
   // именно это число потом идёт напрямую в style Paper справа (см. JSX
   // ниже), а не через align="stretch"/CSS Grid auto-height. Это важно:
@@ -517,26 +673,60 @@ export function DashboardPage(): JSX.Element {
 
       {activeTab === 'stats' ? (
         <>
-          {/* All four cards below come from the polled GET
-              /internal/dashboard/stats response (see the polling effect
-              above), not a one-time fetch - they refresh themselves every
-              STATS_POLL_INTERVAL_MS while this tab is visible. Users is
-              hardcoded to 0 backend-side - there's no user/auth system in
-              this app yet - not a display bug here. */}
-          <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="lg">
-            <StatCard label="Documents" value={stats?.totalDocuments ?? 0} />
-            <StatCard label="Chunks" value={stats?.totalChunks ?? 0} />
-            <StatCard label="Users" value={stats?.totalUsers ?? 0} />
-            {/* All-time count - independent of the range toggle below,
-                unlike the Dislikes bar chart's own dislikeBuckets. */}
-            <StatCard label="Dislikes" value={stats?.totalDislikes ?? 0} />
-          </SimpleGrid>
-
-          {/* Messages sent + Dislikes, both bucketed the same way and
-              sharing this one Day/7 Days/Month/Year toggle (per explicit
-              request) - see StatsBarChart/formatBucketLabel above and
-              GET /internal/dashboard/stats's bucket contract. */}
-          <SegmentedToggle options={STATS_RANGE_OPTIONS} value={statsRange} onChange={setStatsRange} />
+          {/* Left half: the four stat cards (from the polled GET
+              /internal/dashboard/stats response, see the polling effect
+              above - not a one-time fetch, they refresh themselves every
+              STATS_POLL_INTERVAL_MS while this tab is visible; Users is
+              hardcoded to 0 backend-side, there's no user/auth system in
+              this app yet, not a display bug here), 2x2 so all four fit in
+              half the page width. Right half is its own Stack (per
+              explicit request) - one Day/Week/Month/Year toggle (styled
+              identically to SegmentedToggle's other uses, e.g. the
+              charts' own range toggle below) driving two big-number
+              blocks together: tokens spent, and money spent, for
+              whichever single period is currently selected - replacing
+              the earlier version's static "always show all four periods
+              at once" list. align="stretch" on the outer Group is enough
+              to match heights here (unlike the Messages/Dislikes-vs-3D-
+              graph row further down, which needs the more involved
+              measured-height approach - see that row's own comment -
+              nothing in this row has canvas/JS-sized content fighting the
+              stretch calculation). */}
+          <Group align="stretch" gap="lg" wrap="wrap">
+            <SimpleGrid cols={2} spacing="md" style={{ flex: 1, minWidth: 280 }}>
+              <StatCard label="Total Documents" value={stats?.totalDocuments ?? 0} />
+              <StatCard label="Total Chunks" value={stats?.totalChunks ?? 0} />
+              <StatCard label="Total Users" value={stats?.totalUsers ?? 0} />
+              {/* All-time count - independent of the range toggle below,
+                  unlike the Dislikes bar chart's own dislikeBuckets. */}
+              <StatCard label="Total Dislikes" value={stats?.totalDislikes ?? 0} />
+            </SimpleGrid>
+            <Stack gap="sm" style={{ flex: 1, minWidth: 280 }}>
+              <SegmentedToggle options={OPENAI_SPEND_RANGE_OPTIONS} value={spendRange} onChange={setSpendRange} />
+              {/* openAiSpend starts `null` (not yet fetched - treated as
+                  "configured" so it shows a momentary 0 rather than
+                  flashing the "not configured" message) vs. a real
+                  response with `configured: false` (backend has no
+                  OPENAI_ADMIN_API_KEY set - shown explicitly per block,
+                  not silently blank, so it's clear this is a genuinely
+                  optional/unconfigured feature and not a loading stall or
+                  a bug). flex: 1 lets this row fill whatever height the
+                  toggle above didn't use, matching the SimpleGrid's own
+                  stretched height. */}
+              <Group align="stretch" gap="lg" wrap="wrap" style={{ flex: 1 }}>
+                <SpendBlock
+                  label="Tokens"
+                  value={formatTokenCount(openAiSpend?.tokens?.[spendRange] ?? 0)}
+                  configured={openAiSpend?.configured ?? true}
+                />
+                <SpendBlock
+                  label="Spend"
+                  value={formatSpendAmount(openAiSpend?.[spendRange] ?? 0, openAiSpend?.currency ?? 'usd')}
+                  configured={openAiSpend?.configured ?? true}
+                />
+              </Group>
+            </Stack>
+          </Group>
 
           {/* Messages/Dislikes слева, 3D-карта чанков (ChunkGraphPanel)
               справа - высота правой панели ДОЛЖНА приходить только от
@@ -551,10 +741,130 @@ export function DashboardPage(): JSX.Element {
               колонки. */}
           <Group align="flex-start" gap="md" wrap="wrap">
             <Stack ref={chartsColumnRef} gap="xl" style={{ flex: 1, minWidth: 280 }}>
+              {/* Day/7 Days/Month/Year toggle + timezone control now live
+                  INSIDE this same Stack (not in a separate row above it),
+                  so it's naturally exactly as wide as the charts below it
+                  - justify="space-between" pins the timezone control's
+                  right edge to the charts' own right edge (the
+                  chart/3D-panel divider) for free, by ordinary block-width
+                  inheritance, not a ResizeObserver-driven guess (an
+                  earlier attempt at exactly that drifted out of
+                  alignment). wrap="nowrap" (this row does NOT use this
+                  Stack's usual wrap="wrap") is deliberate: at this
+                  column's width, the toggle plus a roomy timezone control
+                  don't both fit, and wrapping would drop the timezone
+                  control onto its own left-aligned line below the toggle
+                  instead of staying pinned to the divider - so instead the
+                  Select below shrinks (flex: 1, minWidth: 0, ellipsis) to
+                  whatever room is actually left after the toggle, rather
+                  than the row wrapping. Both charts share this one
+                  toggle+timezone pair (per explicit request) - see
+                  StatsBarChart/formatBucketLabel above and GET
+                  /internal/dashboard/stats's bucket contract. The timezone
+                  control only changes how an already-fetched bucket
+                  timestamp is DISPLAYED, not what gets fetched - no
+                  refetch on change. */}
+              <Group align="flex-end" gap="md" wrap="nowrap">
+                {/* flexShrink: 0 - only the timezone Select (below) should
+                    ever shrink to make room in a tight row; the toggle's
+                    own labels (Day/Week/Month/Year) have no ellipsis/
+                    truncation handling and must stay at full, readable
+                    size regardless of how little space is left. */}
+                <Box style={{ flexShrink: 0 }}>
+                  <SegmentedToggle options={STATS_RANGE_OPTIONS} value={statsRange} onChange={setStatsRange} />
+                </Box>
+                {/* Two-part pill, same "one shared Paper, no double
+                    border" device as SegmentedToggle's own wrapping Paper
+                    - a yellow sparkOrange "Timezone" label chip (same
+                    accent color as the active Day/Week/Month/Year tab)
+                    fused to the actual dropdown, rather than a bare
+                    unlabeled Select, per explicit request. flex: 1 makes
+                    this Paper actually GROW to consume all the row's
+                    leftover width after the (fixed-size) toggle - the
+                    previous version left that leftover width as visible
+                    empty gap instead (via the outer Group's own
+                    justify="space-between", removed above), which per
+                    explicit request should become extra room for the
+                    dropdown/its options instead of dead space. minWidth: 0
+                    is still load-bearing (not decorative) - without it
+                    this Paper's own default flex min-width would floor at
+                    its content's natural size and force the row to
+                    overflow instead of letting the Select inside actually
+                    shrink on a genuinely tight viewport. */}
+                <Paper
+                  radius="lg"
+                  p={0}
+                  bg="var(--doc-surface)"
+                  withBorder
+                  style={{ boxShadow: '0 10px 20px -12px rgba(0, 0, 0, 0.5)', overflow: 'hidden', flex: 1, minWidth: 0 }}
+                >
+                  <Group gap={0} wrap="nowrap">
+                    <Box bg="var(--mantine-color-sparkOrange-6)" px="sm" style={{ display: 'flex', alignItems: 'center', height: 36, flexShrink: 0 }}>
+                      <Text fw={700} size="xs" c="#101B36" tt="uppercase" style={{ letterSpacing: '0.02em', whiteSpace: 'nowrap' }}>
+                        Timezone
+                      </Text>
+                    </Box>
+                    {/* The Select itself uses variant="unstyled" since the
+                        shared Paper above already supplies the
+                        background/border/shadow this control reads as one
+                        piece by - a second, separate border on the input
+                        itself would visibly seam the two halves apart
+                        instead. style.flex/minWidth (not just the w=160
+                        starting point) is what actually lets this shrink
+                        below its own natural content size when the row is
+                        tight - w is only the size it'd PREFER at rest. */}
+                    <Select
+                      aria-label="Timezone for chart timestamps"
+                      data={TIMEZONE_SELECT_DATA}
+                      value={timezone}
+                      onChange={(value) => value && setTimezone(value)}
+                      searchable
+                      variant="unstyled"
+                      size="sm"
+                      px="sm"
+                      w={160}
+                      style={{ flex: 1, minWidth: 0 }}
+                      // The dropdown panel defaults to matching the closed
+                      // input's own (narrow, space-constrained) width -
+                      // widened here independently via comboboxProps so
+                      // option text like "Eastern - EST/EDT (New York)"
+                      // wraps less, per explicit request. position:
+                      // 'bottom-end' anchors the dropdown's RIGHT edge to
+                      // the input's right edge, so the extra width expands
+                      // leftward (over the charts, which is empty space at
+                      // that point) rather than pushing past this column's
+                      // right edge into/past the 3D panel.
+                      comboboxProps={{ width: 280, position: 'bottom-end' }}
+                      styles={{
+                        // Matches TabButton's own font-size/weight
+                        // (16px/600) and its INACTIVE state's muted color
+                        // exactly - Mantine's own default (regular 400
+                        // weight, near-white --doc-text) read louder/
+                        // heavier than the Week/Month/Year tabs sitting
+                        // right next to it. overflow/textOverflow: the
+                        // fallback for whenever even the shrunk width
+                        // still isn't enough to show a full zone name -
+                        // same ellipsis idiom StatsBarChart's own bucket
+                        // labels already use.
+                        input: {
+                          height: 36,
+                          fontSize: 16,
+                          fontWeight: 600,
+                          color: 'var(--doc-text-muted)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        },
+                      }}
+                    />
+                  </Group>
+                </Paper>
+              </Group>
               <StatsBarChart
                 title="Messages sent"
                 data={stats?.messageBuckets ?? []}
                 range={statsRange}
+                timezone={timezone}
                 color="var(--mantine-color-signalBlue-6)"
                 glow="0 0 12px rgba(61, 107, 255, 0.55)"
               />
@@ -565,6 +875,7 @@ export function DashboardPage(): JSX.Element {
                 title="Dislikes"
                 data={stats?.dislikeBuckets ?? []}
                 range={statsRange}
+                timezone={timezone}
                 color="var(--mantine-color-alertMagenta-6)"
                 glow="0 0 12px rgba(255, 61, 113, 0.55)"
               />

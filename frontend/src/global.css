@@ -69,3 +69,30 @@ html[data-mantine-color-scheme='light'] .mantine-Popover-dropdown {
   border-color: var(--doc-hairline);
   color: var(--doc-text);
 }
+
+/*
+ * Same light-scheme-leaking-through bug class as the two fixes above, one
+ * level more specific: hovering (or keyboard-navigating) a Select/Combobox
+ * OPTION sets `background-color: var(--mantine-color-gray-0)` - a pale
+ * near-white (see node_modules/@mantine/core/styles/Combobox.css's own
+ * `[data-mantine-color-scheme='light'] ... :hover` rule) - while this
+ * app's own near-white --doc-text (correctly applied via the
+ * Popover-dropdown fix above, which options otherwise inherit) stays as
+ * the text color. Near-white text on a near-white background is
+ * effectively invisible - the resting/selected states aren't affected
+ * (Mantine's `[data-combobox-selected]` rule already uses
+ * `--mantine-primary-color-filled`, i.e. this app's own signalBlue, +
+ * white text, which reads fine), only this hover pseudo-state does. Reusing
+ * that same signalBlue-filled treatment on hover, instead of inventing a
+ * separate hover color, means a hovered-but-not-yet-selected option looks
+ * identical to how the actually-selected option already looks - one
+ * consistent "highlighted option" affordance, not two different ones.
+ * `.mantine-Select-option` is Mantine's own stable class for this (present
+ * regardless of the per-build internal hash), same
+ * html[data-mantine-color-scheme='light']-prefix specificity-bump
+ * technique as the other two fixes in this file.
+ */
+html[data-mantine-color-scheme='light'] .mantine-Select-option:hover {
+  background-color: var(--mantine-color-signalBlue-6);
+  color: var(--mantine-color-white);
+}

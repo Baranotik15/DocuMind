@@ -153,4 +153,8 @@ export const httpApiClient: ApiClient = {
   getChunkGraph() {
     return requestJson('/internal/dashboard/chunk-graph', { method: 'GET' })
   },
+
+  getOpenAiSpend() {
+    return requestJson('/internal/dashboard/openai-spend', { method: 'GET' })
+  },
 }

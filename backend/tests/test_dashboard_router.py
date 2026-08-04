@@ -1,12 +1,23 @@
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.config import Settings
 from app.db_sync import SyncSessionLocal
-from app.routers.dashboard import _project_to_3d
+from app.routers import dashboard
+from app.routers.dashboard import (
+    _bucket_completions_tokens,
+    _bucket_embeddings_tokens,
+    _bucket_spend_amount,
+    _project_to_3d,
+    _summarize_openai_spend,
+    _summarize_openai_tokens,
+)
 from app.vectors import format_vector
 
 
@@ -527,3 +538,324 @@ def test_chunk_graph_empty_nodes_key_shape_is_a_list(client: TestClient) -> None
 
     assert response.status_code == 200
     assert isinstance(response.json()["nodes"], list)
+
+
+# --- openai-spend --------------------------------------------------------
+#
+# _fetch_openai_spend_buckets/_fetch_openai_completions_buckets/
+# _fetch_openai_embeddings_buckets (the only pieces of this feature that
+# talk to the real OpenAI SDK) are patched directly in every test below -
+# the same external-boundary-mocking convention test_chat_router.py uses
+# for app.routers.chat.embed_texts/generate_reply - so none of these tests
+# ever attempt a real OpenAI call. Every test that reaches
+# get_openai_spend's try block patches all three, even ones that only care
+# about one of them, since GET /internal/dashboard/openai-spend now awaits
+# all three concurrently (asyncio.gather) and an un-patched one would
+# otherwise attempt a real network call.
+# _summarize_openai_spend/_bucket_spend_amount/_summarize_openai_tokens/
+# _bucket_completions_tokens/_bucket_embeddings_tokens (pure functions) are
+# also unit tested directly, the same way test_project_to_3d_* above unit
+# tests _project_to_3d directly.
+
+_ZERO_SPEND_BODY = {
+    "day": 0.0,
+    "week": 0.0,
+    "month": 0.0,
+    "year": 0.0,
+    "currency": "usd",
+}
+
+_ZERO_TOKENS_BODY = {"day": 0, "week": 0, "month": 0, "year": 0}
+
+
+def _make_cost_result(value: float, currency: str = "usd") -> SimpleNamespace:
+    return SimpleNamespace(amount=SimpleNamespace(value=value, currency=currency))
+
+
+def _make_completions_result(input_tokens: int, output_tokens: int) -> SimpleNamespace:
+    return SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens)
+
+
+def _make_embeddings_result(input_tokens: int) -> SimpleNamespace:
+    return SimpleNamespace(input_tokens=input_tokens)
+
+
+def _make_bucket(start_time: datetime, results: list) -> SimpleNamespace:
+    return SimpleNamespace(start_time=int(start_time.timestamp()), results=results)
+
+
+def _patch_openai_usage_fetchers(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cost_buckets: list | Exception | None = None,
+    completions_buckets: list | Exception | None = None,
+    embeddings_buckets: list | Exception | None = None,
+) -> None:
+    """Patches all three of dashboard._fetch_openai_spend_buckets/
+    _fetch_openai_completions_buckets/_fetch_openai_embeddings_buckets at
+    once - a plain `list` argument becomes an AsyncMock that returns it, an
+    Exception instance becomes an AsyncMock that raises it, and the default
+    None becomes an AsyncMock that returns an empty list. Keeps the
+    per-test setup below to one call each, rather than three near-identical
+    monkeypatch.setattr lines every time."""
+
+    def _mock_for(value: list | Exception | None) -> AsyncMock:
+        if isinstance(value, Exception):
+            return AsyncMock(side_effect=value)
+        return AsyncMock(return_value=list(value or []))
+
+    monkeypatch.setattr(
+        dashboard, "_fetch_openai_spend_buckets", _mock_for(cost_buckets)
+    )
+    monkeypatch.setattr(
+        dashboard, "_fetch_openai_completions_buckets", _mock_for(completions_buckets)
+    )
+    monkeypatch.setattr(
+        dashboard, "_fetch_openai_embeddings_buckets", _mock_for(embeddings_buckets)
+    )
+
+
+def test_openai_spend_not_configured_returns_zeros_and_never_calls_openai(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        dashboard, "get_settings", lambda: Settings(openai_admin_api_key="")
+    )
+    cost_mock = AsyncMock()
+    completions_mock = AsyncMock()
+    embeddings_mock = AsyncMock()
+    monkeypatch.setattr(dashboard, "_fetch_openai_spend_buckets", cost_mock)
+    monkeypatch.setattr(dashboard, "_fetch_openai_completions_buckets", completions_mock)
+    monkeypatch.setattr(dashboard, "_fetch_openai_embeddings_buckets", embeddings_mock)
+
+    response = client.get("/internal/dashboard/openai-spend")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        **_ZERO_SPEND_BODY,
+        "tokens": _ZERO_TOKENS_BODY,
+        "configured": False,
+    }
+    cost_mock.assert_not_awaited()
+    completions_mock.assert_not_awaited()
+    embeddings_mock.assert_not_awaited()
+
+
+def test_openai_spend_success_sums_buckets_into_rolling_windows(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        dashboard, "get_settings", lambda: Settings(openai_admin_api_key="sk-admin-test")
+    )
+    now = datetime.now(timezone.utc)
+    cost_buckets = [
+        _make_bucket(now, [_make_cost_result(0.42)]),  # in every window
+        _make_bucket(now - timedelta(days=3), [_make_cost_result(1.00)]),  # week/month/year
+        _make_bucket(now - timedelta(days=20), [_make_cost_result(5.00)]),  # month/year
+        _make_bucket(now - timedelta(days=200), [_make_cost_result(10.00)]),  # year only
+    ]
+    completions_buckets = [
+        _make_bucket(now, [_make_completions_result(100, 50)]),  # 150, every window
+        _make_bucket(now - timedelta(days=3), [_make_completions_result(200, 100)]),  # 300
+        _make_bucket(now - timedelta(days=20), [_make_completions_result(400, 200)]),  # 600
+        _make_bucket(now - timedelta(days=200), [_make_completions_result(800, 400)]),  # 1200
+    ]
+    embeddings_buckets = [
+        _make_bucket(now, [_make_embeddings_result(10)]),  # every window
+        _make_bucket(now - timedelta(days=3), [_make_embeddings_result(20)]),
+        _make_bucket(now - timedelta(days=20), [_make_embeddings_result(40)]),
+        _make_bucket(now - timedelta(days=200), [_make_embeddings_result(80)]),  # year only
+    ]
+    _patch_openai_usage_fetchers(
+        monkeypatch,
+        cost_buckets=cost_buckets,
+        completions_buckets=completions_buckets,
+        embeddings_buckets=embeddings_buckets,
+    )
+
+    response = client.get("/internal/dashboard/openai-spend")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configured"] is True
+    assert body["currency"] == "usd"
+    assert body["day"] == pytest.approx(0.42)
+    assert body["week"] == pytest.approx(1.42)
+    assert body["month"] == pytest.approx(6.42)
+    assert body["year"] == pytest.approx(16.42)
+    assert body["tokens"] == {
+        "day": 160,  # completions 150 + embeddings 10
+        "week": 480,  # completions 150+300 + embeddings 10+20
+        "month": 1120,  # completions 150+300+600 + embeddings 10+20+40
+        "year": 2400,  # completions 150+300+600+1200 + embeddings 10+20+40+80
+    }
+
+
+def test_openai_spend_fetch_failure_returns_200_with_zeroed_data_and_configured_true(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        dashboard, "get_settings", lambda: Settings(openai_admin_api_key="sk-admin-test")
+    )
+    _patch_openai_usage_fetchers(monkeypatch, cost_buckets=RuntimeError("boom"))
+
+    response = client.get("/internal/dashboard/openai-spend")
+
+    # Never a 500 - a failed OpenAI call must not take down the rest of the
+    # Stats tab.
+    assert response.status_code == 200
+    assert response.json() == {
+        **_ZERO_SPEND_BODY,
+        "tokens": _ZERO_TOKENS_BODY,
+        "configured": True,
+    }
+
+
+def test_openai_spend_token_fetch_failure_zeros_the_whole_response(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Design decision: a partial failure across the three OpenAI calls
+    (costs/completions/embeddings) zeros the WHOLE response, not just the
+    field(s) that failed to fetch - see get_openai_spend's docstring. Here
+    costs succeeds with real spend but completions fails; the money fields
+    must still come back zeroed, not the real cost total, so the Stats tab
+    never shows a mix of real and zeroed numbers side by side."""
+    monkeypatch.setattr(
+        dashboard, "get_settings", lambda: Settings(openai_admin_api_key="sk-admin-test")
+    )
+    now = datetime.now(timezone.utc)
+    _patch_openai_usage_fetchers(
+        monkeypatch,
+        cost_buckets=[_make_bucket(now, [_make_cost_result(9.99)])],
+        completions_buckets=RuntimeError("boom"),
+        embeddings_buckets=[_make_bucket(now, [_make_embeddings_result(10)])],
+    )
+
+    response = client.get("/internal/dashboard/openai-spend")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        **_ZERO_SPEND_BODY,
+        "tokens": _ZERO_TOKENS_BODY,
+        "configured": True,
+    }
+
+
+def test_openai_spend_empty_buckets_falls_back_to_usd_currency(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The documented shape for a zero-spend account (verified live) - every
+    # bucket present but each with an empty `results` list.
+    monkeypatch.setattr(
+        dashboard, "get_settings", lambda: Settings(openai_admin_api_key="sk-admin-test")
+    )
+    now = datetime.now(timezone.utc)
+    _patch_openai_usage_fetchers(
+        monkeypatch,
+        cost_buckets=[_make_bucket(now, [])],
+        completions_buckets=[_make_bucket(now, [])],
+        embeddings_buckets=[_make_bucket(now, [])],
+    )
+
+    response = client.get("/internal/dashboard/openai-spend")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        **_ZERO_SPEND_BODY,
+        "tokens": _ZERO_TOKENS_BODY,
+        "configured": True,
+    }
+
+
+def test_bucket_spend_amount_sums_multiple_results_and_reads_currency() -> None:
+    bucket = _make_bucket(
+        datetime.now(timezone.utc),
+        [_make_cost_result(1.5, "usd"), _make_cost_result(2.5, "usd")],
+    )
+
+    amount, currency = _bucket_spend_amount(bucket)
+
+    assert amount == pytest.approx(4.0)
+    assert currency == "usd"
+
+
+def test_bucket_spend_amount_empty_results_is_zero_with_no_currency() -> None:
+    bucket = _make_bucket(datetime.now(timezone.utc), [])
+
+    amount, currency = _bucket_spend_amount(bucket)
+
+    assert amount == 0.0
+    assert currency is None
+
+
+def test_summarize_openai_spend_day_excludes_a_bucket_from_eight_days_ago() -> None:
+    now = datetime.now(timezone.utc)
+    buckets = [_make_bucket(now - timedelta(days=8), [_make_cost_result(3.0)])]
+
+    result = _summarize_openai_spend(buckets, now)
+
+    assert result["day"] == 0.0
+    assert result["week"] == 0.0
+    assert result["month"] == pytest.approx(3.0)
+    assert result["year"] == pytest.approx(3.0)
+
+
+def test_summarize_openai_spend_with_no_buckets_is_all_zero_usd() -> None:
+    result = _summarize_openai_spend([], datetime.now(timezone.utc))
+
+    assert result == _ZERO_SPEND_BODY
+
+
+def test_bucket_completions_tokens_sums_input_and_output_across_results() -> None:
+    bucket = _make_bucket(
+        datetime.now(timezone.utc),
+        [_make_completions_result(100, 50), _make_completions_result(200, 25)],
+    )
+
+    assert _bucket_completions_tokens(bucket) == 375
+
+
+def test_bucket_completions_tokens_empty_results_is_zero() -> None:
+    bucket = _make_bucket(datetime.now(timezone.utc), [])
+
+    assert _bucket_completions_tokens(bucket) == 0
+
+
+def test_bucket_embeddings_tokens_sums_input_tokens_across_results() -> None:
+    bucket = _make_bucket(
+        datetime.now(timezone.utc),
+        [_make_embeddings_result(10), _make_embeddings_result(15)],
+    )
+
+    assert _bucket_embeddings_tokens(bucket) == 25
+
+
+def test_bucket_embeddings_tokens_empty_results_is_zero() -> None:
+    bucket = _make_bucket(datetime.now(timezone.utc), [])
+
+    assert _bucket_embeddings_tokens(bucket) == 0
+
+
+def test_summarize_openai_tokens_combines_completions_and_embeddings_per_window() -> None:
+    now = datetime.now(timezone.utc)
+    completions_buckets = [
+        _make_bucket(now, [_make_completions_result(100, 50)]),  # 150, every window
+        _make_bucket(now - timedelta(days=200), [_make_completions_result(800, 400)]),  # year only
+    ]
+    embeddings_buckets = [
+        _make_bucket(now, [_make_embeddings_result(10)]),  # every window
+        _make_bucket(now - timedelta(days=200), [_make_embeddings_result(80)]),  # year only
+    ]
+
+    result = _summarize_openai_tokens(completions_buckets, embeddings_buckets, now)
+
+    assert result["day"] == 160
+    assert result["week"] == 160
+    assert result["month"] == 160
+    assert result["year"] == 160 + 1200 + 80
+
+
+def test_summarize_openai_tokens_with_no_buckets_is_all_zero() -> None:
+    result = _summarize_openai_tokens([], [], datetime.now(timezone.utc))
+
+    assert result == _ZERO_TOKENS_BODY

@@ -63,6 +63,34 @@ export interface ChunkGraph {
   nodes: ChunkGraphNode[]
 }
 
+/**
+ * OpenAI API spend summary (GET /internal/dashboard/openai-spend) - trailing
+ * rolling windows from "now" (last 1/7/30/365 days), not calendar-aligned
+ * buckets like DashboardStatsBucket above. `configured` is `false` (with
+ * every amount at 0) when the backend has no OPENAI_ADMIN_API_KEY set -
+ * this whole feature is optional, same "gracefully does nothing without it"
+ * pattern as OPENAI_API_KEY itself (see .env.example) - the regular
+ * OPENAI_API_KEY used for chat/embeddings has no access to this data at
+ * all, a separate Admin key is required.
+ */
+/** Same four trailing rolling windows as OpenAiSpend's own day/week/month/year, just token counts (completions input+output plus embeddings input, summed) instead of USD amounts. */
+export interface OpenAiSpendTokens {
+  day: number
+  week: number
+  month: number
+  year: number
+}
+
+export interface OpenAiSpend {
+  day: number
+  week: number
+  month: number
+  year: number
+  tokens: OpenAiSpendTokens
+  currency: string
+  configured: boolean
+}
+
 export interface RelevantChunkMatch {
   chunkId: string
   documentId: string
