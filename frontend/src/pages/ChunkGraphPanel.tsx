@@ -277,6 +277,10 @@ export function ChunkGraphPanel(): JSX.Element {
   // per explicit request, the same treatment DashboardPage's own stat
   // charts got for their own first load.
   const [isGraphDataLoading, setIsGraphDataLoading] = useState(true)
+  // Set if the one-shot getChunkGraph() fetch below rejects - previously
+  // unhandled (no .catch()), which left isGraphDataLoading stuck true
+  // forever on failure: an infinite spinner with no explanation.
+  const [graphDataError, setGraphDataError] = useState(false)
 
   // The clicked node (if any) driving the modal below - null means the
   // modal is closed. Set synchronously by onNodeClick (see the effect
@@ -512,6 +516,11 @@ export function ChunkGraphPanel(): JSX.Element {
         // than waiting for the next drag to silently jump to them.
         controls.update()
       }
+    }).catch(() => {
+      if (!cancelled) {
+        setIsGraphDataLoading(false)
+        setGraphDataError(true)
+      }
     })
 
     return () => {
@@ -549,7 +558,7 @@ export function ChunkGraphPanel(): JSX.Element {
             not impose its own floor that could make it taller than that
             stack. */}
         <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }} />
-        {isGraphDataLoading ? (
+        {isGraphDataLoading || graphDataError ? (
           <Box
             style={{
               position: 'absolute',
@@ -559,7 +568,13 @@ export function ChunkGraphPanel(): JSX.Element {
               justifyContent: 'center',
             }}
           >
-            <Loader color="sparkOrange" />
+            {graphDataError ? (
+              <Text size="sm" c="dimmed">
+                Failed to load the chunk graph.
+              </Text>
+            ) : (
+              <Loader color="sparkOrange" />
+            )}
           </Box>
         ) : null}
       </Box>

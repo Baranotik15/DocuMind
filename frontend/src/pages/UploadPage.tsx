@@ -36,6 +36,12 @@ import { fuzzyMatchesFilename } from '../utils/fuzzyMatch'
 // amount rather than duplicating the literal.
 export const POLL_INTERVAL_MS = 5000
 
+// Must match backend/app/config.py's Settings.max_upload_size_bytes - there's
+// no endpoint exposing that value live, so this is a manually-kept-in-sync
+// display constant, not an enforced client-side cap (the backend is the
+// actual source of truth and rejects oversized uploads with a 413).
+const MAX_UPLOAD_SIZE_MB = 10
+
 /**
  * 'uploaded' (queued, not yet chunking) and 'chunking' (actively being
  * chunked) are the two "still processing" statuses - not yet settled into a
@@ -278,6 +284,12 @@ export function UploadPage(): JSX.Element {
   // Set when an upload/overwrite attempt comes back 409 document_processing -
   // there's nothing to confirm in that case, just a message to dismiss.
   const [processingMessage, setProcessingMessage] = useState<string | null>(null)
+  // Set on any other failed upload (413 file_too_large, 400
+  // unsupported_file_type, or anything else) - previously these were
+  // rethrown out of attemptUpload with nothing awaiting the promise
+  // (onDrop calls it via `void`), so the failure was silently swallowed
+  // and the drop zone just did nothing with no explanation.
+  const [uploadError, setUploadError] = useState<string | null>(null)
   // Ordered list of active sort criteria - empty means no sort applied (the
   // table starts in whatever order `listDocuments()` returned it in). Array
   // order is priority order: the first entry is the primary sort key, the
@@ -402,7 +414,15 @@ export function UploadPage(): JSX.Element {
         setProcessingMessage(`${file.name} is still processing - please wait for it to finish before overwriting it.`)
         return
       }
-      throw error
+      if (error instanceof Error && error.message === 'file_too_large') {
+        setUploadError(`${file.name} is larger than the ${MAX_UPLOAD_SIZE_MB} MB limit.`)
+        return
+      }
+      if (error instanceof Error && error.message === 'unsupported_file_type') {
+        setUploadError(`${file.name} isn't a supported file type - only PDF, DOCX, or Markdown.`)
+        return
+      }
+      setUploadError(`Failed to upload ${file.name}. Please try again.`)
     }
   }
 
@@ -469,6 +489,19 @@ export function UploadPage(): JSX.Element {
         </Alert>
       ) : null}
 
+      {uploadError ? (
+        <Alert
+          color="alertMagenta"
+          variant="light"
+          radius="lg"
+          title="Upload failed"
+          withCloseButton
+          onClose={() => setUploadError(null)}
+        >
+          {uploadError}
+        </Alert>
+      ) : null}
+
       <Dropzone
         onDrop={(files) => void handleFilesDrop(files)}
         multiple={false}
@@ -493,7 +526,8 @@ export function UploadPage(): JSX.Element {
               Drop a document here or click to browse
             </Text>
             <Text size="sm" c="dimmed">
-              PDF, DOCX, or Markdown - added to your knowledge base for chunking and chat.
+              PDF, DOCX, or Markdown, up to {MAX_UPLOAD_SIZE_MB} MB - added to your
+              knowledge base for chunking and chat.
             </Text>
           </Stack>
         </Group>

@@ -1255,7 +1255,16 @@ export function ChunkPreviewPage(): JSX.Element {
         setStatus('chunking')
         return
       }
-      throw error
+      if (error instanceof Error && error.message === 'document_not_found') {
+        setToastMessage('This document was deleted elsewhere - your edits could not be saved.')
+        return
+      }
+      // Any other failure (network error, unexpected backend error, ...)
+      // previously propagated out of this `void`-called handler with
+      // nothing awaiting the promise - a silently swallowed rejection that
+      // left the operator's edits un-saved with no explanation.
+      setToastMessage('Failed to save chunks. Please try again.')
+      return
     }
     navigate('/upload')
   }

@@ -27,9 +27,19 @@ async def generate_reply(
             model=get_settings().openai_chat_model,
             messages=messages,
         )
+        # Both read inside the try: an empty `choices` (IndexError) or a
+        # `None` content (a real OpenAI response shape, e.g. a content-
+        # filter refusal) must become the same LLMError/502 contract as an
+        # outright SDK failure, not an unhandled 500 or a `None` silently
+        # flowing into chat_messages.content, a NOT NULL column.
+        content = response.choices[0].message.content
+        if content is None:
+            raise LLMError("Chat completion returned no content")
+    except LLMError:
+        raise
     except Exception as exc:
         raise LLMError(f"Failed to generate reply: {exc}") from exc
-    return response.choices[0].message.content
+    return content
 
 
 def _build_system_prompt(context_chunks: list[str]) -> str:

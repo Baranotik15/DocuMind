@@ -23,10 +23,11 @@ async def create_smoke_job(session: AsyncSession = Depends(get_session)) -> dict
 
 @router.get("/smoke-job/{job_id}")
 async def get_smoke_job(
-    job_id: str, session: AsyncSession = Depends(get_session)
+    job_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, str]:
     result = await session.execute(
-        text("SELECT status FROM smoke_jobs WHERE id = :job_id"), {"job_id": job_id}
+        text("SELECT status FROM smoke_jobs WHERE id = :job_id"),
+        {"job_id": str(job_id)},
     )
     row = result.one_or_none()
     if row is None:

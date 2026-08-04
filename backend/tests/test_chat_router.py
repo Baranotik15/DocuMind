@@ -281,6 +281,12 @@ def test_dislike_message_toggles_disliked_flag_on_and_off(client: TestClient) ->
         _cleanup_messages(message_ids)
 
 
+def test_dislike_malformed_message_id_returns_422_not_500(client: TestClient) -> None:
+    response = client.post("/internal/chat/messages/not-a-uuid/dislike")
+
+    assert response.status_code == 422
+
+
 async def _fake_embed_axis0(texts: list[str]) -> list[list[float]]:
     # Query embedding always points along the same unit axis, so each
     # chunk's cosine distance to it is fully determined by that chunk's

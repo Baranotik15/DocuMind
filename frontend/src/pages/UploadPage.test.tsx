@@ -163,6 +163,23 @@ describe('UploadPage', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it('shows a dismissable "Upload failed" message on a 413 file_too_large response', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'file_too_large' }, 413)) // upload attempt
+
+    const { container } = renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('release-plan.md')).toBeInTheDocument()
+
+    const file = new File(['contents'], 'huge.pdf', { type: 'application/pdf' })
+    dropFile(container, file)
+
+    expect(await screen.findByText('Upload failed')).toBeInTheDocument()
+    expect(
+      screen.getByText(/huge\.pdf is larger than the \d+ MB limit\./),
+    ).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('deletes a document when Delete is confirmed, calling the DELETE endpoint and removing the row', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
     fetchMock.mockResolvedValueOnce(jsonResponse(null, 204)) // DELETE
