@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Box, Button, Group, Modal, Stack, Text, Title } from '@mantine/core'
 import ForceGraph3D from '3d-force-graph'
 import { useNavigate } from 'react-router-dom'
-import { MOUSE, Vector3 } from 'three'
+import { BackSide, Group as ThreeGroup, Mesh, MeshBasicMaterial, MOUSE, SphereGeometry, Vector3 } from 'three'
 
 import classes from './ChunkGraphPanel.module.css'
 import { apiClient } from '../api/client'
@@ -39,6 +39,48 @@ const GRAPH_AUTO_ROTATE_SPEED = 0.5
 // little headroom keeps every node's whole sphere on-screen instead of just
 // its center point.
 const GRAPH_INITIAL_ZOOM_PADDING = 1.15
+
+// Radius of every node's sphere (three.js scene units, same scale as
+// POSITION_SCALE) - previously handed to `nodeRelSize`, now applied
+// directly since nodes render via a custom `nodeThreeObject` (see below),
+// not 3d-force-graph's default sphere.
+const GRAPH_NODE_RADIUS = 4
+
+// One shared geometry reused across every node's Mesh (see
+// `nodeThreeObject` below) - all node spheres are the same size, so there's
+// no reason to allocate a separate SphereGeometry per node.
+const nodeSphereGeometry = new SphereGeometry(GRAPH_NODE_RADIUS, 16, 16)
+
+// Outline effect: a second, slightly larger sphere rendered BEHIND each
+// node using its BACK faces only (`side: BackSide` in nodeThreeObject
+// below) - the classic "inverted hull" outline technique, not a flat
+// stroke/border (spheres have no meaningful 2D "edge" to stroke, and an
+// EdgesGeometry outline on a low-poly sphere would show its triangulation,
+// not a clean silhouette). Slightly bigger than the node itself so the
+// back faces peek out from behind it as a rim, from any viewing angle -
+// per explicit request, nodes were hard to tell apart where they overlap
+// without some kind of contour.
+const GRAPH_NODE_OUTLINE_SCALE = 1.15
+const nodeOutlineGeometry = new SphereGeometry(GRAPH_NODE_RADIUS * GRAPH_NODE_OUTLINE_SCALE, 16, 16)
+// Matching the page's own `voidBg` (theme.ts) was the first attempt here,
+// on the theory that the outline should read as a "gap" - in practice it
+// disappeared entirely against that same background (only visible as a
+// sliver where two nodes actually overlapped), per explicit correction.
+// A step lighter than both `voidBg` (#101B36) and `--doc-surface`
+// (#131B2E) - still a muted slate, not a bright accent, but genuinely
+// distinguishable as a rim around every node, not just where they overlap.
+const nodeOutlineColor = '#2A3550'
+
+// Node/link opacity and material: 3d-force-graph's DEFAULT node spheres and
+// linkWidth>0 links both render with `MeshLambertMaterial`, which shades by
+// scene lighting - even a fully saturated color reads as muted/dull
+// wherever a surface isn't facing the light directly. Per explicit
+// "make it more neon" request, both use a plain `MeshBasicMaterial`
+// instead (below, via `nodeThreeObject`/`linkMaterial`) - unlit, so the
+// raw HSL color (see buildDocumentColors) renders at full, flat intensity
+// with no shading to mute it, which is what actually reads as "neon"
+// against this panel's dark background.
+const GRAPH_LINK_OPACITY = 0.75
 
 /**
  * The exact shape of the objects this component hands to 3d-force-graph's
@@ -111,7 +153,9 @@ function buildDocumentColors(nodes: ChunkGraphNode[]): Map<string, string> {
   for (const node of nodes) {
     if (!colors.has(node.documentId)) {
       const hue = (colors.size * 137.508) % 360
-      colors.set(node.documentId, `hsl(${hue}, 70%, 60%)`)
+      // 85%/68% (was 70%/60%) - per explicit request, the original values
+      // read as too pale/dull against this panel's dark background.
+      colors.set(node.documentId, `hsl(${hue}, 85%, 68%)`)
     }
   }
   return colors
@@ -271,10 +315,29 @@ export function ChunkGraphPanel(): JSX.Element {
       .width(container.clientWidth)
       .height(container.clientHeight)
       .nodeLabel((node) => chunkNodeLabel(node as unknown as GraphNodeDatum))
-      .nodeRelSize(4)
-      .nodeColor('color')
-      .linkOpacity(0.45)
-      .linkColor('color')
+      // Flat, unlit spheres (see GRAPH_NODE_RADIUS/GRAPH_LINK_OPACITY's own
+      // comment above for why) - replaces the default nodeRelSize/nodeColor
+      // sphere (which used the scene-lit MeshLambertMaterial) entirely. Each
+      // node is actually a small Group of two meshes - the outline sphere
+      // (see nodeOutlineGeometry's own comment for the inverted-hull
+      // technique) added FIRST so the colored sphere draws on top of/in
+      // front of it.
+      .nodeThreeObject((node) => {
+        const graphNode = node as unknown as GraphNodeDatum
+        const group = new ThreeGroup()
+        group.add(new Mesh(nodeOutlineGeometry, new MeshBasicMaterial({ color: nodeOutlineColor, side: BackSide })))
+        group.add(new Mesh(nodeSphereGeometry, new MeshBasicMaterial({ color: graphNode.color })))
+        return group
+      })
+      // Same unlit-material swap as nodeThreeObject above, for links -
+      // linkWidth>0 (below) makes 3d-force-graph render links as lit
+      // cylinders by default, which needs its own explicit material
+      // override; linkColor/linkOpacity only configure the DEFAULT
+      // material, not one supplied here.
+      .linkMaterial((link) => {
+        const graphLink = link as unknown as { color: string }
+        return new MeshBasicMaterial({ color: graphLink.color, transparent: true, opacity: GRAPH_LINK_OPACITY })
+      })
       .linkWidth(1.5)
       .showNavInfo(false)
       .enableNodeDrag(false)
