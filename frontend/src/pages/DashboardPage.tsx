@@ -148,35 +148,65 @@ const OPENAI_SPEND_RANGE_OPTIONS: { value: OpenAiSpendRange; label: string }[] =
 
 interface SpendBlockProps {
   label: string
-  /** Already-formatted display string (see formatSpendAmount/formatTokenCount) for the currently selected OpenAiSpendRange - callers pick which formatter, this component just centers/sizes whatever string it's handed. */
-  value: string
+  /** Already-formatted display string (see formatSpendAmount/formatTokenCount) for the currently selected OpenAiSpendRange - callers pick which formatter, this component just centers/sizes whatever string it's handed. Ignored when `split` is given - only the Money Spend call site uses this prop; Tokens Spend uses `split` instead (see below). */
+  value?: string
+  /** When given, renders two side-by-side sub-values (each with its own small uppercase "Input"/"Output" label reusing this block's own top-level label styling below) instead of the single big `value` string - only the Tokens Spend call site passes this, per explicit request to split it into its input/output directions (see OpenAiSpendTokenWindow). Money Spend stays on the plain `value` prop, untouched. */
+  split?: { input: string; output: string }
   configured: boolean
-  /** True during the brief post-range-click delay (see handleSpendRangeChange) - swaps the number for a same-height spinner so switching ranges doesn't just snap, purely cosmetic per explicit request. Never true on the initial fetch/unconfigured states, only on a later range change. */
+  /** True during the brief post-range-click delay (see handleSpendRangeChange) - swaps the number (or, with `split`, both sub-values together as one unit, not two separate spinners) for a same-height spinner so switching ranges doesn't just snap, purely cosmetic per explicit request. Never true on the initial fetch/unconfigured states, only on a later range change. */
   loading: boolean
 }
 
-/** One big-number block (tokens or money, picked by the caller) for the OpenAI spend area - large, centered text filling the block, same "big number" idiom as StatCard above but centered both axes (StatCard is left-aligned/stacked) since this block has nothing else competing for space once it's down to a single value. */
-/** Left-aligned (not centered) label + value, per explicit correction - matches StatCard's own left-aligned convention elsewhere in this same stat-card row, rather than standing out as the one centered block. justify="center" still vertically centers the pair within the block's own height (only the horizontal axis changed). */
-function SpendBlock({ label, value, configured, loading }: SpendBlockProps): JSX.Element {
+/** One big-number block (tokens or money, picked by the caller) for the OpenAI spend area - a centered header (label, then a hairline divider - same `--doc-hairline` device as SegmentedToggle's own between-button dividers above), then either a single big centered number (Money Spend, via `value`) or Input/Output side by side under their OWN hairline divider (Tokens Spend, via `split`), per explicit request that both cards share the same header treatment. */
+function SpendBlock({ label, value, split, configured, loading }: SpendBlockProps): JSX.Element {
   return (
     <Paper radius="lg" p="md" bg="var(--doc-surface)" withBorder style={{ flex: 1, minWidth: 140, display: 'flex' }}>
-      <Stack gap={4} justify="center" style={{ width: '100%' }}>
-        <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
+      <Stack gap="sm" style={{ width: '100%' }}>
+        <Text ta="center" size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
           {label}
         </Text>
         {configured ? (
-          loading ? (
-            // Same 2.75rem box height as the Text below (2.5rem font * 1.1 line-height) so the block doesn't jump while the spinner's up.
-            <Box style={{ height: '2.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Loader color="sparkOrange" size="sm" />
-            </Box>
-          ) : (
-            <Text fw={700} ta="center" style={{ fontSize: '2.5rem', lineHeight: 1.1 }}>
-              {value}
-            </Text>
-          )
+          <>
+            <Box aria-hidden="true" style={{ height: 1, width: '100%', backgroundColor: 'var(--doc-hairline)' }} />
+            {loading ? (
+              <Box style={{ height: '2.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Loader color="sparkOrange" size="sm" />
+              </Box>
+            ) : split ? (
+              // NOT `grow` here - Group's `grow` prop distributes width
+              // evenly across EVERY direct child, including the 1px
+              // divider below, which would inflate it to a full third of
+              // the row (a visibly wide gray block, not a hairline) -
+              // `flex: 1` applied only to the two Stack columns below
+              // achieves the same even 50/50 split without also
+              // stretching the divider between them.
+              <Group gap={0} wrap="nowrap" style={{ width: '100%' }}>
+                <Stack gap={2} align="center" style={{ flex: 1 }}>
+                  <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
+                    Input
+                  </Text>
+                  <Text fw={700} ta="center" style={{ fontSize: '1.5rem', lineHeight: 1.1 }}>
+                    {split.input}
+                  </Text>
+                </Stack>
+                <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
+                <Stack gap={2} align="center" style={{ flex: 1 }}>
+                  <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
+                    Output
+                  </Text>
+                  <Text fw={700} ta="center" style={{ fontSize: '1.5rem', lineHeight: 1.1 }}>
+                    {split.output}
+                  </Text>
+                </Stack>
+              </Group>
+            ) : (
+              <Text fw={700} ta="center" style={{ fontSize: '2.5rem', lineHeight: 1.1 }}>
+                {value}
+              </Text>
+            )}
+          </>
         ) : (
-          <Text size="xs" c="dimmed">
+          <Text size="xs" c="dimmed" ta="center">
             Admin key not configured
           </Text>
         )}
@@ -238,11 +268,15 @@ const STATS_POLL_INTERVAL_MS = 10_000
  * weekday, a 7-day bucket gets its start date, a 1-month bucket gets a
  * month name.
  */
-function formatBucketLabel(bucketStart: string, range: DashboardStatsRange, timezone: string): string {
+// "day"'s own bucket label isn't produced here - it's just the bucket's
+// 1-based position (see StatsBarChart's render loop below: "1" for the
+// first/local-midnight bucket through "24" for the last) per explicit
+// request, not a clock time read off `bucketStart` - so this function's
+// `range` excludes it entirely; TypeScript enforces that every remaining
+// case below actually needs `bucketStart`/`timezone`.
+function formatBucketLabel(bucketStart: string, range: Exclude<DashboardStatsRange, 'day'>, timezone: string): string {
   const date = new Date(bucketStart)
   switch (range) {
-    case 'day':
-      return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', timeZone: timezone }).format(date)
     case '7days':
       return new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: timezone }).format(date)
     case 'month':
@@ -252,6 +286,11 @@ function formatBucketLabel(bucketStart: string, range: DashboardStatsRange, time
   }
 }
 
+/** "DD.MM" calendar date for the "day" range's own on-screen day (e.g. "04.08") - derived from the first bucket's `bucketStart` (local midnight in `timezone`, per the backend's calendar-aligned day-range contract), not from the client's own `new Date()`, so it can never disagree with which day the 24 hourly bars actually cover. */
+function formatDayRangeDate(bucketStart: string, timezone: string): string {
+  return new Intl.DateTimeFormat(undefined, { day: '2-digit', month: '2-digit', timeZone: timezone }).format(new Date(bucketStart))
+}
+
 interface StatsBarChartProps {
   title: string
   data: DashboardStatsBucket[]
@@ -259,6 +298,10 @@ interface StatsBarChartProps {
   timezone: string
   color: string
   glow: string
+  /** True only during a timezone-triggered refetch (see statsLoading/handleTimezoneChange) - swaps the bars for a same-height spinner, mirroring SpendBlock's own loading treatment, so the Day/Week/Month/Year toggle and the 10s poll never trigger this. */
+  loading: boolean
+  /** "DD.MM" calendar date shown to the right of `title`, e.g. "04.08" - only passed for the "day" range (see the Messages sent call site below), where the 24 hourly buckets alone no longer show which calendar day they belong to (the bucket labels are now bare hour numbers, see formatBucketLabel). Undefined renders nothing next to the title, same as before this existed - so the "Dislikes" chart (which never gets this prop) is unaffected. */
+  dateLabel?: string
 }
 
 /**
@@ -270,26 +313,47 @@ interface StatsBarChartProps {
  * minimum sliver height so a genuine zero-count bucket still reads as
  * "present" (a real empty bar) rather than invisible.
  */
-function StatsBarChart({ title, data, range, timezone, color, glow }: StatsBarChartProps): JSX.Element {
+function StatsBarChart({ title, data, range, timezone, color, glow, loading, dateLabel }: StatsBarChartProps): JSX.Element {
   const max = Math.max(1, ...data.map((bucket) => bucket.count))
   return (
     <Stack gap="sm">
-      <Title order={4}>{title}</Title>
-      {/* overflow: 'hidden' on the row + minWidth: 0 on each bucket below
-          are both load-bearing, not decoration: flex items default to
-          min-width: auto, which floors a bucket's width at its own
-          content's natural size (here, the nowrap time label's full text
-          width) REGARDLESS of flex: 1 - with enough buckets (the "Day"
-          range shows 12), those floors summed together used to exceed
-          this column's actual width and silently overflow rightward,
-          bleeding under the 3D panel next to it instead of clipping or
-          proportionally shrinking. minWidth: 0 removes that floor so
-          flex: 1 actually is what it claims - a genuine, non-overflowing
-          percentage share of the row for every bucket - and overflow:
-          hidden on the row is the backstop in case a browser still
-          computes a fractional pixel over. */}
-      <Group align="flex-end" gap="xs" wrap="nowrap" style={{ height: 160, overflow: 'hidden' }}>
-        {data.map((bucket) => (
+      <Group justify="space-between" align="baseline" wrap="nowrap">
+        <Title order={4}>{title}</Title>
+        {dateLabel ? (
+          <Text size="sm" fw={600} c="dimmed">
+            {dateLabel}
+          </Text>
+        ) : null}
+      </Group>
+      {loading ? (
+        // Same height (160) as the real bars Group below, so swapping in
+        // the spinner during a timezone-triggered refetch doesn't shift the
+        // 3D panel next to this column - same idiom as SpendBlock's own
+        // loading branch above.
+        <Box style={{ height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Loader color="sparkOrange" />
+        </Box>
+      ) : (
+        /* overflow: 'hidden' on the row + minWidth: 0 on each bucket below
+            are both load-bearing, not decoration: flex items default to
+            min-width: auto, which floors a bucket's width at its own
+            content's natural size (here, the nowrap time label's full text
+            width) REGARDLESS of flex: 1 - with enough buckets (the "Day"
+            range shows 24), those floors summed together used to exceed
+            this column's actual width and silently overflow rightward,
+            bleeding under the 3D panel next to it instead of clipping or
+            proportionally shrinking. minWidth: 0 removes that floor so
+            flex: 1 actually is what it claims - a genuine, non-overflowing
+            percentage share of the row for every bucket - and overflow:
+            hidden on the row is the backstop in case a browser still
+            computes a fractional pixel over. A smaller gap for "day"
+            specifically - double the bucket count of any other range (24
+            vs. at most 7), so the default "xs" gap between bars ate too
+            much of the row's width, leaving too little for even a 2-digit
+            label ("10".."24") and forcing the ellipsis fallback below to
+            kick in on every one of them. */
+        <Group align="flex-end" gap={range === 'day' ? 2 : 'xs'} wrap="nowrap" style={{ height: 160, overflow: 'hidden' }}>
+        {data.map((bucket, index) => (
           <Stack
             key={bucket.bucketStart}
             gap={4}
@@ -314,7 +378,7 @@ function StatsBarChart({ title, data, range, timezone, color, glow }: StatsBarCh
                 goes up, which has the same effect on available CSS px),
                 shrinking a little first buys these labels more room to
                 still show their full text before the ellipsis fallback
-                above ever needs to kick in - 12 buckets' worth of "Day"
+                above ever needs to kick in - 24 buckets' worth of "Day"
                 range time labels are the tightest case this chart has. */}
             <Text
               c="dimmed"
@@ -326,11 +390,12 @@ function StatsBarChart({ title, data, range, timezone, color, glow }: StatsBarCh
                 maxWidth: '100%',
               }}
             >
-              {formatBucketLabel(bucket.bucketStart, range, timezone)}
+              {range === 'day' ? index + 1 : formatBucketLabel(bucket.bucketStart, range, timezone)}
             </Text>
           </Stack>
         ))}
       </Group>
+      )}
     </Stack>
   )
 }
@@ -439,12 +504,31 @@ export function DashboardPage(): JSX.Element {
   // Shared by both the "Messages sent" and "Dislikes" bar charts below - one
   // toggle controls both at once, per explicit request.
   const [statsRange, setStatsRange] = useState<DashboardStatsRange>('day')
-  // Also shared by both charts (their bucket labels, specifically) - picking
-  // a different zone here doesn't refetch anything, it just re-renders the
-  // existing bucketStart timestamps in that zone instead of the viewer's
-  // own local one (see formatBucketLabel/DEFAULT_TIMEZONE above).
+  // Also shared by both charts (their bucket labels, specifically). Now also
+  // sent to the backend as `tz` (see the stats-polling effect below) - the
+  // "day" range's buckets are calendar-aligned to this zone's local midnight
+  // server-side, not just relabeled client-side, so picking a zone DOES
+  // trigger a refetch (unlike the display-only relabeling that used to be
+  // the whole story here).
   const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE)
   const [stats, setStats] = useState<DashboardStats | null>(null)
+  // True only for the duration of a refetch explicitly triggered by a
+  // timezone change (see handleTimezoneChange/timezoneChangeShouldShowLoadingRef
+  // below) - never for the initial mount fetch, a statsRange change, or the
+  // periodic 10s poll tick, per explicit request. Swaps both bar charts'
+  // bars for a spinner (see StatsBarChart's own `loading` prop) the same way
+  // spendRangeLoading already does for the Tokens/Spend blocks.
+  const [statsLoading, setStatsLoading] = useState(false)
+  // Set by handleTimezoneChange right before setTimezone, read (and cleared)
+  // by the stats-polling effect's own refresh() below. A ref rather than a
+  // plain "did timezone change since last run" effect-dependency check
+  // because that effect already re-runs for THREE different reasons
+  // (activeTab, statsRange, timezone) plus its own setInterval tick - a ref
+  // set only by this one handler is the only way to distinguish "this
+  // particular refresh was caused by a timezone click" from any of the
+  // other four triggers without smuggling extra state into the effect's own
+  // dependency array.
+  const timezoneChangeShouldShowLoadingRef = useRef(false)
   // Fetched once per Stats-tab activation (not polled like `stats` above) -
   // OpenAI spend only moves as real API usage accrues, not from anything a
   // viewer does inside this app locally, so there's no reason to hammer it
@@ -520,6 +604,16 @@ export function DashboardPage(): JSX.Element {
     spendRangeTimeoutRef.current = window.setTimeout(() => setSpendRangeLoading(false), 300 + Math.random() * 700)
   }
 
+  // Flags the ref the stats-polling effect's own refresh() checks (see
+  // timezoneChangeShouldShowLoadingRef's own comment above for why a ref)
+  // before setTimezone triggers that effect to re-run - setTimezone alone
+  // can't carry "and this particular run should show a spinner" information
+  // to the effect.
+  function handleTimezoneChange(value: string): void {
+    timezoneChangeShouldShowLoadingRef.current = true
+    setTimezone(value)
+  }
+
   function cycleLogsSortDirection(): void {
     setLogsSortDirection((direction) => {
       if (direction === null) {
@@ -567,19 +661,40 @@ export function DashboardPage(): JSX.Element {
   // stay live without a manual reload, per explicit request. Scoped to
   // `activeTab === 'stats'` (rather than always polling in the background)
   // so switching to Logs stops the requests instead of wasting them on a
-  // hidden tab. Refetches immediately on mount/range change too, not just
-  // on the first interval tick. `cancelled` guards against a fetch that was
-  // still in flight when the tab switched away (or the range changed again)
-  // from clobbering newer state on a stale response.
+  // hidden tab. Refetches immediately on mount/range/timezone change too,
+  // not just on the first interval tick. `cancelled` guards against a fetch
+  // that was still in flight when the tab switched away (or the range/
+  // timezone changed again) from clobbering newer state on a stale
+  // response. `timezone` is now also sent to the backend as `tz` (the "day"
+  // range's buckets are calendar-aligned server-side to that zone) - so,
+  // unlike before, a timezone change belongs in this effect's own
+  // dependency array alongside activeTab/statsRange.
   useEffect(() => {
     if (activeTab !== 'stats') {
       return
     }
     let cancelled = false
     function refresh(): void {
-      void apiClient.getDashboardStats(statsRange).then((result) => {
+      // Snapshotted once per call, not re-read after the fetch resolves:
+      // handleTimezoneChange sets this ref immediately before setTimezone
+      // triggers this very effect to re-run (because `timezone` is now a
+      // dependency) - the refresh() call that re-run makes is the one this
+      // flag is meant for. By the time any LATER refresh() call happens
+      // (this effect's own 10s poll tick, or a subsequent statsRange/
+      // activeTab-driven re-run), the ref has already been cleared below,
+      // so only the one refetch an explicit timezone change actually caused
+      // ever shows the spinner - not the poll, and not a statsRange change.
+      const isTimezoneTriggered = timezoneChangeShouldShowLoadingRef.current
+      if (isTimezoneTriggered) {
+        setStatsLoading(true)
+      }
+      void apiClient.getDashboardStats(statsRange, timezone).then((result) => {
         if (!cancelled) {
           setStats(result)
+          if (isTimezoneTriggered) {
+            setStatsLoading(false)
+            timezoneChangeShouldShowLoadingRef.current = false
+          }
         }
       })
     }
@@ -589,7 +704,7 @@ export function DashboardPage(): JSX.Element {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [activeTab, statsRange])
+  }, [activeTab, statsRange, timezone])
 
   // One-shot fetch (not polled - see openAiSpend's own state comment above
   // for why) of GET /internal/dashboard/openai-spend, scoped to the Stats
@@ -755,7 +870,10 @@ export function DashboardPage(): JSX.Element {
               <Group align="stretch" gap="lg" wrap="wrap" style={{ flex: 1 }}>
                 <SpendBlock
                   label="Tokens Spend"
-                  value={formatTokenCount(openAiSpend?.tokens?.[spendRange] ?? 0)}
+                  split={{
+                    input: formatTokenCount(openAiSpend?.tokens?.[spendRange]?.input ?? 0),
+                    output: formatTokenCount(openAiSpend?.tokens?.[spendRange]?.output ?? 0),
+                  }}
                   configured={openAiSpend?.configured ?? true}
                   loading={spendRangeLoading}
                 />
@@ -801,10 +919,13 @@ export function DashboardPage(): JSX.Element {
                   than the row wrapping. Both charts share this one
                   toggle+timezone pair (per explicit request) - see
                   StatsBarChart/formatBucketLabel above and GET
-                  /internal/dashboard/stats's bucket contract. The timezone
-                  control only changes how an already-fetched bucket
-                  timestamp is DISPLAYED, not what gets fetched - no
-                  refetch on change. */}
+                  /internal/dashboard/stats's bucket contract. Changing the
+                  timezone both reformats already-fetched bucket labels AND
+                  triggers a refetch (see the stats-polling effect's own
+                  comment above) - the backend calendar-aligns the "day"
+                  range's buckets to this zone's local midnight, so a zone
+                  change can change which 24 buckets come back, not just how
+                  their timestamps are displayed. */}
               <Group align="flex-end" gap="md" wrap="nowrap">
                 {/* flexShrink: 0 - only the timezone Select (below) should
                     ever shrink to make room in a tight row; the toggle's
@@ -858,7 +979,7 @@ export function DashboardPage(): JSX.Element {
                       aria-label="Timezone for chart timestamps"
                       data={TIMEZONE_SELECT_DATA}
                       value={timezone}
-                      onChange={(value) => value && setTimezone(value)}
+                      onChange={(value) => value && handleTimezoneChange(value)}
                       searchable
                       variant="unstyled"
                       size="sm"
@@ -908,6 +1029,12 @@ export function DashboardPage(): JSX.Element {
                 timezone={timezone}
                 color="var(--mantine-color-signalBlue-6)"
                 glow="0 0 12px rgba(61, 107, 255, 0.55)"
+                loading={statsLoading}
+                // Only meaningful for "day" - see StatsBarChart's own
+                // dateLabel doc comment for why "Dislikes" below never gets
+                // this prop (it'd be a redundant second copy of the same
+                // date, per the screenshot this was built from).
+                dateLabel={statsRange === 'day' && stats?.messageBuckets?.[0] ? formatDayRangeDate(stats.messageBuckets[0].bucketStart, timezone) : undefined}
               />
               {/* alertMagenta - the same color the dislike button itself
                   uses everywhere else in this app (ChatPage), not an
@@ -919,6 +1046,7 @@ export function DashboardPage(): JSX.Element {
                 timezone={timezone}
                 color="var(--mantine-color-alertMagenta-6)"
                 glow="0 0 12px rgba(255, 61, 113, 0.55)"
+                loading={statsLoading}
               />
             </Stack>
             {/* Each node is a chunk, positioned by semantic similarity (the

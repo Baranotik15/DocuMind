@@ -73,12 +73,18 @@ export interface ChunkGraph {
  * OPENAI_API_KEY used for chat/embeddings has no access to this data at
  * all, a separate Admin key is required.
  */
-/** Same four trailing rolling windows as OpenAiSpend's own day/week/month/year, just token counts (completions input+output plus embeddings input, summed) instead of USD amounts. */
+/** One rolling window's token counts, split by direction - `input` is completions input tokens plus embeddings input tokens (embeddings only ever contribute input), `output` is completions output tokens only. */
+export interface OpenAiSpendTokenWindow {
+  input: number
+  output: number
+}
+
+/** Same four trailing rolling windows as OpenAiSpend's own day/week/month/year, but each one broken into input/output token counts (see OpenAiSpendTokenWindow) instead of a single summed number, so the frontend can show them as two separate figures rather than one combined count. */
 export interface OpenAiSpendTokens {
-  day: number
-  week: number
-  month: number
-  year: number
+  day: OpenAiSpendTokenWindow
+  week: OpenAiSpendTokenWindow
+  month: OpenAiSpendTokenWindow
+  year: OpenAiSpendTokenWindow
 }
 
 export interface OpenAiSpend {

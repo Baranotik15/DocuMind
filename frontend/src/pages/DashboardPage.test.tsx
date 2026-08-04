@@ -88,7 +88,7 @@ function toLocalDateTimeParts(iso: string): { date: string; time: string } {
   }
 }
 
-const STATS_BUCKET_COUNTS: Record<DashboardStatsRange, number> = { day: 12, '7days': 7, month: 5, year: 12 }
+const STATS_BUCKET_COUNTS: Record<DashboardStatsRange, number> = { day: 24, '7days': 7, month: 5, year: 12 }
 
 function makeStatsFixture(range: DashboardStatsRange): DashboardStats {
   const bucketCount = STATS_BUCKET_COUNTS[range]
@@ -132,7 +132,12 @@ describe('DashboardPage', () => {
             week: 0,
             month: 0,
             year: 0,
-            tokens: { day: 0, week: 0, month: 0, year: 0 },
+            tokens: {
+              day: { input: 0, output: 0 },
+              week: { input: 0, output: 0 },
+              month: { input: 0, output: 0 },
+              year: { input: 0, output: 0 },
+            },
             currency: 'usd',
             configured: false,
           }),
@@ -436,8 +441,8 @@ describe('DashboardPage', () => {
     // configured: false - this is that default case, not an override.
     renderWithProviders(<DashboardPage />)
 
-    expect(await screen.findByText('Tokens')).toBeInTheDocument()
-    expect(screen.getByText('Spend')).toBeInTheDocument()
+    expect(await screen.findByText('Tokens Spend')).toBeInTheDocument()
+    expect(screen.getByText('Money Spend')).toBeInTheDocument()
     // One "not configured" message per block (Tokens + Spend), not a
     // single shared one.
     expect(screen.getAllByText('Admin key not configured')).toHaveLength(2)
@@ -455,7 +460,12 @@ describe('DashboardPage', () => {
             week: 3.1,
             month: 12.55,
             year: 87.2,
-            tokens: { day: 1200, week: 8400, month: 35000, year: 410000 },
+            tokens: {
+              day: { input: 800, output: 400 },
+              week: { input: 5600, output: 2800 },
+              month: { input: 23000, output: 12000 },
+              year: { input: 270000, output: 140000 },
+            },
             currency: 'usd',
             configured: true,
           }),
@@ -476,8 +486,11 @@ describe('DashboardPage', () => {
 
     renderWithProviders(<DashboardPage />)
 
-    // Defaults to the "Day" period.
-    expect(await screen.findByText('1,200')).toBeInTheDocument()
+    // Defaults to the "Day" period. Tokens Spend now renders as two
+    // separate Input/Output sub-values (see SpendBlock's `split` prop)
+    // rather than one combined count.
+    expect(await screen.findByText('800')).toBeInTheDocument()
+    expect(screen.getByText('400')).toBeInTheDocument()
     expect(screen.getByText('$0.42')).toBeInTheDocument()
     expect(screen.queryByText('Admin key not configured')).not.toBeInTheDocument()
 
@@ -488,7 +501,8 @@ describe('DashboardPage', () => {
     // rendered first in the page).
     fireEvent.click(screen.getAllByRole('button', { name: 'Month' })[0])
 
-    expect(await screen.findByText('35,000')).toBeInTheDocument()
+    expect(await screen.findByText('23,000')).toBeInTheDocument()
+    expect(screen.getByText('12,000')).toBeInTheDocument()
     expect(screen.getByText('$12.55')).toBeInTheDocument()
   })
 

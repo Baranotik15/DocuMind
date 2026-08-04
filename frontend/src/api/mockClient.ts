@@ -195,6 +195,19 @@ export const mockApiClient: ApiClient = {
   // OPENAI_ADMIN_API_KEY isn't set, so DashboardPage's "not configured"
   // state is exercised the same way here as it would be for real.
   async getOpenAiSpend() {
-    return { day: 0, week: 0, month: 0, year: 0, tokens: { day: 0, week: 0, month: 0, year: 0 }, currency: 'usd', configured: false }
+    return {
+      day: 0,
+      week: 0,
+      month: 0,
+      year: 0,
+      tokens: {
+        day: { input: 0, output: 0 },
+        week: { input: 0, output: 0 },
+        month: { input: 0, output: 0 },
+        year: { input: 0, output: 0 },
+      },
+      currency: 'usd',
+      configured: false,
+    }
   },
 }

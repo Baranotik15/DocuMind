@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,7 +12,8 @@ from app.config import Settings
 from app.db_sync import SyncSessionLocal
 from app.routers import dashboard
 from app.routers.dashboard import (
-    _bucket_completions_tokens,
+    _bucket_completions_input_tokens,
+    _bucket_completions_output_tokens,
     _bucket_embeddings_tokens,
     _bucket_spend_amount,
     _project_to_3d,
@@ -139,8 +141,11 @@ def _actual_dislike_count() -> int:
         ).scalar_one()
 
 
-def _get_stats(client: TestClient, range_value: str) -> dict:
-    response = client.get("/internal/dashboard/stats", params={"range": range_value})
+def _get_stats(client: TestClient, range_value: str, tz: str | None = None) -> dict:
+    params = {"range": range_value}
+    if tz is not None:
+        params["tz"] = tz
+    response = client.get("/internal/dashboard/stats", params=params)
     assert response.status_code == 200
     return response.json()
 
@@ -180,7 +185,7 @@ def test_stats_total_dislikes_matches_actual_disliked_row_count_and_is_range_ind
 
 @pytest.mark.parametrize(
     "range_value,expected_bucket_count",
-    [("day", 12), ("7days", 7), ("month", 5), ("year", 12)],
+    [("day", 24), ("7days", 7), ("month", 4), ("year", 12)],
 )
 def test_stats_returns_fixed_zero_filled_bucket_count_per_range(
     client: TestClient, range_value: str, expected_bucket_count: int
@@ -209,25 +214,70 @@ def test_stats_missing_range_returns_422(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_stats_day_buckets_are_evenly_spaced_2_hours_ending_near_now(
+def test_stats_day_buckets_are_calendar_aligned_to_utc_midnight_by_default(
     client: TestClient,
 ) -> None:
+    # No `tz` param -> defaults to "UTC". Bucket starts must be
+    # calendar-aligned to today's UTC midnight through 23:00, NOT a
+    # trailing-24h window ending near `now` (that was the old, buggy
+    # behavior - see the docstring on _day_bucket_starts).
     body = _get_stats(client, "day")
     starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
 
     for earlier, later in zip(starts, starts[1:]):
-        assert later - earlier == timedelta(hours=2)
+        assert later - earlier == timedelta(hours=1)
 
     now = datetime.now(timezone.utc)
-    # Bucket 11 (the last) starts ~2h ago - allow a small tolerance for the
-    # time elapsed between computing `now` here and the endpoint computing
-    # its own `now` a moment earlier.
-    assert timedelta(hours=1, minutes=59) <= now - starts[-1] <= timedelta(hours=2, minutes=1)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    assert starts[0] == today_midnight
+    assert starts[-1] == today_midnight + timedelta(hours=23)
 
 
-def test_stats_7days_buckets_are_evenly_spaced_24_hours_ending_near_now(
+def test_stats_day_buckets_shift_with_an_explicit_tz(client: TestClient) -> None:
+    # A fixed-offset-ish zone (Europe/Kyiv, UTC+2 or +3 depending on DST) -
+    # the buckets must be midnight-through-23:00 in THAT zone, converted
+    # back to UTC instants, not UTC midnight regardless of `tz`.
+    tz_name = "Europe/Kyiv"
+    body = _get_stats(client, "day", tz=tz_name)
+    starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
+
+    for earlier, later in zip(starts, starts[1:]):
+        assert later - earlier == timedelta(hours=1)
+
+    zone = ZoneInfo(tz_name)
+    now = datetime.now(timezone.utc)
+    local_midnight = now.astimezone(zone).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    assert starts[0] == local_midnight.astimezone(timezone.utc)
+    assert starts[-1] == (local_midnight + timedelta(hours=23)).astimezone(timezone.utc)
+
+
+def test_stats_day_invalid_tz_falls_back_to_utc_without_erroring(
     client: TestClient,
 ) -> None:
+    response = client.get(
+        "/internal/dashboard/stats", params={"range": "day", "tz": "not-a-real-zone"}
+    )
+    assert response.status_code == 200
+
+    starts = [
+        datetime.fromisoformat(b["bucketStart"])
+        for b in response.json()["messageBuckets"]
+    ]
+    now = datetime.now(timezone.utc)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    assert starts[0] == today_midnight
+    assert starts[-1] == today_midnight + timedelta(hours=23)
+
+
+def test_stats_7days_buckets_are_calendar_aligned_to_utc_monday_by_default(
+    client: TestClient,
+) -> None:
+    # No `tz` param -> defaults to "UTC". Bucket starts must be
+    # Monday-through-Sunday of the CURRENT UTC week, NOT a trailing 7-day
+    # window ending near `now` (that was the old, buggy behavior - see the
+    # docstring on _week_bucket_starts).
     body = _get_stats(client, "7days")
     starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
 
@@ -235,44 +285,157 @@ def test_stats_7days_buckets_are_evenly_spaced_24_hours_ending_near_now(
         assert later - earlier == timedelta(days=1)
 
     now = datetime.now(timezone.utc)
-    assert timedelta(hours=23, minutes=59) <= now - starts[-1] <= timedelta(days=1, minutes=1)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = today_midnight - timedelta(days=today_midnight.weekday())
+    assert starts[0] == monday
+    assert starts[0].weekday() == 0  # Monday
+    assert starts[-1] == monday + timedelta(days=6)
 
 
-def test_stats_month_buckets_are_evenly_spaced_7_days_ending_near_now(
+def test_stats_7days_buckets_shift_with_an_explicit_tz(client: TestClient) -> None:
+    # Same fixed-offset-ish zone as the "day" range's own tz test - the
+    # buckets must be Monday-through-Sunday in THAT zone, converted back to
+    # UTC instants, not the UTC week regardless of `tz`.
+    tz_name = "Europe/Kyiv"
+    body = _get_stats(client, "7days", tz=tz_name)
+    starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
+
+    for earlier, later in zip(starts, starts[1:]):
+        assert later - earlier == timedelta(days=1)
+
+    zone = ZoneInfo(tz_name)
+    now = datetime.now(timezone.utc)
+    local_midnight = now.astimezone(zone).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    local_monday = local_midnight - timedelta(days=local_midnight.weekday())
+    assert starts[0] == local_monday.astimezone(timezone.utc)
+    assert starts[-1] == (local_monday + timedelta(days=6)).astimezone(timezone.utc)
+
+
+def test_stats_7days_invalid_tz_falls_back_to_utc_without_erroring(
     client: TestClient,
 ) -> None:
+    response = client.get(
+        "/internal/dashboard/stats", params={"range": "7days", "tz": "not-a-real-zone"}
+    )
+    assert response.status_code == 200
+
+    starts = [
+        datetime.fromisoformat(b["bucketStart"])
+        for b in response.json()["messageBuckets"]
+    ]
+    now = datetime.now(timezone.utc)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = today_midnight - timedelta(days=today_midnight.weekday())
+    assert starts[0] == monday
+    assert starts[-1] == monday + timedelta(days=6)
+
+
+def test_stats_month_buckets_are_calendar_aligned_to_utc_by_default(
+    client: TestClient,
+) -> None:
+    # No `tz` param -> defaults to "UTC". Bucket starts must be the
+    # 1st/8th/15th/22nd of the CURRENT UTC month, NOT a trailing 35-day
+    # window (which could straddle two calendar months) - that was the
+    # old, buggy behavior (see the docstring on _month_range_bucket_starts).
     body = _get_stats(client, "month")
     starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
 
-    for earlier, later in zip(starts, starts[1:]):
-        assert later - earlier == timedelta(days=7)
-
     now = datetime.now(timezone.utc)
-    assert timedelta(days=6, hours=23, minutes=59) <= now - starts[-1] <= timedelta(
-        days=7, minutes=1
-    )
+    assert [start.day for start in starts] == [1, 8, 15, 22]
+    for start in starts:
+        assert (start.year, start.month) == (now.year, now.month)
+        assert (start.hour, start.minute, start.second, start.microsecond) == (0, 0, 0, 0)
 
 
-def test_stats_year_buckets_are_calendar_months_starting_on_the_1st(
+def test_stats_month_buckets_shift_with_an_explicit_tz(client: TestClient) -> None:
+    # Same fixed-offset-ish zone as the day/7days ranges' own tz tests -
+    # the 1st/8th/15th/22nd must be THAT zone's calendar days, converted
+    # back to UTC instants, not the UTC month regardless of `tz`.
+    tz_name = "Europe/Kyiv"
+    body = _get_stats(client, "month", tz=tz_name)
+    starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
+
+    zone = ZoneInfo(tz_name)
+    local_now = datetime.now(timezone.utc).astimezone(zone)
+    expected = [
+        datetime(local_now.year, local_now.month, day, tzinfo=zone).astimezone(timezone.utc)
+        for day in (1, 8, 15, 22)
+    ]
+    assert starts == expected
+
+
+def test_stats_month_invalid_tz_falls_back_to_utc_without_erroring(
     client: TestClient,
 ) -> None:
+    response = client.get(
+        "/internal/dashboard/stats", params={"range": "month", "tz": "not-a-real-zone"}
+    )
+    assert response.status_code == 200
+
+    starts = [
+        datetime.fromisoformat(b["bucketStart"])
+        for b in response.json()["messageBuckets"]
+    ]
+    now = datetime.now(timezone.utc)
+    assert [start.day for start in starts] == [1, 8, 15, 22]
+    for start in starts:
+        assert (start.year, start.month) == (now.year, now.month)
+
+
+def test_stats_year_buckets_are_calendar_aligned_to_utc_by_default(
+    client: TestClient,
+) -> None:
+    # No `tz` param -> defaults to "UTC". Bucket starts must be January
+    # through December of the CURRENT UTC year, NOT a trailing 12-month
+    # window ending at "now"'s month (which could straddle two calendar
+    # years, e.g. Sep-Aug) - that was the old, buggy behavior (see the
+    # docstring on _year_bucket_starts).
     body = _get_stats(client, "year")
     starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
 
+    now = datetime.now(timezone.utc)
+    assert [start.month for start in starts] == list(range(1, 13))
     for start in starts:
+        assert start.year == now.year
         assert (start.day, start.hour, start.minute, start.second) == (1, 0, 0, 0)
         assert start.tzinfo is not None
 
-    for earlier, later in zip(starts, starts[1:]):
-        # Exactly one calendar month apart - not a fixed 28/29/30/31-day
-        # timedelta, so compare year/month tuples instead of subtracting.
-        months_earlier = earlier.year * 12 + earlier.month
-        months_later = later.year * 12 + later.month
-        assert months_later - months_earlier == 1
 
+def test_stats_year_buckets_shift_with_an_explicit_tz(client: TestClient) -> None:
+    # Same fixed-offset-ish zone as the other ranges' own tz tests - each
+    # month must start on THAT zone's 1st, converted back to UTC instants,
+    # not the UTC year regardless of `tz`.
+    tz_name = "Europe/Kyiv"
+    body = _get_stats(client, "year", tz=tz_name)
+    starts = [datetime.fromisoformat(b["bucketStart"]) for b in body["messageBuckets"]]
+
+    zone = ZoneInfo(tz_name)
+    local_now = datetime.now(timezone.utc).astimezone(zone)
+    expected = [
+        datetime(local_now.year, month, 1, tzinfo=zone).astimezone(timezone.utc)
+        for month in range(1, 13)
+    ]
+    assert starts == expected
+
+
+def test_stats_year_invalid_tz_falls_back_to_utc_without_erroring(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        "/internal/dashboard/stats", params={"range": "year", "tz": "not-a-real-zone"}
+    )
+    assert response.status_code == 200
+
+    starts = [
+        datetime.fromisoformat(b["bucketStart"])
+        for b in response.json()["messageBuckets"]
+    ]
     now = datetime.now(timezone.utc)
-    # The last bucket is the current (possibly incomplete) calendar month.
-    assert (starts[-1].year, starts[-1].month) == (now.year, now.month)
+    assert [start.month for start in starts] == list(range(1, 13))
+    for start in starts:
+        assert start.year == now.year
 
 
 def _assert_message_lands_only_in_expected_bucket(
@@ -338,9 +501,15 @@ def test_stats_year_message_lands_in_expected_bucket_and_no_other(
     _assert_message_lands_only_in_expected_bucket(client, "year", bucket_index=6)
 
 
-def test_stats_dislike_buckets_only_count_disliked_message_buckets_count_all_roles(
+def test_stats_message_buckets_only_count_user_role_dislike_buckets_count_any_role(
     client: TestClient,
 ) -> None:
+    # messageBuckets is "Messages sent" on the dashboard - only a user's
+    # own sent messages, per explicit request - so of the 3 messages
+    # inserted below (1 user, 2 assistant), only the 1 user-role one
+    # should move messageBuckets. dislikeBuckets is unaffected by this
+    # distinction: it counts disliked = true regardless of role, so the 1
+    # disliked assistant reply still moves it by 1.
     message_ids: list[str] = []
     try:
         before = _get_stats(client, "day")
@@ -373,7 +542,7 @@ def test_stats_dislike_buckets_only_count_disliked_message_buckets_count_all_rol
 
         assert (
             after["messageBuckets"][bucket_index]["count"]
-            == before["messageBuckets"][bucket_index]["count"] + 3
+            == before["messageBuckets"][bucket_index]["count"] + 1
         )
         assert (
             after["dislikeBuckets"][bucket_index]["count"]
@@ -553,9 +722,10 @@ def test_chunk_graph_empty_nodes_key_shape_is_a_list(client: TestClient) -> None
 # all three concurrently (asyncio.gather) and an un-patched one would
 # otherwise attempt a real network call.
 # _summarize_openai_spend/_bucket_spend_amount/_summarize_openai_tokens/
-# _bucket_completions_tokens/_bucket_embeddings_tokens (pure functions) are
-# also unit tested directly, the same way test_project_to_3d_* above unit
-# tests _project_to_3d directly.
+# _bucket_completions_input_tokens/_bucket_completions_output_tokens/
+# _bucket_embeddings_tokens (pure functions) are also unit tested directly,
+# the same way test_project_to_3d_* above unit tests _project_to_3d
+# directly.
 
 _ZERO_SPEND_BODY = {
     "day": 0.0,
@@ -565,7 +735,12 @@ _ZERO_SPEND_BODY = {
     "currency": "usd",
 }
 
-_ZERO_TOKENS_BODY = {"day": 0, "week": 0, "month": 0, "year": 0}
+_ZERO_TOKENS_BODY = {
+    "day": {"input": 0, "output": 0},
+    "week": {"input": 0, "output": 0},
+    "month": {"input": 0, "output": 0},
+    "year": {"input": 0, "output": 0},
+}
 
 
 def _make_cost_result(value: float, currency: str = "usd") -> SimpleNamespace:
@@ -684,10 +859,21 @@ def test_openai_spend_success_sums_buckets_into_rolling_windows(
     assert body["month"] == pytest.approx(6.42)
     assert body["year"] == pytest.approx(16.42)
     assert body["tokens"] == {
-        "day": 160,  # completions 150 + embeddings 10
-        "week": 480,  # completions 150+300 + embeddings 10+20
-        "month": 1120,  # completions 150+300+600 + embeddings 10+20+40
-        "year": 2400,  # completions 150+300+600+1200 + embeddings 10+20+40+80
+        # input = completions input_tokens + embeddings input_tokens
+        # output = completions output_tokens only
+        "day": {"input": 110, "output": 50},  # completions 100 + embeddings 10 / completions 50
+        "week": {
+            "input": 330,  # completions 100+200 + embeddings 10+20
+            "output": 150,  # completions 50+100
+        },
+        "month": {
+            "input": 770,  # completions 100+200+400 + embeddings 10+20+40
+            "output": 350,  # completions 50+100+200
+        },
+        "year": {
+            "input": 1650,  # completions 100+200+400+800 + embeddings 10+20+40+80
+            "output": 750,  # completions 50+100+200+400
+        },
     }
 
 
@@ -806,19 +992,34 @@ def test_summarize_openai_spend_with_no_buckets_is_all_zero_usd() -> None:
     assert result == _ZERO_SPEND_BODY
 
 
-def test_bucket_completions_tokens_sums_input_and_output_across_results() -> None:
+def test_bucket_completions_input_tokens_sums_input_tokens_across_results() -> None:
     bucket = _make_bucket(
         datetime.now(timezone.utc),
         [_make_completions_result(100, 50), _make_completions_result(200, 25)],
     )
 
-    assert _bucket_completions_tokens(bucket) == 375
+    assert _bucket_completions_input_tokens(bucket) == 300
 
 
-def test_bucket_completions_tokens_empty_results_is_zero() -> None:
+def test_bucket_completions_input_tokens_empty_results_is_zero() -> None:
     bucket = _make_bucket(datetime.now(timezone.utc), [])
 
-    assert _bucket_completions_tokens(bucket) == 0
+    assert _bucket_completions_input_tokens(bucket) == 0
+
+
+def test_bucket_completions_output_tokens_sums_output_tokens_across_results() -> None:
+    bucket = _make_bucket(
+        datetime.now(timezone.utc),
+        [_make_completions_result(100, 50), _make_completions_result(200, 25)],
+    )
+
+    assert _bucket_completions_output_tokens(bucket) == 75
+
+
+def test_bucket_completions_output_tokens_empty_results_is_zero() -> None:
+    bucket = _make_bucket(datetime.now(timezone.utc), [])
+
+    assert _bucket_completions_output_tokens(bucket) == 0
 
 
 def test_bucket_embeddings_tokens_sums_input_tokens_across_results() -> None:
@@ -849,10 +1050,15 @@ def test_summarize_openai_tokens_combines_completions_and_embeddings_per_window(
 
     result = _summarize_openai_tokens(completions_buckets, embeddings_buckets, now)
 
-    assert result["day"] == 160
-    assert result["week"] == 160
-    assert result["month"] == 160
-    assert result["year"] == 160 + 1200 + 80
+    # input = completions input_tokens + embeddings input_tokens
+    # output = completions output_tokens only
+    assert result["day"] == {"input": 110, "output": 50}  # completions 100+embeddings 10 / 50
+    assert result["week"] == {"input": 110, "output": 50}
+    assert result["month"] == {"input": 110, "output": 50}
+    assert result["year"] == {
+        "input": 990,  # completions 100+800 + embeddings 10+80
+        "output": 450,  # completions 50+400
+    }
 
 
 def test_summarize_openai_tokens_with_no_buckets_is_all_zero() -> None:

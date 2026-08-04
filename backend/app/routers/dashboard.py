@@ -4,6 +4,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Awaitable, Callable, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import numpy as np
 from fastapi import APIRouter, Depends
@@ -24,15 +25,6 @@ router = APIRouter()
 # idiom to follow; a bare Literal-typed parameter is FastAPI/pydantic's
 # standard way to do this.
 DashboardRange = Literal["day", "7days", "month", "year"]
-
-# range -> (bucket count, bucket width) for the three ranges that are pure
-# rolling windows from "now" (unlike `year`, which is calendar-aligned - see
-# _month_bucket_starts below).
-_ROLLING_WINDOWS: dict[str, tuple[int, timedelta]] = {
-    "day": (12, timedelta(hours=2)),
-    "7days": (7, timedelta(days=1)),
-    "month": (5, timedelta(days=7)),
-}
 
 
 def _event_summary(row) -> dict:
@@ -61,31 +53,122 @@ async def get_dashboard_events(session: AsyncSession = Depends(get_session)) -> 
     return [_event_summary(row) for row in rows]
 
 
-def _month_bucket_starts(now: datetime, count: int = 12) -> list[datetime]:
-    """Calendar-aligned bucket starts for the `year` range: `count` bucket
-    starts, one per calendar month, each on the 1st of its month at
-    00:00 UTC, ending with the current (possibly incomplete) month. Unlike
-    the rolling `day`/`7days`/`month` ranges below, this is calendar-aligned
-    rather than a pure trailing window from `now` - so boundaries land on
-    the 1st of the month, not on exactly-30-day marks."""
-    starts: list[datetime] = []
-    year, month = now.year, now.month
-    for _ in range(count):
-        starts.append(datetime(year, month, 1, tzinfo=timezone.utc))
-        month -= 1
-        if month == 0:
-            month, year = 12, year - 1
-    starts.reverse()
-    return starts
+def _year_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
+    """Calendar-aligned bucket starts for the `year` range: 12 buckets, one
+    per calendar month, January through December of the CURRENT year in
+    `tz_name` - not a trailing 12-month window ending at "now"'s month
+    (which could straddle two calendar years, e.g. Sep-Aug). "This year"
+    is `now` converted into `tz_name`, same as day/7days/month above.
+
+    Falls back to UTC on the same invalid-`tz_name` cases day/7days/month
+    fall back on."""
+    try:
+        zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        zone = ZoneInfo("UTC")
+    local_now = now.astimezone(zone)
+    return [
+        datetime(local_now.year, month, 1, tzinfo=zone).astimezone(timezone.utc)
+        for month in range(1, 13)
+    ]
 
 
-def _bucket_starts(range_: DashboardRange, now: datetime) -> list[datetime]:
-    """The fixed-count, evenly-spaced bucket start times for `range_`,
-    earliest first, ending with the bucket that covers `now`."""
-    if range_ == "year":
-        return _month_bucket_starts(now)
-    count, width = _ROLLING_WINDOWS[range_]
-    return [now - width * (count - i) for i in range(count)]
+def _day_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
+    """Calendar-aligned bucket starts for the `day` range: 24 buckets, 1h
+    wide, from local midnight (00:00) through local 23:00 of "today" in
+    `tz_name`. "Today" is `now` converted into `tz_name`, so which calendar
+    day this covers can shift with the selected zone (e.g. right after
+    local midnight, "today" locally may still be "yesterday" in UTC).
+
+    Falls back to UTC if `tz_name` doesn't resolve to a real IANA zone
+    (missing, garbled, or otherwise unrecognized) - this endpoint has never
+    422'd on anything but the `range` Literal itself, and a bad timezone
+    string shouldn't take down the whole Stats tab.
+
+    Returned starts are UTC-aware datetimes (converted back from local
+    time) so they compare correctly against created_at, which is stored as
+    UTC in Postgres, and so the response's bucketStart values stay
+    absolute, UTC-serializable instants like every other range."""
+    try:
+        zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        zone = ZoneInfo("UTC")
+    local_now = now.astimezone(zone)
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return [
+        (local_midnight + timedelta(hours=i)).astimezone(timezone.utc)
+        for i in range(24)
+    ]
+
+
+def _week_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
+    """Calendar-aligned bucket starts for the `7days` range: 7 buckets, 1
+    day wide, Monday through Sunday of the CURRENT week in `tz_name` - not
+    a trailing 7-day window from `now`. "This week" is `now` converted into
+    `tz_name`, so which calendar week this covers can shift with the
+    selected zone, same as `day`'s "today" (see _day_bucket_starts). The
+    whole 7-bucket window only advances once local time crosses into the
+    next Monday - it does not slide forward by a day at a time the way the
+    old trailing window did.
+
+    `datetime.weekday()` (Monday == 0) locates the current week's Monday by
+    subtracting that many days from local midnight; falls back to UTC on
+    the same invalid-`tz_name` cases _day_bucket_starts falls back on, and
+    returns UTC-aware datetimes for the same created_at-comparison reason.
+    """
+    try:
+        zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        zone = ZoneInfo("UTC")
+    local_now = now.astimezone(zone)
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = local_midnight - timedelta(days=local_midnight.weekday())
+    return [(monday + timedelta(days=i)).astimezone(timezone.utc) for i in range(7)]
+
+
+def _month_range_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
+    """Calendar-aligned bucket starts for the `month` range: 4 buckets
+    within the CURRENT calendar month in `tz_name` - the 1st, 8th, 15th,
+    and 22nd - not a trailing 35-day window from `now` (which could
+    straddle two calendar months). "This month" is `now` converted into
+    `tz_name`, same as `day`/`7days` above.
+
+    The 4th bucket (22nd onward) is deliberately left open-ended rather
+    than also locating the month's real last day (28/29/30/31): every
+    range's final bucket is already open-ended on its upper side (see
+    _bucket_index - nothing with a future created_at can ever exist), so
+    the 22nd through however many days this particular month actually has
+    left lands in that one bucket for free, per explicit request (the
+    22nd-28th/29th/30th/31st stretch is one bucket, not a separate
+    trailing sliver).
+
+    Falls back to UTC on the same invalid-`tz_name` cases day/7days fall
+    back on."""
+    try:
+        zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        zone = ZoneInfo("UTC")
+    local_now = now.astimezone(zone)
+    return [
+        datetime(local_now.year, local_now.month, day, tzinfo=zone).astimezone(timezone.utc)
+        for day in (1, 8, 15, 22)
+    ]
+
+
+def _bucket_starts(range_: DashboardRange, now: datetime, tz_name: str) -> list[datetime]:
+    """The fixed-count bucket start times for `range_`, earliest first -
+    every range is calendar-aligned to `tz_name`, not a trailing window
+    from `now`: `day` (see _day_bucket_starts), `7days` (Monday-Sunday of
+    this week - see _week_bucket_starts), `month` (the 1st/8th/15th/22nd of
+    this month - see _month_range_bucket_starts), `year` (January-December
+    of this year - see _year_bucket_starts)."""
+    if range_ == "day":
+        return _day_bucket_starts(now, tz_name)
+    if range_ == "7days":
+        return _week_bucket_starts(now, tz_name)
+    if range_ == "month":
+        return _month_range_bucket_starts(now, tz_name)
+    return _year_bucket_starts(now, tz_name)
 
 
 def _bucket_index(bucket_starts: list[datetime], created_at: datetime) -> int | None:
@@ -122,32 +205,54 @@ def _zero_filled_buckets(bucket_starts: list[datetime], created_ats: list[dateti
 
 @router.get("/dashboard/stats")
 async def get_dashboard_stats(
-    range: DashboardRange, session: AsyncSession = Depends(get_session)
+    range: DashboardRange, tz: str = "UTC", session: AsyncSession = Depends(get_session)
 ) -> dict:
-    """Aggregate dashboard stats for the trailing window named by `range`
-    (one of "day", "7days", "month", "year" - anything else 422s, enforced
-    by the Literal type on the `range` param).
+    """Aggregate dashboard stats for the window named by `range` (one of
+    "day", "7days", "month", "year" - anything else 422s, enforced by the
+    Literal type on the `range` param).
+
+    `tz` is an IANA timezone name (e.g. "Europe/Kyiv", "UTC" - the
+    default), consulted for every `range` value to determine "today"/
+    "this week"/"this month"/"this year" (see below). A missing, garbled,
+    or otherwise unrecognized `tz` falls back to UTC rather than erroring
+    the request - this endpoint has never 422'd on anything but the
+    `range` Literal itself.
 
     `totalChunks`/`totalDocuments`/`totalDislikes` are unfiltered counts
     across ALL time (not scoped to `range` at all) - `totalDislikes` in
     particular is deliberately a separate, all-time count from
-    `dislikeBuckets` below, which only covers the trailing window `range`
-    implies.
+    `dislikeBuckets` below, which only covers the window `range`/`tz`
+    together imply.
 
     `messageBuckets`/`dislikeBuckets` are built from a single SELECT over
     chat_messages within the window (bucketed in Python, not SQL - see
     _bucket_starts/_bucket_index/_zero_filled_buckets above), each always
-    exactly as many buckets as `range` implies, zero-filled where empty:
-      - day:   12 buckets, 2h wide,  trailing 24h
-      - 7days:  7 buckets, 24h wide, trailing 7 days
-      - month:  5 buckets, 7d wide,  trailing 35 days
-      - year:  12 buckets, 1 calendar month wide, trailing 12 calendar
-               months (calendar-aligned, unlike the other three)
-    `messageBuckets` counts every chat_messages row (both roles, disliked
-    or not); `dislikeBuckets` counts only rows where disliked = true.
+    exactly as many buckets as `range` implies, zero-filled where empty -
+    every one of them calendar-aligned to `tz`, not a trailing window from
+    `now`:
+      - day:   24 buckets, 1h wide,  local midnight through local 23:00 of
+               "today" in `tz` (see _day_bucket_starts; buckets for hours
+               later than the current local time legitimately show count
+               0, since today hasn't happened yet)
+      - 7days:  7 buckets, 24h wide, Monday through Sunday of "this week"
+               in `tz` (see _week_bucket_starts; the whole window only
+               advances once local time crosses into the next Monday, not
+               one day at a time)
+      - month:  4 buckets - the 1st/8th/15th/22nd of "this month" in `tz`
+               (see _month_range_bucket_starts; the last bucket runs
+               through however many days this month actually has left -
+               6 to 9 - not a fixed width)
+      - year:  12 buckets, 1 calendar month wide, January through
+               December of "this year" in `tz` (see _year_bucket_starts)
+    `messageBuckets` counts only role = 'user' rows (a user's own sent
+    messages - assistant replies are deliberately excluded, per explicit
+    request: this chart is "Messages sent", not "messages exchanged");
+    `dislikeBuckets` counts every row where disliked = true regardless of
+    role (in practice only ever assistant replies, since there's no UI to
+    dislike your own message, but this endpoint doesn't assume that).
     """
     now = datetime.now(timezone.utc)
-    bucket_starts = _bucket_starts(range, now)
+    bucket_starts = _bucket_starts(range, now, tz)
 
     total_chunks = (
         await session.execute(text("SELECT COUNT(*) FROM chunks"))
@@ -164,7 +269,7 @@ async def get_dashboard_stats(
     rows = (
         await session.execute(
             text(
-                "SELECT created_at, disliked FROM chat_messages "
+                "SELECT created_at, role, disliked FROM chat_messages "
                 "WHERE created_at >= :since"
             ),
             {"since": bucket_starts[0]},
@@ -180,7 +285,7 @@ async def get_dashboard_stats(
         "totalDocuments": total_documents,
         "totalDislikes": total_dislikes,
         "messageBuckets": _zero_filled_buckets(
-            bucket_starts, [row.created_at for row in rows]
+            bucket_starts, [row.created_at for row in rows if row.role == "user"]
         ),
         "dislikeBuckets": _zero_filled_buckets(
             bucket_starts, [row.created_at for row in rows if row.disliked]
@@ -312,9 +417,10 @@ async def get_chunk_graph(session: AsyncSession = Depends(get_session)) -> dict:
 # --- openai spend --------------------------------------------------------
 #
 # Powers the Dashboard's Stats tab "spent today / this week / this month /
-# this year" block, plus (see _bucket_completions_tokens/
-# _bucket_embeddings_tokens/_summarize_openai_tokens below) a parallel
-# "tokens used" figure for the same four windows. Deliberately isolated
+# this year" block, plus (see _bucket_completions_input_tokens/
+# _bucket_completions_output_tokens/_bucket_embeddings_tokens/
+# _summarize_openai_tokens below) a parallel "tokens used" figure - split
+# into input/output - for the same four windows. Deliberately isolated
 # from app/llm.py: that module's get_client()/embed_texts()/
 # generate_reply() are built around settings.openai_api_key (a regular/
 # project key that can make chat and embeddings calls). This feature needs
@@ -328,7 +434,7 @@ async def get_chunk_graph(session: AsyncSession = Depends(get_session)) -> dict:
 # Rolling-window durations for the four numbers this endpoint reports (for
 # both the money and token summaries) - trailing N days from "now", NOT
 # calendar-aligned (unlike this file's stats-chart bucket logic above,
-# e.g. _month_bucket_starts) - simpler, and sufficient since this is 4
+# e.g. _year_bucket_starts) - simpler, and sufficient since this is 4
 # summary numbers per metric, not a bucketed chart.
 _OPENAI_SPEND_WINDOWS: dict[str, timedelta] = {
     "day": timedelta(days=1),
@@ -356,7 +462,12 @@ _OPENAI_COSTS_PAGE_LIMIT = 180
 _OPENAI_USAGE_PAGE_LIMIT = 31
 
 _ZERO_OPENAI_SPEND = {"day": 0.0, "week": 0.0, "month": 0.0, "year": 0.0, "currency": "usd"}
-_ZERO_OPENAI_TOKENS = {"day": 0, "week": 0, "month": 0, "year": 0}
+_ZERO_OPENAI_TOKENS = {
+    "day": {"input": 0, "output": 0},
+    "week": {"input": 0, "output": 0},
+    "month": {"input": 0, "output": 0},
+    "year": {"input": 0, "output": 0},
+}
 
 
 @lru_cache
@@ -430,7 +541,8 @@ async def _fetch_openai_completions_buckets(since: datetime) -> list:
     are DataResultOrganizationUsageCompletionsResult entries (object ==
     "organization.usage.completions.result", per the installed SDK's
     usage_completions_response.py) carrying `input_tokens`/`output_tokens`
-    - see _bucket_completions_tokens below for how those are summed.
+    - see _bucket_completions_input_tokens/_bucket_completions_output_tokens
+    below for how those are summed.
 
     Same thin, directly-patchable external-boundary convention as
     _fetch_openai_spend_buckets above (patched in tests as
@@ -518,19 +630,26 @@ def _summarize_openai_spend(buckets: list, now: datetime) -> dict:
     return {**totals, "currency": currency or "usd"}
 
 
-def _bucket_completions_tokens(bucket) -> int:
-    """One completions-usage bucket's total token count: input_tokens plus
-    output_tokens, summed across every result in `bucket.results` (always
-    a list - same group_by-agnostic shape as _bucket_spend_amount above).
-    Both fields are non-optional on
+def _bucket_completions_input_tokens(bucket) -> int:
+    """One completions-usage bucket's total input_tokens, summed across
+    every result in `bucket.results` (always a list - same
+    group_by-agnostic shape as _bucket_spend_amount above). Non-optional on
     DataResultOrganizationUsageCompletionsResult (see
     usage_completions_response.py), but `getattr(..., 0)` is used anyway
     to fail safe rather than raise if a future SDK/API response ever
-    omits one."""
-    return sum(
-        getattr(result, "input_tokens", 0) + getattr(result, "output_tokens", 0)
-        for result in bucket.results
-    )
+    omits it."""
+    return sum(getattr(result, "input_tokens", 0) for result in bucket.results)
+
+
+def _bucket_completions_output_tokens(bucket) -> int:
+    """One completions-usage bucket's total output_tokens, summed across
+    every result in `bucket.results` (always a list - same
+    group_by-agnostic shape as _bucket_spend_amount above). Non-optional on
+    DataResultOrganizationUsageCompletionsResult (see
+    usage_completions_response.py), but `getattr(..., 0)` is used anyway
+    to fail safe rather than raise if a future SDK/API response ever
+    omits it."""
+    return sum(getattr(result, "output_tokens", 0) for result in bucket.results)
 
 
 def _bucket_embeddings_tokens(bucket) -> int:
@@ -544,15 +663,16 @@ def _bucket_embeddings_tokens(bucket) -> int:
 def _sum_tokens_into_windows(
     buckets: list, now: datetime, tokens_per_bucket: Callable[[object], int]
 ) -> dict[str, int]:
-    """Sums `tokens_per_bucket(bucket)` (one of _bucket_completions_tokens/
+    """Sums `tokens_per_bucket(bucket)` (one of
+    _bucket_completions_input_tokens/_bucket_completions_output_tokens/
     _bucket_embeddings_tokens above) across `buckets` into the same four
     independent rolling-window totals _summarize_openai_spend computes for
     cost buckets - see that function's docstring for exactly how a bucket
     is assigned to a window (the assignment rule is identical here; only
     the per-bucket amount extracted differs: a token count instead of a
     dollar amount, and no currency to track). Shared by
-    _summarize_openai_tokens below for both its completions and embeddings
-    passes.
+    _summarize_openai_tokens below for its completions-input,
+    completions-output, and embeddings-input passes.
     """
     totals = {window: 0 for window in _OPENAI_SPEND_WINDOWS}
     for bucket in buckets:
@@ -566,26 +686,37 @@ def _sum_tokens_into_windows(
 
 def _summarize_openai_tokens(
     completions_buckets: list, embeddings_buckets: list, now: datetime
-) -> dict[str, int]:
-    """Combines completions buckets (input+output tokens) and embeddings
-    buckets (input tokens only) into the single {"day", "week", "month",
-    "year"} `tokens` dict GET /internal/dashboard/openai-spend reports
-    alongside its existing USD fields. DocuMind only ever calls OpenAI for
-    chat completions and embeddings (see app/llm.py), so "total tokens
-    spent" per window is the sum of both usage types for that window -
-    each window's completions total and embeddings total are computed
-    independently (via _sum_tokens_into_windows) and then added together,
-    NOT one cumulative running total across windows (same independent-
-    per-window convention as _summarize_openai_spend above).
+) -> dict[str, dict[str, int]]:
+    """Combines completions buckets (input_tokens and output_tokens
+    separately) and embeddings buckets (input_tokens only - embeddings have
+    no output-token concept) into the {"day", "week", "month", "year"}
+    `tokens` dict GET /internal/dashboard/openai-spend reports alongside its
+    existing USD fields, each window now an {"input": int, "output": int}
+    pair rather than one combined total. DocuMind only ever calls OpenAI for
+    chat completions and embeddings (see app/llm.py): "input" per window is
+    completions input_tokens plus embeddings input_tokens (embeddings only
+    ever contribute to "input"); "output" per window is completions
+    output_tokens alone. Each of the three underlying sums (completions
+    input, completions output, embeddings input) is computed independently
+    per window (via _sum_tokens_into_windows), NOT one cumulative running
+    total across windows (same independent-per-window convention as
+    _summarize_openai_spend above) - that independence applies separately
+    to "input" and to "output".
     """
-    completions_totals = _sum_tokens_into_windows(
-        completions_buckets, now, _bucket_completions_tokens
+    completions_input = _sum_tokens_into_windows(
+        completions_buckets, now, _bucket_completions_input_tokens
     )
-    embeddings_totals = _sum_tokens_into_windows(
+    completions_output = _sum_tokens_into_windows(
+        completions_buckets, now, _bucket_completions_output_tokens
+    )
+    embeddings_input = _sum_tokens_into_windows(
         embeddings_buckets, now, _bucket_embeddings_tokens
     )
     return {
-        window: completions_totals[window] + embeddings_totals[window]
+        window: {
+            "input": completions_input[window] + embeddings_input[window],
+            "output": completions_output[window],
+        }
         for window in _OPENAI_SPEND_WINDOWS
     }
 
@@ -597,15 +728,22 @@ async def get_openai_spend() -> dict:
     year" block:
 
         {"day": 0.42, "week": 3.10, "month": 12.55, "year": 87.20,
-         "tokens": {"day": 1200, "week": 8400, "month": 35000, "year": 410000},
+         "tokens": {
+             "day": {"input": 800, "output": 400},
+             "week": {"input": 5600, "output": 2800},
+             "month": {"input": 23000, "output": 12000},
+             "year": {"input": 270000, "output": 140000},
+         },
          "currency": "usd", "configured": true}
 
     day/week/month/year are trailing rolling-window USD totals (see
     _summarize_openai_spend for exactly how a bucket is assigned to a
     window). `tokens` is the same four rolling windows, but each an
-    integer count of total tokens (completions input+output, plus
-    embeddings input - see _summarize_openai_tokens) rather than a dollar
-    amount - DocuMind's only two OpenAI call types (app/llm.py).
+    {"input": int, "output": int} pair instead of a dollar amount -
+    "input" is completions input_tokens plus embeddings input_tokens,
+    "output" is completions output_tokens alone (embeddings have no
+    output-token concept) - see _summarize_openai_tokens.
+    DocuMind's only two OpenAI call types (app/llm.py).
 
     `configured` is false (with all four amounts and all four token counts
     zeroed, currency "usd") when settings.openai_admin_api_key is empty -
