@@ -1114,11 +1114,11 @@ export function DashboardPage(): JSX.Element {
         // together with everything in it, so a vh-based size stays
         // proportionally correct instead of drifting like a fixed px height
         // would. Up to LOGS_PAGE_SIZE=20 full-text rows almost always
-        // overflows that frame, so `overflowY: auto` (styled via
-        // `classes.scrollArea` - the same custom-scrollbar device
-        // ChatPage's own message list uses) on the inner table wrapper is
-        // the primary mechanism here, not a fallback: it keeps the
-        // scrollbar local to this panel instead of the whole page.
+        // overflows that frame, so `overflowY: auto` (its scrollbar styled
+        // by the app-wide rule in global.css, applied automatically) on the
+        // inner table wrapper is the primary mechanism here, not a
+        // fallback: it keeps the scrollbar local to this panel instead of
+        // the whole page.
         <Box style={{ height: '80vh', display: 'flex', flexDirection: 'column', gap: 'var(--mantine-spacing-md)' }}>
           <Group gap="sm" wrap="wrap" align="flex-end">
             <TextInput
@@ -1153,7 +1153,7 @@ export function DashboardPage(): JSX.Element {
             ) : null}
           </Group>
 
-          <Box className={classes.scrollArea} style={{ flex: 1, overflowY: 'auto' }}>
+          <Box style={{ flex: 1, overflowY: 'auto' }}>
             {filteredLogsEvents.length === 0 ? (
               <Box style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Text c="dimmed" ta="center" fw={600} style={{ fontSize: '2rem', maxWidth: '40rem' }}>

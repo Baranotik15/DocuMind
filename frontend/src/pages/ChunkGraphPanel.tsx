@@ -9,7 +9,13 @@ import ForceGraph3D from '3d-force-graph'
 import { useNavigate } from 'react-router-dom'
 import { BackSide, Group as ThreeGroup, Mesh, MeshBasicMaterial, MOUSE, SphereGeometry, Vector3 } from 'three'
 
-import classes from './ChunkGraphPanel.module.css'
+// Side-effect only - no JSX here references `classes` anymore (the last
+// local class, chunkTextScrollArea, moved to the app-wide scrollbar rule in
+// global.css), but this file still needs to stay imported so its
+// `:global(.float-tooltip-kap)` rule (styling a div 3d-force-graph's own
+// float-tooltip dependency injects directly into the DOM) ships in the
+// bundle.
+import './ChunkGraphPanel.module.css'
 import { apiClient } from '../api/client'
 import type { Chunk, ChunkGraphNode } from '../api/types'
 
@@ -530,9 +536,10 @@ export function ChunkGraphPanel(): JSX.Element {
           (opened/onClose, radius="lg"). `size="1200px"` - twice this app's
           usual `size="lg"` (~620px) - a whole chunk's text needs more
           reading width than this app's other, narrower confirm-only
-          Modals. The text itself sits in its own capped-height, custom-
-          scrolled box (classes.chunkTextScrollArea) rather than letting the
-          Modal grow arbitrarily tall for a long chunk. `title` is a real
+          Modals. The text itself sits in its own capped-height, scrolled
+          box (scrollbar styled by the app-wide rule in global.css, applied
+          automatically) rather than letting the Modal grow arbitrarily
+          tall for a long chunk. `title` is a real
           `<Title order={4}>` (same "section heading" component the
           Messages sent/Dislikes charts use, not Mantine's own default
           title styling, which read too close in size to the body text
@@ -571,7 +578,7 @@ export function ChunkGraphPanel(): JSX.Element {
               {chunkTextError}
             </Alert>
           ) : (
-            <Box className={classes.chunkTextScrollArea} style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+            <Box style={{ maxHeight: '60vh', overflowY: 'auto' }}>
               {/* white-space: pre-line (not pre-wrap) - see reflowChunkText
                   above: single hard-wrapped newlines are already collapsed
                   to spaces before this renders, so this only needs to keep

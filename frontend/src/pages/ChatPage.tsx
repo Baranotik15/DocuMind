@@ -282,15 +282,14 @@ export function ChatPage(): JSX.Element {
           by a percentage of the viewport while the input bar used a
           different ratio of the flex area. */}
       <Stack gap="md" w="100%" maw={CHAT_COLUMN_MAX_WIDTH} mx="auto" style={{ flex: 1, minHeight: 0 }}>
-        {/* className={classes.scrollArea} restyles the message list's native
-            scrollbar into a slim, theme-colored one (see the class's own
-            comment in ChatPage.module.css) rather than the stock OS-themed
-            scrollbar an earlier pass here just hid outright - per explicit
+        {/* The message list's scrollbar is styled by the app-wide rule in
+            global.css (applies to every scrollable element automatically) -
+            this used to need its own classes.scrollArea here; per explicit
             follow-up request to keep a scroll affordance, just one that
-            looks like it belongs in this app. pr="md" gives it breathing
-            room from the message bubbles - it sat flush against their edge
-            without this. */}
-        <Stack gap="md" className={classes.scrollArea} style={{ flex: 1, overflowY: 'auto', minHeight: 0 }} py="md" pr="md">
+            looks like it belongs in this app, that's now true everywhere,
+            not just here. pr="md" gives it breathing room from the message
+            bubbles - it sat flush against their edge without this. */}
+        <Stack gap="md" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }} py="md" pr="md">
           {messages.length === 0 ? (
             // Centered welcome state rather than a blank column - the same
             // BotAvatar used next to every assistant reply below, so the
