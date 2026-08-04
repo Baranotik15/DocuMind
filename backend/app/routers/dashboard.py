@@ -474,11 +474,24 @@ _ZERO_OPENAI_TOKENS = {
 def _get_admin_client() -> AsyncOpenAI:
     """Same AsyncOpenAI client class as app.llm.get_client(), just a
     different key/instance - built from settings.openai_admin_api_key, not
-    settings.openai_api_key. lru_cache'd for the same reason
-    app.llm.get_client() is: reused across requests within a process
-    rather than reconstructed (and its underlying httpx connection pool
-    rebuilt) on every call."""
-    return AsyncOpenAI(api_key=get_settings().openai_admin_api_key)
+    settings.openai_api_key. Passed as `admin_api_key=`, NOT `api_key=`:
+    the SDK's admin/organization endpoints (client.admin.organization.
+    usage.costs/completions/embeddings - see _fetch_openai_spend_buckets/
+    _fetch_openai_completions_buckets/_fetch_openai_embeddings_buckets
+    below) are declared with `security={"admin_api_key_auth": True}`
+    (verified in the installed SDK's
+    openai/resources/admin/organization/usage.py) - they build their
+    Authorization header from `self.admin_api_key` specifically, and
+    ignore `self.api_key` entirely. Passing the key as `api_key=` (an
+    earlier bug here) left `self.admin_api_key` unset, so every one of
+    those three calls raised "Could not resolve authentication method"
+    (a TypeError, not an OpenAI API error) - caught by get_openai_spend's
+    try/except and silently zeroed, even though `configured` came back
+    `true` and the key itself was perfectly valid. lru_cache'd for the
+    same reason app.llm.get_client() is: reused across requests within a
+    process rather than reconstructed (and its underlying httpx
+    connection pool rebuilt) on every call."""
+    return AsyncOpenAI(admin_api_key=get_settings().openai_admin_api_key)
 
 
 async def _fetch_openai_usage_buckets(
