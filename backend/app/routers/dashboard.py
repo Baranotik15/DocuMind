@@ -16,6 +16,16 @@ from umap import UMAP
 from app.config import get_settings
 from app.constants import ChatRole
 from app.db.session import get_session
+from app.schemas import (
+    ChunkGraph,
+    ChunkGraphNode,
+    DashboardEventSummary,
+    DashboardStats,
+    DashboardStatsBucket,
+    OpenAiSpend,
+    OpenAiSpendTokens,
+    OpenAiSpendTokenWindow,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +38,19 @@ router = APIRouter()
 DashboardRange = Literal["day", "7days", "month", "year"]
 
 
-def _event_summary(row) -> dict:
-    return {
-        "id": str(row.id),
-        "type": row.type,
-        "timestamp": row.created_at.isoformat(),
-        "detail": row.detail,
-    }
+def _event_summary(row) -> DashboardEventSummary:
+    return DashboardEventSummary(
+        id=str(row.id),
+        type=row.type,
+        timestamp=row.created_at.isoformat(),
+        detail=row.detail,
+    )
 
 
 @router.get("/dashboard/events")
-async def get_dashboard_events(session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def get_dashboard_events(
+    session: AsyncSession = Depends(get_session),
+) -> list[DashboardEventSummary]:
     """Returns all dashboard_events as {id, type, timestamp, detail},
     ordered by created_at descending (newest first) - the opposite order
     from chat's list_messages endpoint, which is ascending. See
@@ -187,7 +199,9 @@ def _bucket_index(bucket_starts: list[datetime], created_at: datetime) -> int | 
     return len(bucket_starts) - 1
 
 
-def _zero_filled_buckets(bucket_starts: list[datetime], created_ats: list[datetime]) -> list[dict]:
+def _zero_filled_buckets(
+    bucket_starts: list[datetime], created_ats: list[datetime]
+) -> list[DashboardStatsBucket]:
     """Buckets `created_ats` (a list of created_at timestamps already
     filtered to whichever rows should count, e.g. all messages vs. just
     disliked ones) against `bucket_starts`, always returning exactly
@@ -199,7 +213,7 @@ def _zero_filled_buckets(bucket_starts: list[datetime], created_ats: list[dateti
         if index is not None:
             counts[index] += 1
     return [
-        {"bucketStart": start.isoformat(), "count": count}
+        DashboardStatsBucket(bucketStart=start.isoformat(), count=count)
         for start, count in zip(bucket_starts, counts)
     ]
 
@@ -207,7 +221,7 @@ def _zero_filled_buckets(bucket_starts: list[datetime], created_ats: list[dateti
 @router.get("/dashboard/stats")
 async def get_dashboard_stats(
     range: DashboardRange, tz: str = "UTC", session: AsyncSession = Depends(get_session)
-) -> dict:
+) -> DashboardStats:
     """Aggregate dashboard stats for the window named by `range` (one of
     "day", "7days", "month", "year" - anything else 422s, enforced by the
     Literal type on the `range` param).
@@ -277,21 +291,21 @@ async def get_dashboard_stats(
         )
     ).all()
 
-    return {
+    return DashboardStats(
         # No users table exists yet - auth isn't built in this app. This is
         # a deliberate placeholder, not a bug; it'll need real counting
         # once auth (and a users table) exist.
-        "totalUsers": 0,
-        "totalChunks": total_chunks,
-        "totalDocuments": total_documents,
-        "totalDislikes": total_dislikes,
-        "messageBuckets": _zero_filled_buckets(
+        totalUsers=0,
+        totalChunks=total_chunks,
+        totalDocuments=total_documents,
+        totalDislikes=total_dislikes,
+        messageBuckets=_zero_filled_buckets(
             bucket_starts, [row.created_at for row in rows if row.role == ChatRole.USER]
         ),
-        "dislikeBuckets": _zero_filled_buckets(
+        dislikeBuckets=_zero_filled_buckets(
             bucket_starts, [row.created_at for row in rows if row.disliked]
         ),
-    }
+    )
 
 
 def _parse_embedding(embedding_text: str) -> list[float]:
@@ -348,25 +362,25 @@ def _project_to_3d(embeddings: list[list[float]]) -> list[tuple[float, float, fl
     return [(float(x), float(y), float(z)) for x, y, z in coordinates]
 
 
-def _chunk_graph_node(row, coordinates: tuple[float, float, float]) -> dict:
+def _chunk_graph_node(row, coordinates: tuple[float, float, float]) -> ChunkGraphNode:
     x, y, z = coordinates
-    return {
-        "id": str(row.id),
-        "documentId": str(row.document_id),
-        "filename": row.filename,
-        "x": x,
-        "y": y,
-        "z": z,
+    return ChunkGraphNode(
+        id=str(row.id),
+        documentId=str(row.document_id),
+        filename=row.filename,
+        x=x,
+        y=y,
+        z=z,
         # The chunk's own position within its document (not an index into
         # this response) - lets the frontend chain same-document nodes in
         # reading order (chunk 1 -> chunk 2 -> chunk 3 -> ...) rather than
         # connecting every chunk to every other chunk in the document.
-        "position": row.position,
-    }
+        position=row.position,
+    )
 
 
 @router.get("/dashboard/chunk-graph")
-async def get_chunk_graph(session: AsyncSession = Depends(get_session)) -> dict:
+async def get_chunk_graph(session: AsyncSession = Depends(get_session)) -> ChunkGraph:
     """Returns one 3D position per chunk, across ALL chunks regardless of
     document status (same unfiltered convention as totalChunks/
     totalDocuments on GET /internal/dashboard/stats above) - powers a
@@ -407,12 +421,12 @@ async def get_chunk_graph(session: AsyncSession = Depends(get_session)) -> dict:
 
     coordinates = _project_to_3d([_parse_embedding(row.embedding_text) for row in rows])
 
-    return {
-        "nodes": [
+    return ChunkGraph(
+        nodes=[
             _chunk_graph_node(row, node_coordinates)
             for row, node_coordinates in zip(rows, coordinates)
         ]
-    }
+    )
 
 
 # --- openai spend --------------------------------------------------------
@@ -462,13 +476,19 @@ _OPENAI_COSTS_PAGE_LIMIT = 180
 # rollups).
 _OPENAI_USAGE_PAGE_LIMIT = 31
 
+# Kept as plain dicts (day/week/month/year/currency, matching
+# OpenAiSpend's own field names minus `tokens`/`configured`) so they can be
+# spread straight into an OpenAiSpend(**_ZERO_OPENAI_SPEND, tokens=...,
+# configured=...) construction below, the same shape the original dict
+# literal this replaced used.
 _ZERO_OPENAI_SPEND = {"day": 0.0, "week": 0.0, "month": 0.0, "year": 0.0, "currency": "usd"}
-_ZERO_OPENAI_TOKENS = {
-    "day": {"input": 0, "output": 0},
-    "week": {"input": 0, "output": 0},
-    "month": {"input": 0, "output": 0},
-    "year": {"input": 0, "output": 0},
-}
+_ZERO_OPENAI_TOKEN_WINDOW = OpenAiSpendTokenWindow(input=0, output=0)
+_ZERO_OPENAI_TOKENS = OpenAiSpendTokens(
+    day=_ZERO_OPENAI_TOKEN_WINDOW,
+    week=_ZERO_OPENAI_TOKEN_WINDOW,
+    month=_ZERO_OPENAI_TOKEN_WINDOW,
+    year=_ZERO_OPENAI_TOKEN_WINDOW,
+)
 
 
 @lru_cache
@@ -736,7 +756,7 @@ def _summarize_openai_tokens(
 
 
 @router.get("/dashboard/openai-spend")
-async def get_openai_spend() -> dict:
+async def get_openai_spend() -> OpenAiSpend:
     """Rolling-window OpenAI organization spend + token-usage summary for
     the Dashboard's Stats tab "spent today / this week / this month / this
     year" block:
@@ -780,7 +800,7 @@ async def get_openai_spend() -> dict:
     since they're independent reads over the same trailing window.
     """
     if not get_settings().openai_admin_api_key:
-        return {**_ZERO_OPENAI_SPEND, "tokens": _ZERO_OPENAI_TOKENS, "configured": False}
+        return OpenAiSpend(**_ZERO_OPENAI_SPEND, tokens=_ZERO_OPENAI_TOKENS, configured=False)
 
     now = datetime.now(timezone.utc)
     since = now - _OPENAI_SPEND_WINDOWS["year"]
@@ -792,7 +812,11 @@ async def get_openai_spend() -> dict:
         )
     except Exception:
         logger.exception("Failed to fetch OpenAI organization usage")
-        return {**_ZERO_OPENAI_SPEND, "tokens": _ZERO_OPENAI_TOKENS, "configured": True}
+        return OpenAiSpend(**_ZERO_OPENAI_SPEND, tokens=_ZERO_OPENAI_TOKENS, configured=True)
 
     tokens = _summarize_openai_tokens(completions_buckets, embeddings_buckets, now)
-    return {**_summarize_openai_spend(cost_buckets, now), "tokens": tokens, "configured": True}
+    return OpenAiSpend(
+        **_summarize_openai_spend(cost_buckets, now),
+        tokens=OpenAiSpendTokens(**tokens),
+        configured=True,
+    )

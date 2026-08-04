@@ -1,25 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.constants import ChatRole, DashboardEventType
 from app.db.session import get_session
+from app.schemas import ChatMessageSummary, SendMessageRequest, TopChunkSummary, TopChunksRequest
 from app.services.events import record_event_async
 from app.services.llm import LLMError, embed_texts, generate_reply
 from app.services.retrieval import fetch_similar_chunks
 
 router = APIRouter()
-
-
-class SendMessageRequest(BaseModel):
-    content: str
-
-
-class TopChunksRequest(BaseModel):
-    content: str
-
 
 TOP_CHUNKS_LIMIT = 5
 
@@ -29,19 +20,19 @@ TOP_CHUNKS_LIMIT = 5
 _CHAT_COMPLETION_FAILED_ERROR = "chat_completion_failed"
 
 
-def _message_summary(row) -> dict:
-    return {
-        "id": str(row.id),
-        "role": row.role,
-        "content": row.content,
-        "disliked": row.disliked,
-    }
+def _message_summary(row) -> ChatMessageSummary:
+    return ChatMessageSummary(
+        id=str(row.id),
+        role=row.role,
+        content=row.content,
+        disliked=row.disliked,
+    )
 
 
 @router.post("/chat/messages")
 async def send_message(
     body: SendMessageRequest, session: AsyncSession = Depends(get_session)
-) -> dict:
+) -> ChatMessageSummary:
     """Persists the user's message, retrieves relevant chunks across the
     corpus of `ready` documents via pgvector similarity search, and calls
     the OpenAI chat completion API for a reply. See
@@ -104,7 +95,7 @@ async def send_message(
 
 
 @router.get("/chat/messages")
-async def list_messages(session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def list_messages(session: AsyncSession = Depends(get_session)) -> list[ChatMessageSummary]:
     """Returns all chat_messages ordered by created_at ascending."""
     rows = (
         await session.execute(
@@ -135,20 +126,20 @@ async def dislike_message(
     await session.commit()
 
 
-def _top_chunk_summary(row, match_percent: float) -> dict:
-    return {
-        "chunkId": str(row.id),
-        "documentId": str(row.document_id),
-        "filename": row.filename,
-        "content": row.edited_content,
-        "matchPercent": match_percent,
-    }
+def _top_chunk_summary(row, match_percent: float) -> TopChunkSummary:
+    return TopChunkSummary(
+        chunkId=str(row.id),
+        documentId=str(row.document_id),
+        filename=row.filename,
+        content=row.edited_content,
+        matchPercent=match_percent,
+    )
 
 
 @router.post("/chat/top-chunks")
 async def top_chunks(
     body: TopChunksRequest, session: AsyncSession = Depends(get_session)
-) -> list[dict]:
+) -> list[TopChunkSummary]:
     """Read-only diagnostic endpoint for previewing retrieval quality
     without sending a chat message: embeds `body.content` and returns the
     top TOP_CHUNKS_LIMIT chunks (across `ready` documents) most similar to

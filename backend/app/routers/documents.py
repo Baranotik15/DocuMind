@@ -3,39 +3,18 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Response, UploadFile
-from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import DashboardEventType, DocumentStatus, SUPPORTED_DOCUMENT_EXTENSIONS
 from app.db.session import get_session
 from app.deps import get_storage
+from app.schemas import ChunkSummary, DocumentSummary, SaveChunksRequest
 from app.services.events import record_event_async
 from app.services.storage import StorageAdapter, StorageKeyNotFoundError
 from app.worker.tasks import run_document_pipeline
 
 router = APIRouter()
-
-
-class ChunkIn(BaseModel):
-    editedContent: str
-    # id/originalContent/isDirty are accepted-but-ignored on the frontend
-    # side of this contract - the request may include them, but a
-    # full re-chunk discards prior chunk identity/boundaries per the spec,
-    # so nothing here reads them.
-
-
-class SaveChunksRequest(BaseModel):
-    chunks: list[ChunkIn]
-    manualBoundaries: bool = False
-    # True when the operator manually dragged at least one chunk boundary
-    # during the current editing session (see
-    # .claude/specs/manual-chunk-boundaries.md) - `chunks` is then treated
-    # as the final, authoritative chunk list and the algorithmic re-split
-    # is skipped entirely; every chunk is embedded exactly as given.
-    # Defaults to False, which is exactly today's behavior: full text
-    # reconstruction (`"".join(...)`) followed by a full algorithmic
-    # re-chunk.
 
 # Detail codes shared across more than one endpoint below - kept as
 # constants so all raise sites for the same condition stay in sync (see
@@ -45,13 +24,13 @@ _DOCUMENT_PROCESSING_ERROR = "document_processing"
 _DOCUMENT_NOT_FOUND_ERROR = "document_not_found"
 
 
-def _document_summary(row) -> dict:
-    return {
-        "id": str(row.id),
-        "filename": row.filename,
-        "status": row.status,
-        "uploadedAt": row.uploaded_at.isoformat(),
-    }
+def _document_summary(row) -> DocumentSummary:
+    return DocumentSummary(
+        id=str(row.id),
+        filename=row.filename,
+        status=row.status,
+        uploadedAt=row.uploaded_at.isoformat(),
+    )
 
 
 @router.post("/documents")
@@ -60,7 +39,7 @@ async def upload_document(
     overwrite: bool = Form(False),
     session: AsyncSession = Depends(get_session),
     storage: StorageAdapter = Depends(get_storage),
-) -> dict:
+) -> DocumentSummary:
     """Validates the filename's extension before touching storage/DB, then
     branches on whether a document with this filename already exists. See
     `.claude/plans/2026-08-01-phase-2-backend-integration.md` Task 6 for the
@@ -144,7 +123,7 @@ async def upload_document(
 
 
 @router.get("/documents")
-async def list_documents(session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def list_documents(session: AsyncSession = Depends(get_session)) -> list[DocumentSummary]:
     """Returns every document as a DocumentSummary dict, ordered by
     uploaded_at."""
     rows = (
@@ -208,20 +187,20 @@ async def delete_document(
     await session.commit()
 
 
-def _chunk_summary(row) -> dict:
-    return {
-        "id": str(row.id),
-        "documentId": str(row.document_id),
-        "originalContent": row.original_content,
-        "editedContent": row.edited_content,
-        "isDirty": False,
-    }
+def _chunk_summary(row) -> ChunkSummary:
+    return ChunkSummary(
+        id=str(row.id),
+        documentId=str(row.document_id),
+        originalContent=row.original_content,
+        editedContent=row.edited_content,
+        isDirty=False,
+    )
 
 
 @router.get("/documents/{document_id}/chunks")
 async def get_chunks(
     document_id: str, session: AsyncSession = Depends(get_session)
-) -> list[dict]:
+) -> list[ChunkSummary]:
     """Returns chunks for document_id ordered by position. `isDirty` is
     always False from the server - it's a purely client-side concept while
     unsaved edits haven't been sent yet."""
