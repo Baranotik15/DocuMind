@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
 
@@ -42,6 +42,13 @@ function saveHiddenMessageIds(ids: Set<string>): void {
     // operator over.
   }
 }
+
+// How close to the true bottom (in px of unscrolled content below the
+// viewport) still counts as "at the bottom" for auto-scroll purposes below -
+// a small forgiveness margin, not an exact 0, since sub-pixel layout
+// rounding can leave scrollTop a fraction short of scrollHeight-clientHeight
+// even when a viewer's eye reads the list as fully scrolled down.
+const NEAR_BOTTOM_THRESHOLD_PX = 80
 
 // Both the message list and the input bar share this exact max-width rather
 // than each picking its own ratio of the surrounding flex area. Widened from
@@ -128,6 +135,45 @@ export function ChatPage(): JSX.Element {
   // message appears.
   const [isSending, setIsSending] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
+  // The scrollable message list itself (the inner Stack below, not the
+  // outer page column) - read/written directly via scrollTop/scrollHeight
+  // in the auto-scroll effect below, rather than through React state, since
+  // scroll position changes on every frame of a drag and has no business
+  // triggering a re-render.
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  // Whether the viewer was scrolled at/near the bottom the last time they
+  // touched the scroll position - a ref (not state) so onScroll doesn't
+  // re-render on every tick, and so the auto-scroll effect below always
+  // reads the truly latest value rather than one from a stale closure.
+  // Starts `true` deliberately: before the viewer has scrolled at all (most
+  // importantly, on first load), this app should default to the bottom of
+  // the conversation, not the top - per explicit request. Only flips to
+  // `false` once they've actually scrolled away from the bottom themselves
+  // (see handleMessageListScroll), so a reply arriving while they're
+  // reading older history never yanks their place out from under them.
+  const isNearBottomRef = useRef(true)
+
+  function handleMessageListScroll(event: React.UIEvent<HTMLDivElement>): void {
+    const list = event.currentTarget
+    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight
+    isNearBottomRef.current = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX
+  }
+
+  // Keeps the message list pinned to the bottom - on first load (see
+  // isNearBottomRef's own comment above for why that's the default), and
+  // again every time the visible content changes height (a new message
+  // appended, or the typing indicator appearing/disappearing) PROVIDED the
+  // viewer was already at/near the bottom right before this change.
+  // useLayoutEffect (not useEffect) so this runs before the browser paints
+  // the new content - otherwise a viewer could see one frame of the list at
+  // its old scroll position before it snaps to the new bottom.
+  useLayoutEffect(() => {
+    const list = scrollContainerRef.current
+    if (!list || !isNearBottomRef.current) {
+      return
+    }
+    list.scrollTop = list.scrollHeight
+  }, [messages, isSending])
 
   useEffect(() => {
     void apiClient.listChatMessages().then((allMessages) => {
@@ -289,7 +335,14 @@ export function ChatPage(): JSX.Element {
             looks like it belongs in this app, that's now true everywhere,
             not just here. pr="md" gives it breathing room from the message
             bubbles - it sat flush against their edge without this. */}
-        <Stack gap="md" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }} py="md" pr="md">
+        <Stack
+          ref={scrollContainerRef}
+          onScroll={handleMessageListScroll}
+          gap="md"
+          style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
+          py="md"
+          pr="md"
+        >
           {messages.length === 0 ? (
             // Centered welcome state rather than a blank column - the same
             // BotAvatar used next to every assistant reply below, so the
