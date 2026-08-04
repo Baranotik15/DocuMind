@@ -1,0 +1,112 @@
+/* Clear chat button - forces the SAME outline/color look whether it's
+   actually clickable (there are messages) or not (chat's already empty),
+   per explicit request: only the cursor should communicate "there's
+   nothing to clear right now," not a washed-out disabled style. Mantine's
+   own Button CSS unconditionally overrides `background`/`color` to a flat
+   `var(--mantine-color-disabled)`/`-disabled-color` fill the instant the
+   native `disabled` attribute is present (wrapped in `:where()`, so this
+   single-class-plus-pseudo-class selector outranks it by specificity
+   regardless of stylesheet load order - the same mechanism/technique
+   documented at length for ChunkPreviewPage's Undo/Redo buttons, see
+   ChunkPreviewPage.module.css's own .historyButton comment). `disabled`
+   itself is still the real native attribute (correctly non-focusable/
+   non-clickable for accessibility) - only its default APPEARANCE is
+   overridden here.
+   */
+.clearChatButton:disabled,
+.clearChatButton[data-disabled] {
+  background-color: transparent;
+  color: var(--mantine-color-alertMagenta-6);
+  border-color: var(--mantine-color-alertMagenta-6);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+/*
+ * Typing indicator: three dots pulsing in sequence while the assistant is
+ * composing a reply (see `handleSend` in ChatPage.tsx - the indicator is
+ * shown for the span between the request firing and the reply/error
+ * resolving). Opacity + a small translateY animate rather than a layout
+ * property, consistent with the app's general "animate paint properties,
+ * not layout" convention - this is a deliberate, scoped exception to the
+ * house "no decorative motion" note for a genuine loading state, where
+ * motion is the whole point (communicating "still working", not idle).
+ */
+@keyframes typingPulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+.typingDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background-color: var(--mantine-color-signalBlue-4);
+  animation: typingPulse 1.2s ease-in-out infinite;
+}
+
+.typingDot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typingDot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typingDot {
+    animation: none;
+  }
+}
+
+/*
+ * The assistant's identity avatar next to its messages (and the typing
+ * indicator) - a filled signalBlue circle, pairing with the user's
+ * sparkOrange bubble border. Never rendered next to the user's own
+ * messages (see ChatPage.tsx). 2x its original 2rem size (the SVG glyph
+ * inside is scaled the same 2x, in ChatPage.tsx, to stay centered/
+ * proportional within it) per explicit live-tested request - an initial 5x
+ * pass read as way too big, this is the corrected size.
+ */
+.botAvatar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 4rem;
+  height: 4rem;
+  border-radius: 50%;
+  background-color: var(--mantine-color-signalBlue-6);
+  /* Purely decorative (aria-hidden in ChatPage.tsx already) - a click-drag
+     shouldn't be able to select/highlight it (covers both the custom image
+     and the SVG fallback, whichever is showing), per explicit request.
+     draggable={false} on the <img> itself (ChatPage.tsx) additionally stops
+     the browser's own "drag this image out" affordance, which user-select
+     alone doesn't cover for <img> elements. */
+  user-select: none;
+  cursor: default;
+}
+
+/* Custom avatar image (see BOT_AVATAR_IMAGE_SRC in ChatPage.tsx) fills the
+   whole circle rather than sitting as a small centered icon on the blue
+   background, the way the fallback SVG glyph does - object-fit: cover crops
+   a non-square source image to fill it without distortion, and the matching
+   border-radius keeps it circular even though .botAvatar's own radius
+   already clips its content (belt-and-suspenders: some browsers don't clip
+   a child that overflows a parent's border-radius without the child having
+   its own). */
+.botAvatarImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}

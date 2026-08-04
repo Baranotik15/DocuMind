@@ -1,0 +1,146 @@
+/*
+ * Fixes Mantine's Input family (TextInput, Select, NumberInput,
+ * PasswordInput, Textarea's own "default" variant, ...) rendering with a
+ * hardcoded near-white background in light color scheme
+ * (`--input-bg: var(--mantine-color-white)`, `--input-bd:
+ * var(--mantine-color-gray-4)` - see node_modules/@mantine/core/styles/Input.css)
+ * completely independent of this app's own dark theme. Everything else
+ * (page background, body text, dimmed/placeholder text, gray-3 hairline
+ * borders) is already remapped globally via theme.ts's cssVariablesResolver
+ * - but --input-bg/--input-bd aren't part of that mechanism (Mantine only
+ * exposes Input's SIZE-related vars, like --input-height, through the
+ * component `vars` resolver API - the color ones are plain CSS rules keyed
+ * off `[data-mantine-color-scheme]` + `[data-variant]`, so they have to be
+ * overridden the same way, with a plain CSS rule).
+ *
+ * Net effect without this: text.ts's own near-white `--mantine-color-text`
+ * (correctly applied to input text via `--input-color`) renders on top of
+ * Mantine's own near-white default background - invisible text, on every
+ * new TextInput/Select/etc. added to this app unless individually patched
+ * with an inline `styles={{ input: { backgroundColor: ..., color: ... } }}`
+ * override (the same fix has now been applied ad-hoc, per-component,
+ * multiple times - ChunkPreviewPage's search field, Upload's filter field,
+ * RelevancePage's question field - see feedback memory). This is the fix
+ * applied ONCE, globally, so it can't be missed on the next new input.
+ *
+ * `.mantine-Input-wrapper` is Mantine's own stable, human-readable class
+ * (not the internal per-build CSS-modules hash) kept in the DOM specifically
+ * for this kind of external override - present on every Input-family
+ * component's wrapper element regardless of which higher-level component
+ * (TextInput, Select, ...) composes it. The leading `html` element selector
+ * is a deliberate specificity bump (matches Mantine's own
+ * `[data-mantine-color-scheme] .<hash>[data-variant='default']` rule
+ * exactly on class+attribute count, so equal specificity would otherwise
+ * come down to a fragile CSS-import-order tiebreak) - same
+ * beat-Mantine's-own-rule-by-specificity technique already used for
+ * ChunkPreviewPage's Undo/Redo buttons and the Clear chat button (see
+ * ChunkPreviewPage.module.css's .historyButton comment) - so this wins
+ * unconditionally, regardless of where this stylesheet ends up in the
+ * bundle relative to Mantine's own.
+ */
+html[data-mantine-color-scheme='light'] .mantine-Input-wrapper[data-variant='default'] {
+  --input-bg: var(--doc-surface);
+  --input-bd: var(--doc-hairline);
+}
+
+/*
+ * Same bug class as the Input fix above, now hit by @mantine/dates'
+ * DateInput/TimePicker/DateTimePicker dropdowns (any Popover-based
+ * component, really - Select/Menu would have the same problem if/when this
+ * app adds one): Popover.Dropdown's background-color is a plain
+ * `[data-mantine-color-scheme='light'] .<hash> { background-color:
+ * var(--mantine-color-white); }` rule (see
+ * node_modules/@mantine/core/styles/Popover.css) - not part of the vars
+ * resolver, and not overridden by anything theme.ts already remaps. It also
+ * sets no `color`, so it was rendering with the browser's black initial
+ * value on top of that hardcoded white - pure unstyled Mantine defaults,
+ * completely independent of this app's dark theme.
+ *
+ * Setting `color` here (not just `background-color`) is enough to fix every
+ * control inside the dropdown too (calendar day cells, TimePicker's
+ * hour/minute fields, ...) without a rule per element - none of those set
+ * their own resting `color` (only `:hover`/`:active`/`[data-active]` do), so
+ * they inherit this one. Same `html[data-mantine-color-scheme='light']`
+ * specificity-bump technique as the Input fix (Mantine's own rule is
+ * `:where([data-mantine-color-scheme='light'])`, zero specificity).
+ */
+html[data-mantine-color-scheme='light'] .mantine-Popover-dropdown {
+  background-color: var(--doc-surface);
+  border-color: var(--doc-hairline);
+  color: var(--doc-text);
+}
+
+/*
+ * Same light-scheme-leaking-through bug class as the two fixes above, one
+ * level more specific: hovering (or keyboard-navigating) a Select/Combobox
+ * OPTION sets `background-color: var(--mantine-color-gray-0)` - a pale
+ * near-white (see node_modules/@mantine/core/styles/Combobox.css's own
+ * `[data-mantine-color-scheme='light'] ... :hover` rule) - while this
+ * app's own near-white --doc-text (correctly applied via the
+ * Popover-dropdown fix above, which options otherwise inherit) stays as
+ * the text color. Near-white text on a near-white background is
+ * effectively invisible - the resting/selected states aren't affected
+ * (Mantine's `[data-combobox-selected]` rule already uses
+ * `--mantine-primary-color-filled`, i.e. this app's own signalBlue, +
+ * white text, which reads fine), only this hover pseudo-state does. Reusing
+ * that same signalBlue-filled treatment on hover, instead of inventing a
+ * separate hover color, means a hovered-but-not-yet-selected option looks
+ * identical to how the actually-selected option already looks - one
+ * consistent "highlighted option" affordance, not two different ones.
+ * `.mantine-Select-option` is Mantine's own stable class for this (present
+ * regardless of the per-build internal hash), same
+ * html[data-mantine-color-scheme='light']-prefix specificity-bump
+ * technique as the other two fixes in this file.
+ */
+html[data-mantine-color-scheme='light'] .mantine-Select-option:hover {
+  background-color: var(--mantine-color-signalBlue-6);
+  color: var(--mantine-color-white);
+}
+
+/*
+ * App-wide custom scrollbar - a slim hairline-colored thumb, brightening to
+ * signalBlue on hover, instead of either the OS-default scrollbar or hiding
+ * it outright. Previously duplicated per-page (ChatPage.module.css's
+ * `.scrollArea`, DashboardPage.module.css's `.scrollArea`,
+ * ChunkGraphPanel.module.css's `.chunkTextScrollArea` - all byte-for-byte
+ * identical rule bodies) and applied only to the few scrollable panels that
+ * happened to opt in via one of those classes; hoisted here, once, on `*`,
+ * so every scrollable element gets it automatically - including plain page/
+ * body scroll (e.g. RelevancePage's results list, which has no scroll
+ * container of its own) that no per-page class could have covered without
+ * being added everywhere a page might one day overflow.
+ *
+ * `scrollbar-width`/`scrollbar-color` (Firefox's standard properties) are
+ * inherited, so setting them on `*` is redundant but harmless; the
+ * `::-webkit-scrollbar*` pseudo-elements (Chrome/Edge/Safari) are NOT
+ * inherited - each overflowing box needs its own match - which is exactly
+ * why `*` (not `html`/`body` alone) is the selector here.
+ *
+ * ChunkPreviewPage.module.css's own `.scrollArea` is a deliberate exception,
+ * NOT a duplicate of this - it hides the scrollbar entirely (that page uses
+ * a minimap as its scroll indicator instead). A class selector outranks
+ * this universal one by specificity, so that page's override keeps working
+ * unchanged underneath this global rule.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--doc-hairline) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--doc-hairline);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--mantine-color-signalBlue-6);
+}

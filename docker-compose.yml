@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: documind
+      POSTGRES_PASSWORD: documind
+      POSTGRES_DB: documind
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U documind"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      # Docker Desktop on Windows doesn't always forward inotify events for
+      # bind-mounted files, so Vite's file watcher needs polling to reliably
+      # pick up host-side edits.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume shadows the bind mount for node_modules only, so
+      # the container keeps its own Linux-installed packages instead of
+      # whatever (possibly Windows-native) node_modules exists on the host.
+      - /app/node_modules
+  backend:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      # Shared with worker so uploaded documents (written here via
+      # app.documents.storage.LocalDiskStorage, rooted at Settings.storage_base_dir =
+      # "./data/documents", i.e. /app/data/documents given WORKDIR /app) are
+      # visible to the worker's Celery task, which reads the same files back
+      # by storage_key. Without this, backend and worker each have their own
+      # ephemeral container filesystem and the worker's read 404s.
+      - documind_storage:/app/data
+
+  worker:
+    build: ./backend
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - documind_storage:/app/data
+
+volumes:
+  postgres_data:
+  documind_storage:

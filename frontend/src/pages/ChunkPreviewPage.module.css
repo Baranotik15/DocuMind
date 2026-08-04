@@ -1,0 +1,187 @@
+/* Hides the native scrollbar on the text column - scrolling still works via
+   mouse wheel/keyboard/touch, only the visible track+thumb are hidden,
+   since the minimap on the right is the intended visual scroll indicator/
+   control instead. */
+.scrollArea {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollArea::-webkit-scrollbar {
+  display: none;
+}
+
+/* Previous/Next pagination buttons get a felt hover reaction (a slight
+   scale-up) rather than sitting flat/static - `transform` is compositor-only,
+   not a layout property, so animating it doesn't conflict with the Motion &
+   Interaction section's "avoid animating layout properties" guidance (that's
+   about width/height). Wrapped in `@media (hover: hover)` so touch devices
+   (no real :hover state) don't get a "stuck" post-tap scale, same convention
+   UploadPage.module.css's Dropzone hover rule already uses. */
+.paginationButton {
+  transition: transform 150ms ease;
+}
+
+@media (hover: hover) {
+  .paginationButton:hover {
+    transform: scale(1.05);
+  }
+}
+
+/* Toolbar icon buttons (Undo/Redo/Split/Delete) - Mantine's own ActionIcon
+   CSS has no transition on its hover background at all (see
+   node_modules/@mantine/core/styles/ActionIcon.css), so hovering one snaps
+   instantly rather than feeling responsive. Adds the standard ~150ms
+   transition (see design-principles.md's Motion & Interaction section) plus
+   the same felt scale-up reaction `.paginationButton` above already uses,
+   at a slightly smaller scale since these are compact icon buttons rather
+   than pill CTAs. `@media (hover: hover)` + `:not(:disabled)` keep touch
+   devices from getting a "stuck" post-tap scale and keep a disabled Undo/
+   Redo from looking interactive, matching the same conventions used
+   elsewhere in this file. */
+.toolbarButton {
+  transition: background-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+@media (hover: hover) {
+  .toolbarButton:hover:not(:disabled) {
+    transform: scale(1.08);
+  }
+}
+
+/* Undo/Redo only (paired with .toolbarButton above, never applied alone -
+   see ChunkPreviewPage.tsx): forces these two to read as quiet, muted
+   icon-only glyphs at rest, accenting to signalBlue only on hover, and
+   staying visibly quieter still once actually disabled.
+
+   Why this exists, concretely (not just "variant=subtle looked wrong"):
+   Mantine's own ActionIcon CSS
+   (node_modules/@mantine/core/styles/ActionIcon.css) unconditionally
+   overrides `background`/`color` to a flat `var(--mantine-color-disabled)`/
+   `var(--mantine-color-disabled-color)` fill the instant the native
+   `disabled` attribute (or `data-disabled`) is present - a rule that fires
+   regardless of `variant`, because it targets `background`/`color`
+   directly rather than going through the `--ai-bg`/`--ai-color` custom
+   properties the variant system otherwise drives. Undo/Redo are the ONLY
+   two buttons in this toolbar that ever pass a `disabled` prop at all
+   (Split/Delete never do) - past.length===0 makes Undo disabled on every
+   fresh page load, and future.length===0 (nothing yet undone) is Redo's
+   default resting state - so in ordinary use these two hit that solid-fill
+   branch far more often than not, while Split/Delete structurally never
+   can. That is the concrete, verified reason an otherwise
+   byte-for-byte-identical `variant="subtle" color="signalBlue"` prop set
+   was rendering these two as loud filled circles: not a subtle/variant
+   resolution bug, a disabled-state CSS override that only these two
+   buttons were ever in a position to trigger.
+
+   Every rule below targets the COMPOUND selector `.toolbarButton
+   .historyButton` written as `.toolbarButton.historyButton` (both classes
+   together - always applied as a pair, see ChunkPreviewPage.tsx) so its
+   specificity (two classes, optionally plus a pseudo-class) unconditionally
+   outranks every one of Mantine's own ActionIcon rules here, all of which
+   are deliberately kept to a single class' worth of specificity via
+   `:where()` internally. That makes this override correct by specificity
+   alone, not a stylesheet-injection-order coincidence - it can't
+   accidentally regress if Mantine's own CSS ever loads after this file's. */
+.toolbarButton.historyButton {
+  background: transparent;
+  color: var(--doc-text-muted);
+}
+
+@media (hover: hover) {
+  .toolbarButton.historyButton:hover:not(:disabled) {
+    color: var(--mantine-color-signalBlue-6);
+  }
+}
+
+/* Disabled (the undo/redo stack on that side is empty) stays visibly
+   quieter than the idle-enabled muted state above - a straight opacity
+   dial-down rather than reaching for a new token, since --doc-text-muted is
+   already this app's dedicated "quiet" color and there's no darker rung
+   below it to use instead. */
+.toolbarButton.historyButton:disabled,
+.toolbarButton.historyButton[data-disabled] {
+  opacity: 0.45;
+}
+
+/* The persistent divider between adjacent chunks - idle, it's a quiet strip
+   (just enough to read as "there's a seam here, and it's grabbable") rather
+   than competing visually with the chunk content above/below it. Hover and
+   keyboard-focus both highlight to signalBlue - this app's documented
+   "default interactive color" (see design-principles.md's Color & Theming),
+   not the sparkOrange signature mark, since resizing a boundary is an
+   unrelated concept from "this chunk has unsaved edits" (the mark's actual
+   meaning). cursor: row-resize signals the drag direction (vertical). */
+.boundaryHandle {
+  padding: 2px 0;
+  color: var(--doc-text-muted);
+  cursor: row-resize;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.boundaryHandle:hover,
+.boundaryHandle:focus-visible {
+  color: var(--mantine-color-signalBlue-6);
+  background-color: rgba(61, 107, 255, 0.08);
+  outline: none;
+}
+
+/* Split tool's live hover preview: a thin line at the exact height a click
+   would cut this chunk at right now (top set inline per-render from
+   cutLineIndex - see ChunkPreviewPage.tsx). pointer-events: none so the
+   indicator itself is never what a mouseenter/click actually lands on -
+   the chunk's own Box handles all of that underneath it. */
+.cutLineIndicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-color: var(--mantine-color-signalBlue-6);
+  box-shadow: 0 0 6px var(--mantine-color-signalBlue-6);
+  pointer-events: none;
+}
+
+/* Delete tool's live hover preview: tints the whole chunk red-ish to read
+   as "this is what a click removes right now" - covers the chunk's own
+   Box entirely (inset 0) but stays click-through (pointer-events: none)
+   for the same reason cutLineIndicator is. */
+.deleteOverlay {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(255, 61, 113, 0.25);
+  pointer-events: none;
+}
+
+/* Search match highlights - applied to every occurrence of the current
+   search query (see splitTextForHighlighting in ChunkPreviewPage.tsx),
+   both in a chunk's own highlight backdrop and the minimap's miniature
+   copy. Resets the browser's default <mark> styling (a plain yellow
+   background/black text) entirely.
+
+   Regular (non-current) matches deliberately do NOT use any of the three
+   brand accents (signalBlue/sparkOrange/alertMagenta) - HIGHLIGHT_COLORS
+   (ChunkPreviewPage.tsx) already cycles through all three of them, at low
+   opacity, as every chunk's OWN background. A same-hue highlight on top of
+   a chunk that happens to land on that exact accent in the rotation just
+   deepens the same color instead of standing out - invisible in practice at
+   the minimap's 4px scale, and easy to miss even in the full-size chunk
+   text. `--doc-text` (this app's off-white body-text token) as a fill is
+   guaranteed to contrast against all three translucent accent washes
+   uniformly, whichever one a given chunk happens to have. The one CURRENT
+   match keeps the same solid sparkOrange-fill/void-text pairing already
+   used everywhere else in the app for a filled sparkOrange surface (see
+   design-principles.md's autoContrast note) - its full-opacity, distinctly
+   different color (rather than a same-hue-just-brighter fill) is what
+   keeps it unambiguously "the one you're on" next to every other, quieter
+   highlighted occurrence. */
+.searchMatchHighlight {
+  background-color: var(--doc-text);
+  color: var(--doc-void);
+  border-radius: 2px;
+}
+
+.searchMatchHighlightCurrent {
+  background-color: var(--mantine-color-sparkOrange-6);
+  color: var(--doc-void);
+  border-radius: 2px;
+}
