@@ -1,0 +1,20 @@
+/*
+ * LoginPage renders outside AppLayout (no AppShell, no header/navbar - see
+ * App.tsx's standalone `/login` route), so unlike every other page it has no
+ * ancestor already providing a full-viewport surface/padding. `.page` owns
+ * that itself: fills the viewport and centers the card both axes. Mobile-
+ * first: the card is 100% width up to `.card`'s own max-width, so it never
+ * needs a breakpoint to look right on a phone.
+ */
+.page {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--mantine-spacing-lg);
+}
+
+.card {
+  width: 100%;
+  max-width: 36rem;
+}

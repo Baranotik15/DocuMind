@@ -98,6 +98,19 @@ html[data-mantine-color-scheme='light'] .mantine-Select-option:hover {
 }
 
 /*
+ * PasswordInput's show/hide (eye) toggle renders with Mantine's default
+ * dimmed icon color, which reads as barely-there against this app's dark
+ * surface. `.mantine-PasswordInput-visibilityToggle` is Mantine's own
+ * stable class for that button (same "target the stable class, not the
+ * per-build hash" approach as the fixes above) - bumped to the app's
+ * regular muted-text token so it's legible without being as loud as full
+ * `--doc-text`.
+ */
+.mantine-PasswordInput-visibilityToggle {
+  color: var(--doc-text-muted);
+}
+
+/*
  * App-wide custom scrollbar - a slim hairline-colored thumb, brightening to
  * signalBlue on hover, instead of either the OS-default scrollbar or hiding
  * it outright. Previously duplicated per-page (ChatPage.module.css's

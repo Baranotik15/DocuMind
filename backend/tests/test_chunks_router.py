@@ -11,6 +11,14 @@ from app.documents.pipeline import DocumentProcessingError
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 
 
+@pytest.fixture
+def client(authenticated_client: TestClient) -> TestClient:
+    # chunks_router now requires a session (see app/main.py) - overrides
+    # conftest.py's plain, unauthenticated `client` fixture for every test
+    # in this module.
+    return authenticated_client
+
+
 @pytest.fixture(autouse=True)
 def _celery_eager() -> None:
     # Matches the project-wide convention (test_documents_router.py,

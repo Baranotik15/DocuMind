@@ -3,6 +3,10 @@ import type { ChatMessage, Chunk, ChunkGraph, DashboardEvent, DashboardStats, Da
 import { httpApiClient } from './httpClient'
 
 export interface ApiClient {
+  login(email: string, password: string): Promise<{ email: string }>
+  logout(): Promise<void>
+  /** GET /internal/auth/me - resolves with the signed-in user, or rejects (401) if there's no valid session. Used by RequireAuth.tsx's route guard. */
+  getCurrentUser(): Promise<{ email: string }>
   listDocuments(): Promise<DocumentSummary[]>
   uploadDocument(file: File, overwrite?: boolean): Promise<DocumentSummary>
   deleteDocument(documentId: string): Promise<void>

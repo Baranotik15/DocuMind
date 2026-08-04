@@ -12,6 +12,14 @@ from app.db.sync_session import SyncSessionLocal
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 
 
+@pytest.fixture
+def client(authenticated_client: TestClient) -> TestClient:
+    # chat_router now requires a session (see app/main.py) - overrides
+    # conftest.py's plain, unauthenticated `client` fixture for every test
+    # in this module.
+    return authenticated_client
+
+
 async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
     # External-boundary mock (app.chat.router.embed_texts) so no real
     # OpenAI call happens - same pattern as test_pipeline.py /

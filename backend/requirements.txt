@@ -17,3 +17,4 @@ python-docx
 python-multipart
 numpy
 umap-learn
+bcrypt
