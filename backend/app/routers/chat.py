@@ -4,10 +4,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.constants import ChatRole, DashboardEventType
 from app.db.session import get_session
 from app.services.events import record_event_async
 from app.services.llm import LLMError, embed_texts, generate_reply
-from app.services.vectors import format_vector
+from app.services.retrieval import fetch_similar_chunks
 
 router = APIRouter()
 
@@ -21,6 +22,11 @@ class TopChunksRequest(BaseModel):
 
 
 TOP_CHUNKS_LIMIT = 5
+
+# Shared by both LLM-call try/except blocks below (send_message's embed +
+# chat-completion step, top_chunks's embed step) - same error contract
+# either way: any LLMError becomes a 502 with this detail.
+_CHAT_COMPLETION_FAILED_ERROR = "chat_completion_failed"
 
 
 def _message_summary(row) -> dict:
@@ -44,7 +50,9 @@ async def send_message(
     # 1. Insert + commit the user message immediately, so it's persisted
     # even if everything below fails.
     await session.execute(
-        text("INSERT INTO chat_messages (role, content) VALUES ('user', :content)"),
+        text(
+            f"INSERT INTO chat_messages (role, content) VALUES ('{ChatRole.USER}', :content)"
+        ),
         {"content": body.content},
     )
     await session.commit()
@@ -62,27 +70,15 @@ async def send_message(
         # 3. Similarity search across ready documents' chunks. Empty result
         # is valid (no ready documents yet) - passed through as an empty
         # context list, not special-cased.
-        rows = (
-            await session.execute(
-                text(
-                    "SELECT chunks.edited_content FROM chunks "
-                    "JOIN documents ON documents.id = chunks.document_id "
-                    "WHERE documents.status = 'ready' "
-                    "ORDER BY chunks.embedding <=> :query_embedding ::vector "
-                    "LIMIT :top_k"
-                ),
-                {
-                    "query_embedding": format_vector(query_embedding),
-                    "top_k": get_settings().chat_retrieval_top_k,
-                },
-            )
-        ).all()
+        rows = await fetch_similar_chunks(
+            session, query_embedding, get_settings().chat_retrieval_top_k
+        )
         context_chunks = [row.edited_content for row in rows]
 
         # 4. Generate the assistant reply.
         reply = await generate_reply(body.content, context_chunks)
     except LLMError:
-        raise HTTPException(status_code=502, detail="chat_completion_failed")
+        raise HTTPException(status_code=502, detail=_CHAT_COMPLETION_FAILED_ERROR)
 
     # 5. Insert + commit the assistant message, then record + commit the
     # dashboard event.
@@ -90,7 +86,7 @@ async def send_message(
         await session.execute(
             text(
                 "INSERT INTO chat_messages (role, content) "
-                "VALUES ('assistant', :content) "
+                f"VALUES ('{ChatRole.ASSISTANT}', :content) "
                 "RETURNING id, role, content, disliked"
             ),
             {"content": reply},
@@ -98,7 +94,7 @@ async def send_message(
     ).one()
     await session.commit()
     await record_event_async(
-        session, "chat.message_sent", f"message_id={assistant_row.id}"
+        session, DashboardEventType.CHAT_MESSAGE_SENT, f"message_id={assistant_row.id}"
     )
     await session.commit()
 
@@ -170,30 +166,15 @@ async def top_chunks(
         # from the OpenAI call becomes a 502.
         [query_embedding] = await embed_texts([body.content])
     except LLMError:
-        raise HTTPException(status_code=502, detail="chat_completion_failed")
+        raise HTTPException(status_code=502, detail=_CHAT_COMPLETION_FAILED_ERROR)
 
     # Same similarity search as send_message's retrieval step, but also
     # projecting the raw cosine distance so a match percentage can be
     # computed per row. Empty result (no ready documents, or none match)
     # is valid - passed straight through as an empty list, not an error.
-    rows = (
-        await session.execute(
-            text(
-                "SELECT chunks.id, chunks.document_id, documents.filename, "
-                "chunks.edited_content, "
-                "chunks.embedding <=> :query_embedding ::vector AS distance "
-                "FROM chunks "
-                "JOIN documents ON documents.id = chunks.document_id "
-                "WHERE documents.status = 'ready' "
-                "ORDER BY chunks.embedding <=> :query_embedding ::vector "
-                "LIMIT :top_k"
-            ),
-            {
-                "query_embedding": format_vector(query_embedding),
-                "top_k": TOP_CHUNKS_LIMIT,
-            },
-        )
-    ).all()
+    rows = await fetch_similar_chunks(
+        session, query_embedding, TOP_CHUNKS_LIMIT, with_distance=True
+    )
 
     return [
         _top_chunk_summary(

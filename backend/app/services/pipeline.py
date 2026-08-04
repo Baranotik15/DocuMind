@@ -3,6 +3,7 @@ import asyncio
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.constants import DashboardEventType, DocumentStatus
 from app.services.documents import split_into_chunks
 from app.services.events import record_event_sync
 from app.services.llm import embed_texts
@@ -59,12 +60,15 @@ def mark_document_failed(document_id: str, session: Session, exc: Exception) -> 
     and the error is always visible as a dashboard event."""
     session.rollback()
     session.execute(
-        text("UPDATE documents SET status = 'failed' WHERE id = :document_id"),
+        text(
+            f"UPDATE documents SET status = '{DocumentStatus.FAILED}' "
+            "WHERE id = :document_id"
+        ),
         {"document_id": document_id},
     )
     record_event_sync(
         session,
-        "document.chunking_failed",
+        DashboardEventType.DOCUMENT_CHUNKING_FAILED,
         f"document_id={document_id}: {exc}",
     )
     session.commit()
@@ -79,11 +83,16 @@ def _start_chunking(document_id: str, session: Session) -> None:
     progress" for the whole duration of that work, not just once it
     succeeds."""
     session.execute(
-        text("UPDATE documents SET status = 'chunking' WHERE id = :document_id"),
+        text(
+            f"UPDATE documents SET status = '{DocumentStatus.CHUNKING}' "
+            "WHERE id = :document_id"
+        ),
         {"document_id": document_id},
     )
     record_event_sync(
-        session, "document.chunking_started", f"document_id={document_id}"
+        session,
+        DashboardEventType.DOCUMENT_CHUNKING_STARTED,
+        f"document_id={document_id}",
     )
     session.commit()
 
@@ -126,11 +135,16 @@ def _replace_chunks(document_id: str, chunk_texts: list[str], session: Session) 
             },
         )
     session.execute(
-        text("UPDATE documents SET status = 'ready' WHERE id = :document_id"),
+        text(
+            f"UPDATE documents SET status = '{DocumentStatus.READY}' "
+            "WHERE id = :document_id"
+        ),
         {"document_id": document_id},
     )
     record_event_sync(
-        session, "document.chunking_succeeded", f"document_id={document_id}"
+        session,
+        DashboardEventType.DOCUMENT_CHUNKING_SUCCEEDED,
+        f"document_id={document_id}",
     )
     session.commit()
 

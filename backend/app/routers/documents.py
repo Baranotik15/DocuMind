@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.constants import DashboardEventType, DocumentStatus, SUPPORTED_DOCUMENT_EXTENSIONS
 from app.db.session import get_session
 from app.deps import get_storage
 from app.services.events import record_event_async
@@ -36,13 +37,12 @@ class SaveChunksRequest(BaseModel):
     # reconstruction (`"".join(...)`) followed by a full algorithmic
     # re-chunk.
 
-# Mirrors app.services.documents.extract_text's supported extension set - kept as a
-# local constant (rather than importing that module's private set) so this
-# router only ever validates the *extension*, never triggers extraction
-# itself. Actual parsing (and its failure handling) stays entirely on the
-# async pipeline, per the spec's "corrupt file -> failed status, not a
-# synchronous 400" requirement.
-_SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt"}
+# Detail codes shared across more than one endpoint below - kept as
+# constants so all raise sites for the same condition stay in sync (see
+# app/constants.py for the cross-file DocumentStatus/DashboardEventType
+# registries these endpoints also use).
+_DOCUMENT_PROCESSING_ERROR = "document_processing"
+_DOCUMENT_NOT_FOUND_ERROR = "document_not_found"
 
 
 def _document_summary(row) -> dict:
@@ -67,7 +67,7 @@ async def upload_document(
     full contract."""
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
-    if extension not in _SUPPORTED_EXTENSIONS:
+    if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
         raise HTTPException(status_code=400, detail="unsupported_file_type")
 
     data = await file.read()
@@ -82,8 +82,8 @@ async def upload_document(
         )
     ).one_or_none()
 
-    if existing is not None and existing.status == "chunking":
-        raise HTTPException(status_code=409, detail="document_processing")
+    if existing is not None and existing.status == DocumentStatus.CHUNKING:
+        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
 
     if existing is not None and not overwrite:
         raise HTTPException(status_code=409, detail="duplicate_filename")
@@ -99,14 +99,16 @@ async def upload_document(
             await session.execute(
                 text(
                     "INSERT INTO documents (filename, storage_key, status) "
-                    "VALUES (:filename, :storage_key, 'uploaded') "
+                    f"VALUES (:filename, :storage_key, '{DocumentStatus.UPLOADED}') "
                     "RETURNING id, filename, status, uploaded_at"
                 ),
                 {"filename": filename, "storage_key": storage_key},
             )
         ).one()
         storage.save(storage_key, data)
-        await record_event_async(session, "document.uploaded", f"document_id={row.id}")
+        await record_event_async(
+            session, DashboardEventType.DOCUMENT_UPLOADED, f"document_id={row.id}"
+        )
         await session.commit()
     else:
         # Reuse the existing row's own storage_key so an overwrite replaces
@@ -116,13 +118,16 @@ async def upload_document(
         row = (
             await session.execute(
                 text(
-                    "UPDATE documents SET status = 'uploaded' WHERE id = :id "
+                    f"UPDATE documents SET status = '{DocumentStatus.UPLOADED}' "
+                    "WHERE id = :id "
                     "RETURNING id, filename, status, uploaded_at"
                 ),
                 {"id": existing.id},
             )
         ).one()
-        await record_event_async(session, "document.uploaded", f"document_id={row.id}")
+        await record_event_async(
+            session, DashboardEventType.DOCUMENT_UPLOADED, f"document_id={row.id}"
+        )
         await session.commit()
 
     # .delay() is a plain synchronous call (it blocks on a broker round trip
@@ -178,10 +183,10 @@ async def delete_document(
     ).one_or_none()
 
     if row is None:
-        raise HTTPException(status_code=404, detail="document_not_found")
+        raise HTTPException(status_code=404, detail=_DOCUMENT_NOT_FOUND_ERROR)
 
-    if row.status == "chunking":
-        raise HTTPException(status_code=409, detail="document_processing")
+    if row.status == DocumentStatus.CHUNKING:
+        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
 
     try:
         storage.delete(row.storage_key)
@@ -197,7 +202,7 @@ async def delete_document(
     )
     await record_event_async(
         session,
-        "document.deleted",
+        DashboardEventType.DOCUMENT_DELETED,
         f"document_id={document_id}, filename={row.filename}",
     )
     await session.commit()
@@ -245,8 +250,9 @@ async def save_chunks(
     it must stay a single statement, not a SELECT-then-UPDATE."""
     result = await session.execute(
         text(
-            "UPDATE documents SET status = 'chunking' "
-            "WHERE id = :document_id AND status IN ('ready', 'failed') "
+            f"UPDATE documents SET status = '{DocumentStatus.CHUNKING}' "
+            "WHERE id = :document_id AND status IN "
+            f"('{DocumentStatus.READY}', '{DocumentStatus.FAILED}') "
             "RETURNING id"
         ),
         {"document_id": document_id},
@@ -266,8 +272,8 @@ async def save_chunks(
             )
         ).one_or_none()
         if exists is None:
-            raise HTTPException(status_code=404, detail="document_not_found")
-        raise HTTPException(status_code=409, detail="document_processing")
+            raise HTTPException(status_code=404, detail=_DOCUMENT_NOT_FOUND_ERROR)
+        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
 
     await session.commit()
 
