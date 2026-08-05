@@ -42,7 +42,7 @@ vi.mock('3d-force-graph', () => ({
 // `fetch` rather than relying on mockClient.ts's seeded in-memory data.
 
 const documents: DocumentSummary[] = [
-  { id: 'doc-1', filename: 'onboarding-notes.docx', status: 'ready', uploadedAt: '2026-01-01T00:00:00.000Z' },
+  { id: 'doc-1', filename: 'onboarding-notes.docx', status: 'ready', uploadedAt: '2026-01-01T00:00:00.000Z', fileSizeBytes: 51_200 },
 ]
 
 const events: DashboardEvent[] = [

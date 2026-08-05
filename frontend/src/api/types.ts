@@ -3,6 +3,8 @@ export interface DocumentSummary {
   filename: string
   status: 'uploaded' | 'chunking' | 'ready' | 'failed'
   uploadedAt: string
+  /** Uploaded file's exact byte size. null only for a pre-existing row from before this field existed. */
+  fileSizeBytes: number | null
 }
 
 export interface Chunk {

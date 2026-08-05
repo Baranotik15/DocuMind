@@ -20,18 +20,21 @@ const documents: DocumentSummary[] = [
     filename: 'architecture-guide.pdf',
     status: 'ready',
     uploadedAt: '2026-07-20T09:15:00.000Z',
+    fileSizeBytes: 428_112,
   },
   {
     id: 'doc-2',
     filename: 'onboarding-notes.docx',
     status: 'uploaded',
     uploadedAt: '2026-07-28T14:02:00.000Z',
+    fileSizeBytes: 51_200,
   },
   {
     id: 'doc-3',
     filename: 'release-plan.md',
     status: 'chunking',
     uploadedAt: '2026-07-30T11:47:00.000Z',
+    fileSizeBytes: 8_940,
   },
 ]
 
@@ -175,6 +178,7 @@ export const mockApiClient: ApiClient = {
       filename: file.name,
       status: 'uploaded',
       uploadedAt: new Date().toISOString(),
+      fileSizeBytes: file.size,
     }
     documents.push(document)
     return { ...document }

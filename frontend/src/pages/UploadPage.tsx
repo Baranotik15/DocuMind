@@ -27,6 +27,7 @@ import { apiClient } from '../api/client'
 import { ApiConflictError } from '../api/httpClient'
 import type { DocumentSummary } from '../api/types'
 import { formatDateTime } from '../utils/formatDateTime'
+import { formatFileSize } from '../utils/formatFileSize'
 import { fuzzyMatchesFilename } from '../utils/fuzzyMatch'
 
 // While any listed document is still 'uploaded'/'chunking', re-fetch the
@@ -55,7 +56,7 @@ function isUnsettled(document: DocumentSummary): boolean {
 // whatever `listDocuments()` already returned (no backend involvement) - the
 // operator clicks a column header to sort by it, rather than typing into
 // separate filter inputs.
-type SortColumn = 'filename' | 'status' | 'uploadedAt'
+type SortColumn = 'filename' | 'status' | 'uploadedAt' | 'fileSizeBytes'
 type SortDirection = 'asc' | 'desc'
 
 /** One active sort criterion. The overall sort state is an ORDERED array of these - see the `sort` state below for the multi-column model. */
@@ -80,6 +81,12 @@ function compareDocuments(a: DocumentSummary, b: DocumentSummary, column: SortCo
   }
   if (column === 'status') {
     return STATUS_SORT_RANK[a.status] - STATUS_SORT_RANK[b.status]
+  }
+  if (column === 'fileSizeBytes') {
+    // null (a pre-existing row with no recorded size) sorts as smallest,
+    // same "unknown reads as least" convention as an empty string would
+    // for filename.
+    return (a.fileSizeBytes ?? -1) - (b.fileSizeBytes ?? -1)
   }
   return new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime()
 }
@@ -615,6 +622,7 @@ export function UploadPage(): JSX.Element {
                   `handleSort` above. */}
               <SortableHeader label="Filename" column="filename" sort={sort} onSort={handleSort} />
               <SortableHeader label="Status" column="status" sort={sort} onSort={handleSort} />
+              <SortableHeader label="Size" column="fileSizeBytes" sort={sort} onSort={handleSort} />
               <SortableHeader label="Uploaded at" column="uploadedAt" sort={sort} onSort={handleSort} />
               <Table.Th>Actions</Table.Th>
             </Table.Tr>
@@ -622,7 +630,7 @@ export function UploadPage(): JSX.Element {
           <Table.Tbody>
             {sortedDocuments.length === 0 ? (
               <Table.Tr>
-                <Table.Td colSpan={4}>
+                <Table.Td colSpan={5}>
                   <Text c="dimmed" ta="center" py="md">
                     {documents.length === 0 ? 'No documents uploaded yet.' : 'No documents match your filter.'}
                   </Text>
@@ -635,6 +643,7 @@ export function UploadPage(): JSX.Element {
                   <Table.Td>
                     <StatusBadge status={document.status} />
                   </Table.Td>
+                  <Table.Td ff="monospace">{formatFileSize(document.fileSizeBytes)}</Table.Td>
                   <Table.Td ff="monospace">{formatDateTime(document.uploadedAt)}</Table.Td>
                   <Table.Td>
                     {/* Edit navigates to the full-page chunk preview for this
