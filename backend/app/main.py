@@ -26,26 +26,19 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth_router, prefix="/internal")
-    app.include_router(
-        documents_router, prefix="/internal", dependencies=[Depends(require_session)]
-    )
-    app.include_router(
-        chunks_router, prefix="/internal", dependencies=[Depends(require_session)]
-    )
-    app.include_router(
-        chat_router, prefix="/internal", dependencies=[Depends(require_session)]
-    )
-    app.include_router(
-        dashboard_router, prefix="/internal", dependencies=[Depends(require_session)]
-    )
-    app.include_router(
+    # Every other router requires a session - looped rather than six
+    # near-identical include_router(..., prefix="/internal",
+    # dependencies=[Depends(require_session)]) calls, so a router added
+    # here later can't accidentally be pasted in without the guard.
+    for router in (
+        documents_router,
+        chunks_router,
+        chat_router,
+        dashboard_router,
         dashboard_events_router,
-        prefix="/internal",
-        dependencies=[Depends(require_session)],
-    )
-    app.include_router(
-        smoke_jobs_router, prefix="/internal", dependencies=[Depends(require_session)]
-    )
+        smoke_jobs_router,
+    ):
+        app.include_router(router, prefix="/internal", dependencies=[Depends(require_session)])
 
     @app.get("/health")
     def health() -> dict[str, str]:

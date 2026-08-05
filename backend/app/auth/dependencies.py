@@ -1,4 +1,3 @@
-import hashlib
 from datetime import datetime, timezone
 
 from fastapi import Cookie, Depends, HTTPException
@@ -6,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.constants import SESSION_COOKIE_NAME
+from app.auth.hashing import hash_session_token
 from app.db.session import get_session
 
 _NOT_AUTHENTICATED_ERROR = "not_authenticated"
@@ -27,7 +27,7 @@ async def require_session(
     if session_token is None:
         raise HTTPException(status_code=401, detail=_NOT_AUTHENTICATED_ERROR)
 
-    token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
+    token_hash = hash_session_token(session_token)
     row = (
         await session.execute(
             text(

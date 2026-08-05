@@ -45,6 +45,32 @@ class EmptyManualChunkError(Exception):
     extracted at all, vs. an explicit-but-empty manual chunk)."""
 
 
+def _transition_status(
+    document_id: str,
+    session: Session,
+    status: DocumentStatus,
+    event_type: DashboardEventType,
+    detail: str | None = None,
+) -> None:
+    """Shared status-transition step used by every place in this module
+    that moves a document to a new status: updates `documents.status`
+    (via a bound parameter, not string-interpolated - the previous copies
+    of this each embedded the status directly into the SQL text), records
+    the matching dashboard event, then commits. `detail` defaults to the
+    plain `document_id=<id>` form; callers needing more (e.g.
+    mark_document_failed's error detail) pass their own."""
+    session.execute(
+        text("UPDATE documents SET status = :status WHERE id = :document_id"),
+        {"status": str(status), "document_id": document_id},
+    )
+    record_event_sync(
+        session,
+        event_type,
+        detail if detail is not None else f"document_id={document_id}",
+    )
+    session.commit()
+
+
 def mark_document_failed(document_id: str, session: Session, exc: Exception) -> None:
     """Shared failure boundary: rolls back any partial work on `session`,
     marks the document 'failed', records a 'document.chunking_failed'
@@ -60,19 +86,13 @@ def mark_document_failed(document_id: str, session: Session, exc: Exception) -> 
     give the same guarantee: the document never gets stuck mid-pipeline,
     and the error is always visible as a dashboard event."""
     session.rollback()
-    session.execute(
-        text(
-            f"UPDATE documents SET status = '{DocumentStatus.FAILED}' "
-            "WHERE id = :document_id"
-        ),
-        {"document_id": document_id},
-    )
-    record_event_sync(
+    _transition_status(
+        document_id,
         session,
+        DocumentStatus.FAILED,
         DashboardEventType.DOCUMENT_CHUNKING_FAILED,
-        f"document_id={document_id}: {exc}",
+        detail=f"document_id={document_id}: {exc}",
     )
-    session.commit()
     raise DocumentProcessingError(str(exc)) from exc
 
 
@@ -83,19 +103,9 @@ def _start_chunking(document_id: str, session: Session) -> None:
     splitting/embedding work begins) so the document is visibly "in
     progress" for the whole duration of that work, not just once it
     succeeds."""
-    session.execute(
-        text(
-            f"UPDATE documents SET status = '{DocumentStatus.CHUNKING}' "
-            "WHERE id = :document_id"
-        ),
-        {"document_id": document_id},
+    _transition_status(
+        document_id, session, DocumentStatus.CHUNKING, DashboardEventType.DOCUMENT_CHUNKING_STARTED
     )
-    record_event_sync(
-        session,
-        DashboardEventType.DOCUMENT_CHUNKING_STARTED,
-        f"document_id={document_id}",
-    )
-    session.commit()
 
 
 def _replace_chunks(document_id: str, chunk_texts: list[str], session: Session) -> None:
@@ -135,19 +145,9 @@ def _replace_chunks(document_id: str, chunk_texts: list[str], session: Session) 
                 "embedding": format_vector(embedding),
             },
         )
-    session.execute(
-        text(
-            f"UPDATE documents SET status = '{DocumentStatus.READY}' "
-            "WHERE id = :document_id"
-        ),
-        {"document_id": document_id},
+    _transition_status(
+        document_id, session, DocumentStatus.READY, DashboardEventType.DOCUMENT_CHUNKING_SUCCEEDED
     )
-    record_event_sync(
-        session,
-        DashboardEventType.DOCUMENT_CHUNKING_SUCCEEDED,
-        f"document_id={document_id}",
-    )
-    session.commit()
 
 
 def run_pipeline(document_id: str, source_text: str, session: Session) -> None:

@@ -12,17 +12,14 @@ from app.db.session import get_session
 # accepting a Save is inherently a write against the owning document's
 # status, and triggering a re-chunk means enqueueing the Celery task that
 # owns the document pipeline (see app.documents.pipeline's own docstring).
-from app.documents.constants import DocumentStatus
+from app.documents.constants import (
+    DOCUMENT_NOT_FOUND_ERROR,
+    DOCUMENT_PROCESSING_ERROR,
+    DocumentStatus,
+)
 from app.documents.tasks import run_document_pipeline
 
 router = APIRouter()
-
-# Detail codes shared across both endpoints below - kept as constants so
-# both raise sites for the same condition stay in sync (see
-# app/documents/router.py for its own copy of the same two literals, used
-# for the same conditions on the sibling document-level endpoints).
-_DOCUMENT_PROCESSING_ERROR = "document_processing"
-_DOCUMENT_NOT_FOUND_ERROR = "document_not_found"
 
 
 def _chunk_summary(row) -> ChunkSummary:
@@ -71,12 +68,16 @@ async def save_chunks(
     it must stay a single statement, not a SELECT-then-UPDATE."""
     result = await session.execute(
         text(
-            f"UPDATE documents SET status = '{DocumentStatus.CHUNKING}' "
-            "WHERE id = :document_id AND status IN "
-            f"('{DocumentStatus.READY}', '{DocumentStatus.FAILED}') "
+            "UPDATE documents SET status = :chunking "
+            "WHERE id = :document_id AND status IN (:ready, :failed) "
             "RETURNING id"
         ),
-        {"document_id": str(document_id)},
+        {
+            "document_id": str(document_id),
+            "chunking": str(DocumentStatus.CHUNKING),
+            "ready": str(DocumentStatus.READY),
+            "failed": str(DocumentStatus.FAILED),
+        },
     )
     row = result.one_or_none()
 
@@ -93,8 +94,8 @@ async def save_chunks(
             )
         ).one_or_none()
         if exists is None:
-            raise HTTPException(status_code=404, detail=_DOCUMENT_NOT_FOUND_ERROR)
-        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
+            raise HTTPException(status_code=404, detail=DOCUMENT_NOT_FOUND_ERROR)
+        raise HTTPException(status_code=409, detail=DOCUMENT_PROCESSING_ERROR)
 
     await session.commit()
 

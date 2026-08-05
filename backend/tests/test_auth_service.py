@@ -4,12 +4,12 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.auth.cli import UserNotFoundError, create_user, revoke_user
+from app.auth.service import UserNotFoundError, create_user, revoke_user
 from app.db.sync_session import SyncSessionLocal
 
 
 def _unique_email() -> str:
-    return f"auth-cli-{uuid.uuid4()}@example.com"
+    return f"auth-service-{uuid.uuid4()}@example.com"
 
 
 def _user_row(session, email: str):

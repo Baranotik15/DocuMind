@@ -1,4 +1,3 @@
-import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -9,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.auth.constants import SESSION_COOKIE_NAME
 from app.auth.dependencies import require_session
-from app.auth.hashing import hash_password, verify_password
+from app.auth.hashing import hash_password, hash_session_token, verify_password
 from app.auth.schemas import LoginRequest, LoginResponse
 from app.config import get_settings
 from app.db.session import get_session
@@ -62,7 +61,7 @@ async def login(
 
     settings = get_settings()
     raw_token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    token_hash = hash_session_token(raw_token)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
 
     await session.execute(
@@ -101,7 +100,7 @@ async def logout(
     not an error - this always returns 204.
     """
     if session_token is not None:
-        token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
+        token_hash = hash_session_token(session_token)
         await session.execute(
             text("DELETE FROM sessions WHERE token_hash = :token_hash"),
             {"token_hash": token_hash},
