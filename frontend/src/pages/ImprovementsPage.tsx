@@ -2,12 +2,23 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { ActionIcon, Badge, Box, Button, Group, Paper, Stack, Text, Title } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Box, Button, Group, Loader, Paper, Stack, Text, Title, UnstyledButton } from '@mantine/core'
+import { Link } from 'react-router-dom'
 
 import { apiClient } from '../api/client'
-import type { DislikedMessage, ImprovementsRange, NoAnswerMessage } from '../api/types'
+import type {
+  AnalysisConflict,
+  AnalysisReportDetail,
+  AnalysisReportSummary,
+  AnalysisRunStatus,
+  DislikedMessage,
+  ImprovementsRange,
+  NoAnswerMessage,
+} from '../api/types'
 import { SegmentedToggle } from '../components/SegmentedToggle'
 import classes from './ImprovementsPage.module.css'
+import { BotAvatar } from './ChatPage'
+import { POLL_INTERVAL_MS } from './UploadPage'
 import { formatDateTime } from '../utils/formatDateTime'
 
 type ImprovementsTab = 'lists' | 'analysis'
@@ -241,24 +252,322 @@ function getCreatedAt(item: NoAnswerMessage): string {
   return item.createdAt
 }
 
+// Badge color/label per AnalysisRunStatus - same "map status to an existing
+// theme token" convention as UploadPage.tsx's own STATUS_META (teal for a
+// clean success, alertMagenta for the same failure tone the dislike button/
+// Dislikes chart use everywhere else, signalBlue for "actively happening").
+const ANALYSIS_STATUS_META: Record<AnalysisRunStatus, { label: string; color: string }> = {
+  running: { label: 'Running', color: 'signalBlue' },
+  completed: { label: 'Completed', color: 'teal' },
+  failed: { label: 'Failed', color: 'alertMagenta' },
+}
+
+interface AnalysisBotHeroProps {
+  message: string
+  /** True only for the in-progress state - the empty-history state has nothing to spin for. */
+  showLoader?: boolean
+}
+
 /**
- * Sub-tab 2's placeholder shell - a future documentation-gap-analysis
- * feature, not implemented yet (see .claude/specs/improvements-page.md's
- * Non-Goals). `disabled` (and no `onClick` at all) makes it visibly read as
- * "not wired up yet" rather than a button that silently does nothing.
+ * The same centered bot-identity hero (avatar + soft signalBlue glow) the
+ * placeholder this tab replaces already used - preserved here for the two
+ * states that still have no real report content to show: no runs exist yet,
+ * or the selected run is still in progress. Once a report is actually
+ * selected and settled, this hero is never shown - see AnalysisTab's own
+ * contentBody below.
  */
-function AnalysisPlaceholder(): JSX.Element {
+function AnalysisBotHero({ message, showLoader }: AnalysisBotHeroProps): JSX.Element {
   return (
-    <Paper radius="lg" p="xl" bg="var(--doc-surface)" withBorder style={{ boxShadow: '0 24px 48px -24px rgba(0, 0, 0, 0.55)' }}>
-      <Stack gap="md" align="center" py="xl">
-        <Title order={3}>Documentation Gap Analysis</Title>
-        <Text c="dimmed" ta="center" maw={480}>
-          Automatically review dislikes and no-answer questions to suggest documentation improvements. Not available yet.
+    <Stack align="center" justify="center" gap="md" style={{ height: '100%' }}>
+      <Box style={{ filter: 'drop-shadow(0 0 24px rgba(61, 107, 255, 0.45))' }}>
+        <BotAvatar />
+      </Box>
+      <Title order={3}>Documentation Gap Analysis</Title>
+      <Text c="dimmed" ta="center" maw={480}>
+        {message}
+      </Text>
+      {showLoader ? <Loader color="sparkOrange" /> : null}
+    </Stack>
+  )
+}
+
+interface ConflictCardProps {
+  conflict: AnalysisConflict
+}
+
+/** One side of a ConflictCard (below) - a document's filename, a "view chunk" link into ChunkPreviewPage.tsx's own route, and the snapshotted chunk excerpt. */
+function ConflictSide({
+  documentId,
+  filename,
+  content,
+}: {
+  documentId: string
+  filename: string
+  content: string
+}): JSX.Element {
+  return (
+    <Stack gap={4} style={{ flex: 1, minWidth: 220 }}>
+      <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+        <Text fw={600} size="sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {filename}
         </Text>
-        <Button variant="filled" color="sparkOrange" radius="xl" disabled>
-          Analyze with AI
-        </Button>
+        {/* aria-label (not just the link's own short visible text) carries
+            the filename, so the two sides' links stay distinguishable by
+            accessible name alone - same reasoning as UploadPage.tsx's own
+            `Edit ${document.filename}` action icon labels. */}
+        <Link to={`/upload/${documentId}/chunks`} aria-label={`View ${filename} chunk`} style={{ flexShrink: 0, color: 'var(--mantine-color-signalBlue-6)' }}>
+          View chunk
+        </Link>
+      </Group>
+      <Text size="sm" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+        {content}
+      </Text>
+    </Stack>
+  )
+}
+
+/** One detected cross-document conflict - both sides' chunk excerpts side by side, the LLM's own description of the contradiction, and a "view chunk" link per side into ChunkPreviewPage.tsx. */
+function ConflictCard({ conflict }: ConflictCardProps): JSX.Element {
+  return (
+    <Paper radius="lg" p="md" bg="var(--doc-bg)" style={{ border: '1px solid var(--doc-hairline)', borderLeft: '3px solid var(--mantine-color-alertMagenta-6)' }}>
+      <Stack gap="sm">
+        <Text size="sm">{conflict.description}</Text>
+        <Group align="flex-start" gap="md" wrap="wrap">
+          <ConflictSide documentId={conflict.documentAId} filename={conflict.documentAFilename} content={conflict.chunkAContent} />
+          <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
+          <ConflictSide documentId={conflict.documentBId} filename={conflict.documentBFilename} content={conflict.chunkBContent} />
+        </Group>
       </Stack>
+    </Paper>
+  )
+}
+
+/**
+ * Sub-tab 2, wired up for real: a history sidebar of every past run (newest
+ * first, per GET /internal/analysis/reports) next to the selected run's own
+ * gap-analysis report and conflict list, with an "Analyze with AI" button
+ * that starts a new background run and polls until it settles - see
+ * .claude/plans/2026-08-06-documentation-analysis.md's Task 7.
+ */
+function AnalysisTab(): JSX.Element {
+  const [reports, setReports] = useState<AnalysisReportSummary[]>([])
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
+  const [selectedReport, setSelectedReport] = useState<AnalysisReportDetail | null>(null)
+  // True only for the brief window between clicking "Analyze with AI" and
+  // the POST resolving - NOT the same as the selected report's own
+  // status==='running' below, which covers the whole run's duration (the
+  // run itself keeps going in the background long after this flips back to
+  // false - the polling effect further down is what picks up its eventual
+  // completion).
+  const [isStarting, setIsStarting] = useState(false)
+
+  // Initial fetch of every past run - selects the newest one (reports[0],
+  // since the backend already returns newest-first) by default, but only if
+  // nothing is selected yet (the `current ?? ...` guard), so this effect
+  // re-running for an unrelated reason never stomps on an operator's own
+  // in-progress selection.
+  useEffect(() => {
+    let cancelled = false
+    void apiClient.listAnalysisReports().then((result) => {
+      if (!cancelled) {
+        setReports(result)
+        setSelectedReportId((current) => current ?? result[0]?.id ?? null)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Fetches the selected report's own full detail (gapAnalysis/conflicts/
+  // totalTokens/errorDetail - none of which the summary list above carries)
+  // whenever the selection changes.
+  useEffect(() => {
+    if (!selectedReportId) {
+      setSelectedReport(null)
+      return
+    }
+    let cancelled = false
+    void apiClient.getAnalysisReport(selectedReportId).then((result) => {
+      if (!cancelled) {
+        setSelectedReport(result)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedReportId])
+
+  // Light polling: while the most-recently-started report (reports[0], the
+  // list is newest-first) is still running, periodically re-fetch the
+  // summary list so its status genuinely progresses to completed/failed on
+  // its own - same isUnsettled-driven useEffect shape (dependency on the
+  // very state it re-fetches, so a poll response that changes that state
+  // naturally reschedules or stops the next tick) as UploadPage.tsx's own
+  // document-status polling, reusing that file's own POLL_INTERVAL_MS
+  // rather than a second, redundant constant. Stops as soon as reports[0]
+  // isn't running anymore.
+  useEffect(() => {
+    if (reports[0]?.status !== 'running') {
+      return
+    }
+    const intervalId = window.setInterval(() => {
+      void apiClient.listAnalysisReports().then(setReports)
+    }, POLL_INTERVAL_MS)
+    return () => window.clearInterval(intervalId)
+  }, [reports])
+
+  // Companion to the polling effect above: once the currently SELECTED
+  // report (which may or may not be reports[0]) shows a settled status in
+  // the just-polled list while the full detail already loaded for it still
+  // says 'running', its full detail is stale (gapAnalysis/conflicts are
+  // still null from when the run hadn't finished) - re-fetch it once. The
+  // `selectedReport.status !== 'running'` guard is what stops this from
+  // looping: the very re-fetch this effect triggers updates selectedReport
+  // to the settled status, which then short-circuits this effect on its own
+  // next run.
+  useEffect(() => {
+    if (!selectedReportId || !selectedReport || selectedReport.status !== 'running') {
+      return
+    }
+    const latest = reports.find((report) => report.id === selectedReportId)
+    if (latest && latest.status !== 'running') {
+      void apiClient.getAnalysisReport(selectedReportId).then(setSelectedReport)
+    }
+  }, [reports, selectedReportId, selectedReport])
+
+  async function handleStartAnalysis(): Promise<void> {
+    setIsStarting(true)
+    try {
+      const summary = await apiClient.startAnalysisRun()
+      setReports((current) => [summary, ...current])
+      setSelectedReportId(summary.id)
+    } finally {
+      setIsStarting(false)
+    }
+  }
+
+  const isAnalyzeDisabled = isStarting || reports[0]?.status === 'running'
+
+  let contentBody: JSX.Element
+  if (reports.length === 0) {
+    contentBody = (
+      <AnalysisBotHero message="Automatically review dislikes and no-answer questions to suggest documentation improvements, and flag cross-document contradictions. Click “Analyze with AI” above to run your first report." />
+    )
+  } else if (selectedReport?.status === 'running') {
+    contentBody = <AnalysisBotHero message="Analysis in progress..." showLoader />
+  } else if (selectedReport?.status === 'failed') {
+    contentBody = (
+      <Alert color="alertMagenta" variant="light" radius="lg" title="Analysis failed">
+        {selectedReport.errorDetail ?? 'The run failed for an unknown reason.'}
+      </Alert>
+    )
+  } else if (selectedReport) {
+    const conflicts = selectedReport.conflicts ?? []
+    contentBody = (
+      <Stack gap="lg">
+        <Stack gap="xs">
+          <Title order={4}>Gap Analysis</Title>
+          <Text style={{ whiteSpace: 'pre-wrap' }}>{selectedReport.gapAnalysis}</Text>
+        </Stack>
+        <Stack gap="xs">
+          <Group gap="xs" align="center">
+            <Title order={4}>Conflicts</Title>
+            <Badge color="alertMagenta" variant="light" radius="sm">
+              Total: {conflicts.length}
+            </Badge>
+          </Group>
+          {conflicts.length === 0 ? (
+            <Text c="dimmed">No cross-document conflicts were found.</Text>
+          ) : (
+            <Stack gap="sm">
+              {conflicts.map((conflict, index) => (
+                // Snapshotted JSONB rows, not real backend ids - index is
+                // stable within one already-fetched report's own array.
+                <ConflictCard key={index} conflict={conflict} />
+              ))}
+            </Stack>
+          )}
+        </Stack>
+      </Stack>
+    )
+  } else {
+    contentBody = <Text c="dimmed">Select a report from the history to view its details.</Text>
+  }
+
+  return (
+    <Paper
+      radius="lg"
+      p="xl"
+      bg="var(--doc-surface)"
+      withBorder
+      style={{ boxShadow: '0 24px 48px -24px rgba(0, 0, 0, 0.55)', height: PANEL_AREA_HEIGHT, display: 'flex', overflow: 'hidden' }}
+    >
+      <Group align="stretch" gap="xl" wrap="nowrap" style={{ flex: 1, minHeight: 0 }}>
+        {/* History sidebar - narrower than the content area beside it, its
+            own independent scroll area so a long run history never pushes
+            the content area (or the page) taller. */}
+        <Stack gap="sm" style={{ width: 280, flexShrink: 0, height: '100%', overflowY: 'auto' }}>
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Title order={4}>History</Title>
+            <Badge color="signalBlue" variant="light" radius="sm">
+              Total: {reports.length}
+            </Badge>
+          </Group>
+          {reports.length === 0 ? (
+            <Text c="dimmed" size="sm">
+              No runs yet.
+            </Text>
+          ) : (
+            reports.map((report) => {
+              const meta = ANALYSIS_STATUS_META[report.status]
+              const isSelected = report.id === selectedReportId
+              return (
+                <UnstyledButton key={report.id} onClick={() => setSelectedReportId(report.id)} style={{ width: '100%' }}>
+                  <Paper
+                    radius="md"
+                    p="sm"
+                    bg="var(--doc-bg)"
+                    className={classes.entryCard}
+                    style={{ border: `1px solid ${isSelected ? 'var(--mantine-color-sparkOrange-6)' : 'var(--doc-hairline)'}` }}
+                  >
+                    <Stack gap={4}>
+                      <Text size="sm" fw={600}>
+                        {formatDateTime(report.startedAt)}
+                      </Text>
+                      <Text size="xs" c="dimmed" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {report.startedByEmail}
+                      </Text>
+                      <Badge color={meta.color} variant="light" radius="sm" size="sm" style={{ alignSelf: 'flex-start' }}>
+                        {meta.label}
+                      </Badge>
+                    </Stack>
+                  </Paper>
+                </UnstyledButton>
+              )
+            })
+          )}
+        </Stack>
+
+        <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
+
+        <Stack gap="md" style={{ flex: 1, minWidth: 0, height: '100%' }}>
+          <Group justify="space-between" align="center" wrap="wrap">
+            <Title order={3}>Documentation Gap Analysis</Title>
+            <Button
+              variant="filled"
+              color="sparkOrange"
+              radius="xl"
+              loading={isStarting}
+              disabled={isAnalyzeDisabled}
+              onClick={() => void handleStartAnalysis()}
+            >
+              Analyze with AI
+            </Button>
+          </Group>
+          <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>{contentBody}</Box>
+        </Stack>
+      </Group>
     </Paper>
   )
 }
@@ -318,7 +627,7 @@ export function ImprovementsPage(): JSX.Element {
           </Box>
         </Group>
       ) : (
-        <AnalysisPlaceholder />
+        <AnalysisTab />
       )}
     </Stack>
   )

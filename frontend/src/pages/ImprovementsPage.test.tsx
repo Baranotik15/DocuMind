@@ -1,11 +1,15 @@
-import type { DislikedMessage, NoAnswerMessage } from '../api/types'
+import type { AnalysisReportDetail, AnalysisReportSummary, DislikedMessage, NoAnswerMessage } from '../api/types'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { act } from 'react'
 
 import { fireEvent, waitFor } from '@testing-library/react'
 
 import { ImprovementsPage } from './ImprovementsPage'
+import { POLL_INTERVAL_MS } from './UploadPage'
 import { renderWithProviders, screen } from '../test-utils'
+import { formatDateTime } from '../utils/formatDateTime'
 
 // ImprovementsPage talks to the real httpApiClient (frontend/src/api/httpClient.ts),
 // which hits `fetch` directly - so, same as DashboardPage.test.tsx/
@@ -32,6 +36,89 @@ const noAnswerMessages: NoAnswerMessage[] = [
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
+}
+
+// Newest first, per GET /internal/analysis/reports' own contract - distinct
+// calendar days (not just distinct times) so formatDateTime's own DD.MM.YYYY
+// output never accidentally collides between the two seeded rows.
+const analysisReports: AnalysisReportSummary[] = [
+  {
+    id: 'analysis-1',
+    status: 'completed',
+    startedAt: '2026-08-05T09:00:00.000Z',
+    completedAt: '2026-08-05T09:02:00.000Z',
+    startedByEmail: 'admin@documind.dev',
+  },
+  {
+    id: 'analysis-2',
+    status: 'completed',
+    startedAt: '2026-08-04T09:00:00.000Z',
+    completedAt: '2026-08-04T09:02:00.000Z',
+    startedByEmail: 'admin@documind.dev',
+  },
+]
+
+const analysisReportDetails: Record<string, AnalysisReportDetail> = {
+  'analysis-1': {
+    ...analysisReports[0],
+    gapAnalysis: 'Consider documenting the refund policy in more detail.',
+    conflicts: [
+      {
+        documentAId: 'doc-1',
+        documentAFilename: 'architecture-guide.pdf',
+        chunkAId: 'chunk-1',
+        chunkAContent: 'DocuMind is composed of four cooperating services.',
+        documentBId: 'doc-2',
+        documentBFilename: 'onboarding-notes.docx',
+        chunkBId: 'chunk-2',
+        chunkBContent: 'DocuMind runs as three services, with no separate database service.',
+        description: 'These two passages disagree on how many services DocuMind is composed of.',
+      },
+    ],
+    totalTokens: 512,
+    errorDetail: null,
+  },
+  'analysis-2': {
+    ...analysisReports[1],
+    gapAnalysis: 'No recurring gaps found.',
+    conflicts: [],
+    totalTokens: 200,
+    errorDetail: null,
+  },
+}
+
+/**
+ * Builds a fetch mock implementation covering both the Lists sub-tab's
+ * endpoints (dislikes/no-answer, same seeded fixtures as this file's own
+ * beforeEach) and the Analysis sub-tab's three endpoints, backed by
+ * `options.reports`/`options.details` - mutate those objects in place from a
+ * test (e.g. inside `onStart`) to change what a later call returns, same
+ * "closures over mutable fixture state" idiom mockClient.ts itself uses.
+ */
+function analysisFetchImplementation(options: {
+  reports: AnalysisReportSummary[]
+  details: Record<string, AnalysisReportDetail>
+  onStart?: () => AnalysisReportSummary
+}) {
+  return (url: string, init?: RequestInit) => {
+    if (url.includes('/internal/chat/dislikes')) {
+      return Promise.resolve(jsonResponse(dislikedMessages))
+    }
+    if (url.includes('/internal/chat/no-answer-messages')) {
+      return Promise.resolve(jsonResponse(noAnswerMessages))
+    }
+    if (url.includes('/internal/analysis/reports/')) {
+      const id = url.split('/internal/analysis/reports/')[1]
+      return Promise.resolve(jsonResponse(options.details[id]))
+    }
+    if (url.endsWith('/internal/analysis/reports')) {
+      if (init?.method === 'POST' && options.onStart) {
+        return Promise.resolve(jsonResponse(options.onStart(), 201))
+      }
+      return Promise.resolve(jsonResponse(options.reports))
+    }
+    return Promise.resolve(jsonResponse([]))
+  }
 }
 
 describe('ImprovementsPage', () => {
@@ -160,19 +247,157 @@ describe('ImprovementsPage', () => {
     expect(screen.queryByText(/no dislikes yet/i)).not.toBeInTheDocument()
   })
 
-  it('switching to the Analysis sub-tab shows an inert placeholder button that fires no request when clicked', async () => {
-    renderWithProviders(<ImprovementsPage />)
-    await screen.findByText('How do I reset my password?')
+  describe('Analysis sub-tab', () => {
+    it("switching to the Analysis sub-tab fetches and shows the report history list and the most recent report's content", async () => {
+      fetchMock.mockImplementation(analysisFetchImplementation({ reports: analysisReports, details: { ...analysisReportDetails } }))
 
-    const callCountBeforeSwitch = fetchMock.mock.calls.length
+      renderWithProviders(<ImprovementsPage />)
+      await screen.findByText('How do I reset my password?')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
 
-    const analyzeButton = await screen.findByRole('button', { name: /analyze with ai/i })
-    expect(screen.queryByText('How do I reset my password?')).not.toBeInTheDocument()
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          'http://localhost:8000/internal/analysis/reports',
+          expect.objectContaining({ method: 'GET' }),
+        )
+      })
 
-    fireEvent.click(analyzeButton)
+      expect(await screen.findByText(formatDateTime(analysisReports[0].startedAt))).toBeInTheDocument()
+      expect(screen.getByText(formatDateTime(analysisReports[1].startedAt))).toBeInTheDocument()
+      expect(await screen.findByText('Consider documenting the refund policy in more detail.')).toBeInTheDocument()
+    })
 
-    expect(fetchMock.mock.calls.length).toBe(callCountBeforeSwitch)
+    it('clicking "Analyze with AI" starts a run, shows an in-progress state, and disables the button', async () => {
+      const details: Record<string, AnalysisReportDetail> = { ...analysisReportDetails }
+      fetchMock.mockImplementation(
+        analysisFetchImplementation({
+          reports: analysisReports,
+          details,
+          onStart: () => {
+            const summary: AnalysisReportSummary = {
+              id: 'analysis-new',
+              status: 'running',
+              startedAt: '2026-08-06T00:00:00.000Z',
+              completedAt: null,
+              startedByEmail: 'admin@documind.dev',
+            }
+            details[summary.id] = { ...summary, gapAnalysis: null, conflicts: null, totalTokens: null, errorDetail: null }
+            return summary
+          },
+        }),
+      )
+
+      renderWithProviders(<ImprovementsPage />)
+      fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+      await screen.findByText('Consider documenting the refund policy in more detail.')
+
+      const analyzeButton = screen.getByRole('button', { name: /analyze with ai/i })
+      fireEvent.click(analyzeButton)
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          'http://localhost:8000/internal/analysis/reports',
+          expect.objectContaining({ method: 'POST' }),
+        )
+      })
+
+      expect(await screen.findByText(/analysis in progress/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /analyze with ai/i })).toBeDisabled()
+    })
+
+    it("selecting a different report from the history sidebar fetches and shows that report's own detail", async () => {
+      fetchMock.mockImplementation(analysisFetchImplementation({ reports: analysisReports, details: { ...analysisReportDetails } }))
+
+      renderWithProviders(<ImprovementsPage />)
+      fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+      await screen.findByText('Consider documenting the refund policy in more detail.')
+
+      fireEvent.click(screen.getByText(formatDateTime(analysisReports[1].startedAt)))
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          'http://localhost:8000/internal/analysis/reports/analysis-2',
+          expect.objectContaining({ method: 'GET' }),
+        )
+      })
+      expect(await screen.findByText('No recurring gaps found.')).toBeInTheDocument()
+      expect(screen.queryByText('Consider documenting the refund policy in more detail.')).not.toBeInTheDocument()
+    })
+
+    it('polls for updates while the most recent report is running, and stops once it settles', async () => {
+      vi.useFakeTimers()
+      try {
+        const runningReport: AnalysisReportSummary = {
+          id: 'analysis-running',
+          status: 'running',
+          startedAt: '2026-08-06T00:00:00.000Z',
+          completedAt: null,
+          startedByEmail: 'admin@documind.dev',
+        }
+        const completedReport: AnalysisReportSummary = { ...runningReport, status: 'completed', completedAt: '2026-08-06T00:05:00.000Z' }
+        const runningDetail: AnalysisReportDetail = { ...runningReport, gapAnalysis: null, conflicts: null, totalTokens: null, errorDetail: null }
+        const completedDetail: AnalysisReportDetail = { ...completedReport, gapAnalysis: 'All caught up.', conflicts: [], totalTokens: 100, errorDetail: null }
+
+        let listCallCount = 0
+        fetchMock.mockImplementation((url: string) => {
+          if (url.includes('/internal/chat/dislikes')) {
+            return Promise.resolve(jsonResponse(dislikedMessages))
+          }
+          if (url.includes('/internal/chat/no-answer-messages')) {
+            return Promise.resolve(jsonResponse(noAnswerMessages))
+          }
+          if (url.endsWith(`/internal/analysis/reports/${runningReport.id}`)) {
+            return Promise.resolve(jsonResponse(listCallCount === 1 ? runningDetail : completedDetail))
+          }
+          if (url.endsWith('/internal/analysis/reports')) {
+            listCallCount += 1
+            return Promise.resolve(jsonResponse(listCallCount === 1 ? [runningReport] : [completedReport]))
+          }
+          return Promise.resolve(jsonResponse([]))
+        })
+
+        renderWithProviders(<ImprovementsPage />)
+        fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+
+        // Flush the mount effect's fetch + resulting state updates before
+        // asserting anything about the poll interval it schedules.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0)
+        })
+        expect(listCallCount).toBe(1)
+
+        // Advancing by the poll interval should trigger exactly one more
+        // GET of the report list (the run is still 'running' at this point).
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+        })
+        expect(listCallCount).toBe(2)
+
+        // The run is now 'completed' (settled) - polling should have
+        // stopped, so advancing well past another interval triggers no
+        // further calls.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+        })
+        expect(listCallCount).toBe(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("renders a selected report's conflicts with links to each side's chunk-preview page", async () => {
+      fetchMock.mockImplementation(analysisFetchImplementation({ reports: analysisReports, details: { ...analysisReportDetails } }))
+
+      renderWithProviders(<ImprovementsPage />)
+      fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+      await screen.findByText('Consider documenting the refund policy in more detail.')
+
+      const linkA = await screen.findByRole('link', { name: /architecture-guide\.pdf/i })
+      expect(linkA).toHaveAttribute('href', '/upload/doc-1/chunks')
+
+      const linkB = screen.getByRole('link', { name: /onboarding-notes\.docx/i })
+      expect(linkB).toHaveAttribute('href', '/upload/doc-2/chunks')
+    })
   })
 })
