@@ -6,7 +6,15 @@ services:
       POSTGRES_PASSWORD: documind
       POSTGRES_DB: documind
     ports:
-      - "5432:5432"
+      # Host-side port only (container still listens on 5432 internally,
+      # and backend/worker still reach it at postgres:5432 over the
+      # compose network - this mapping only affects host-side tools like
+      # psql/pytest run directly on the machine). Not 5432:5432 - this
+      # machine also runs TWO native Windows PostgreSQL services
+      # (postgresql-x64-16 on 5432, postgresql-x64-17 on 5433, unrelated
+      # to this project), which silently win those ports and make
+      # host-side connections hit the wrong server entirely.
+      - "5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U documind"]
       interval: 5s

@@ -6,8 +6,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://documind:documind@localhost:5432/documind"
-    database_url_sync: str = "postgresql+psycopg://documind:documind@localhost:5432/documind"
+    # 5434, not Postgres's default 5432 - see docker-compose.yml's postgres
+    # service comment: this dev machine also runs two native Windows
+    # PostgreSQL services on 5432/5433, unrelated to this project, which
+    # win those ports over Docker's forwarder for host-side connections
+    # (inside containers this doesn't matter - backend/worker reach
+    # Postgres via the compose network at postgres:5432 regardless of
+    # this host mapping).
+    database_url: str = "postgresql+asyncpg://documind:documind@localhost:5434/documind"
+    database_url_sync: str = "postgresql+psycopg://documind:documind@localhost:5434/documind"
     celery_broker_url: str = "redis://localhost:6379/0"
 
     openai_api_key: str = ""
