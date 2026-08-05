@@ -4,7 +4,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.chunks.embedding import embed_texts
-from app.chunks.splitting import split_into_chunks
+from app.chunks.headings import HeadingMarker
+from app.chunks.splitting import split_document
 from app.chunks.vectors import format_vector
 from app.dashboard_events.constants import DashboardEventType
 from app.dashboard_events.recording import record_event_sync
@@ -96,7 +97,7 @@ def mark_document_failed(
     Reused by run_pipeline's own except block below AND by
     documents.tasks.run_document_pipeline for failures that happen before
     run_pipeline runs at all (e.g. the file is missing from storage, or
-    extract_text rejects an unsupported/corrupt file) - both cases must
+    extract_document rejects an unsupported/corrupt file) - both cases must
     give the same guarantee: the document never gets stuck mid-pipeline,
     and the error is always visible as a dashboard event."""
     session.rollback()
@@ -179,7 +180,11 @@ def _replace_chunks(
 
 
 def run_pipeline(
-    document_id: str, source_text: str, session: Session, user_email: str | None = None
+    document_id: str,
+    source_text: str,
+    session: Session,
+    headings: list[HeadingMarker] | None = None,
+    user_email: str | None = None,
 ) -> None:
     """Core parse-independent pipeline, shared by initial processing and
     Save-triggered re-chunk (automatic-split path - see
@@ -188,8 +193,14 @@ def run_pipeline(
     integration.md` Task 5 for the full contract. Caller is responsible for
     having already confirmed no other pipeline is running for this document
     (Task 4/7's CAS guard for re-chunk; trivially true for a brand-new
-    upload). `user_email` is attributed to every dashboard event this run
-    produces - see _transition_status's docstring."""
+    upload). `headings` is whatever format-native heading structure the
+    caller could recover (see documents/extraction.py's ExtractedDocument) -
+    threaded straight into split_document, which falls back to its own
+    text-pattern detection when this is None/[] (the Save-triggered
+    automatic re-chunk path, and any caller with no format-native structure
+    available, both pass None here). `user_email` is attributed to every
+    dashboard event this run produces - see _transition_status's
+    docstring."""
     _start_chunking(document_id, session, user_email=user_email)
 
     try:
@@ -200,7 +211,7 @@ def run_pipeline(
                 "supported)"
             )
 
-        chunks = split_into_chunks(source_text)
+        chunks = split_document(source_text, headings=headings)
         _replace_chunks(document_id, chunks, session, user_email=user_email)
     except Exception as exc:
         mark_document_failed(document_id, session, exc, user_email=user_email)
@@ -216,7 +227,7 @@ def run_pipeline_with_manual_chunks(
     `.claude/specs/manual-chunk-boundaries.md`): the caller (Save, when the
     operator has manually dragged a chunk boundary this editing session)
     has already decided the final chunk boundaries - `chunk_texts` is the
-    authoritative, ordered chunk list as-is, so `split_into_chunks` is
+    authoritative, ordered chunk list as-is, so `split_document` is
     never invoked. Otherwise mirrors run_pipeline exactly: same status-
     transition prologue, same shared `_replace_chunks` success path, same
     `mark_document_failed` failure handling on any error (empty/blank
