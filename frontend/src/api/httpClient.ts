@@ -224,4 +224,16 @@ export const httpApiClient: ApiClient = {
   getOpenAiSpend() {
     return requestJson('/internal/dashboard/openai-spend', { method: 'GET' })
   },
+
+  startAnalysisRun() {
+    return requestJson('/internal/analysis/reports', { method: 'POST' })
+  },
+
+  listAnalysisReports() {
+    return requestJson('/internal/analysis/reports', { method: 'GET' })
+  },
+
+  getAnalysisReport(reportId) {
+    return requestJson(`/internal/analysis/reports/${reportId}`, { method: 'GET' })
+  },
 }

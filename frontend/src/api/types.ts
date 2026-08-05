@@ -128,3 +128,32 @@ export interface NoAnswerMessage {
   questionContent: string | null
   createdAt: string
 }
+
+export type AnalysisRunStatus = 'running' | 'completed' | 'failed'
+
+export interface AnalysisReportSummary {
+  id: string
+  status: AnalysisRunStatus
+  startedAt: string
+  completedAt: string | null
+  startedByEmail: string
+}
+
+export interface AnalysisConflict {
+  documentAId: string
+  documentAFilename: string
+  chunkAId: string
+  chunkAContent: string
+  documentBId: string
+  documentBFilename: string
+  chunkBId: string
+  chunkBContent: string
+  description: string
+}
+
+export interface AnalysisReportDetail extends AnalysisReportSummary {
+  gapAnalysis: string | null
+  conflicts: AnalysisConflict[] | null
+  totalTokens: number | null
+  errorDetail: string | null
+}

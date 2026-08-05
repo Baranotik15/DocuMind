@@ -1,4 +1,6 @@
 import type {
+  AnalysisReportDetail,
+  AnalysisReportSummary,
   ChatMessage,
   Chunk,
   ChunkGraph,
@@ -40,6 +42,12 @@ export interface ApiClient {
   getDashboardStats(range: DashboardStatsRange, tz: string): Promise<DashboardStats>
   getChunkGraph(): Promise<ChunkGraph>
   getOpenAiSpend(): Promise<OpenAiSpend>
+  /** POST /internal/analysis/reports - starts a new run, returns immediately with status 'running'. */
+  startAnalysisRun(): Promise<AnalysisReportSummary>
+  /** GET /internal/analysis/reports - every past run, newest first. */
+  listAnalysisReports(): Promise<AnalysisReportSummary[]>
+  /** GET /internal/analysis/reports/{reportId} - one report's full detail. */
+  getAnalysisReport(reportId: string): Promise<AnalysisReportDetail>
 }
 
 // Bound to the real HTTP-backed implementation. Page components always

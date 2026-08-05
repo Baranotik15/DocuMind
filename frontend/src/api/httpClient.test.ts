@@ -347,6 +347,72 @@ describe('httpApiClient', () => {
     expect(result).toEqual(events)
   })
 
+  it('startAnalysisRun POSTs /internal/analysis/reports and returns the parsed summary', async () => {
+    const summary = {
+      id: 'analysis-1',
+      status: 'running',
+      startedAt: '2026-08-06T00:00:00.000Z',
+      completedAt: null,
+      startedByEmail: 'admin@documind.dev',
+    }
+    fetchMock.mockResolvedValueOnce(jsonResponse(summary, 201))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.startAnalysisRun()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(result).toEqual(summary)
+  })
+
+  it('listAnalysisReports GETs /internal/analysis/reports and returns the parsed array', async () => {
+    const reports = [
+      {
+        id: 'analysis-1',
+        status: 'completed',
+        startedAt: '2026-08-06T00:00:00.000Z',
+        completedAt: '2026-08-06T00:02:00.000Z',
+        startedByEmail: 'admin@documind.dev',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(reports))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.listAnalysisReports()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(reports)
+  })
+
+  it('getAnalysisReport GETs /internal/analysis/reports/{id} and returns the parsed detail', async () => {
+    const detail = {
+      id: 'abc',
+      status: 'completed',
+      startedAt: '2026-08-06T00:00:00.000Z',
+      completedAt: '2026-08-06T00:02:00.000Z',
+      startedByEmail: 'admin@documind.dev',
+      gapAnalysis: 'Some themes worth documenting.',
+      conflicts: [],
+      totalTokens: 123,
+      errorDetail: null,
+    }
+    fetchMock.mockResolvedValueOnce(jsonResponse(detail))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getAnalysisReport('abc')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports/abc',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(detail)
+  })
+
   it('throws a plain Error on an unexpected non-2xx response', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'boom' }, 500))
 
