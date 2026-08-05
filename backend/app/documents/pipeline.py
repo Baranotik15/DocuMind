@@ -6,10 +6,12 @@ from sqlalchemy.orm import Session
 from app.chunks.embedding import embed_texts
 from app.chunks.headings import HeadingMarker
 from app.chunks.splitting import split_document
+from app.chunks.tokens import count_tokens
 from app.chunks.vectors import format_vector
 from app.dashboard_events.constants import DashboardEventType
 from app.dashboard_events.recording import record_event_sync
 from app.documents.constants import DocumentStatus
+from app.documents.formatting import build_document_event_detail
 
 
 class NoExtractableTextError(Exception):
@@ -53,6 +55,7 @@ def _transition_status(
     event_type: DashboardEventType,
     error: Exception | None = None,
     user_email: str | None = None,
+    token_count: int | None = None,
 ) -> None:
     """Shared status-transition step used by every place in this module
     that moves a document to a new status: updates `documents.status`
@@ -68,16 +71,20 @@ def _transition_status(
     app - every pipeline run traces back to an authenticated upload or
     Save, threaded all the way down from documents/router.py and
     chunks/router.py through documents/tasks.py - but the parameter stays
-    optional for whichever future caller might not have one). Records the
-    matching dashboard event, then commits."""
-    filename = session.execute(
+    optional for whichever future caller might not have one). `token_count`
+    is None for every caller except _replace_chunks's own call below (the
+    only place a token count is known - see its docstring) - it flows
+    straight into build_document_event_detail's own optional third
+    parameter, so it never appears on a chunking_started or chunking_failed
+    event. Records the matching dashboard event, then commits."""
+    row = session.execute(
         text(
             "UPDATE documents SET status = :status WHERE id = :document_id "
-            "RETURNING filename"
+            "RETURNING filename, file_size_bytes"
         ),
         {"status": str(status), "document_id": document_id},
-    ).scalar_one()
-    detail = f"filename = {filename}"
+    ).one()
+    detail = build_document_event_detail(row.filename, row.file_size_bytes, token_count)
     if error is not None:
         detail = f"{detail}: {error}"
     record_event_sync(session, event_type, detail, user_email=user_email)
@@ -139,6 +146,13 @@ def _replace_chunks(
     (run_pipeline), or provided verbatim by the caller (
     run_pipeline_with_manual_chunks) - embeds every chunk and atomically
     replaces the document's chunk set, then transitions status to 'ready'.
+    Also sums each chunk's count_tokens into `token_count` and threads it
+    into that final _transition_status call, so the resulting
+    document.chunking_succeeded event's detail carries a 'tokens = <n>'
+    line - this is the only place in the pipeline a token count is known
+    (chunking_started fires before embedding even runs; chunking_failed
+    means embedding either never ran or can't be trusted), so it's also
+    the only _transition_status call site that ever passes one.
 
     Must only be called from inside a try/except that funnels any
     exception here (an embedding-API failure, a DB error, ...) into
@@ -150,6 +164,7 @@ def _replace_chunks(
     never observes a half-replaced chunk set (old rows gone, new rows not
     fully written yet) or a stale-but-still-visible set."""
     embeddings = asyncio.run(embed_texts(chunk_texts))
+    token_count = sum(count_tokens(chunk) for chunk in chunk_texts)
 
     session.execute(
         text("DELETE FROM chunks WHERE document_id = :document_id"),
@@ -176,6 +191,7 @@ def _replace_chunks(
         DocumentStatus.READY,
         DashboardEventType.DOCUMENT_CHUNKING_SUCCEEDED,
         user_email=user_email,
+        token_count=token_count,
     )
 
 

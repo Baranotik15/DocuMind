@@ -19,6 +19,7 @@ from app.documents.constants import (
     SUPPORTED_DOCUMENT_EXTENSIONS,
 )
 from app.documents.deps import get_storage
+from app.documents.formatting import build_document_event_detail
 from app.documents.schemas import DocumentSummary
 from app.documents.storage import StorageAdapter, StorageKeyNotFoundError
 from app.documents.tasks import run_document_pipeline
@@ -133,13 +134,6 @@ async def upload_document(
             await session.rollback()
             raise HTTPException(status_code=409, detail="duplicate_filename")
         storage.save(storage_key, data)
-        await record_event_async(
-            session,
-            DashboardEventType.DOCUMENT_UPLOADED,
-            f"filename = {filename}",
-            user_email=user_email,
-        )
-        await session.commit()
     else:
         # Reuse the existing row's own storage_key so an overwrite replaces
         # the same on-disk file in place, rather than minting a new key and
@@ -159,13 +153,17 @@ async def upload_document(
                 },
             )
         ).one()
-        await record_event_async(
-            session,
-            DashboardEventType.DOCUMENT_UPLOADED,
-            f"filename = {filename}",
-            user_email=user_email,
-        )
-        await session.commit()
+
+    # Both branches above reach here with the same row shape - one shared
+    # event/commit instead of a copy in each branch (the previous shape of
+    # this function duplicated this exact call site by branch).
+    await record_event_async(
+        session,
+        DashboardEventType.DOCUMENT_UPLOADED,
+        build_document_event_detail(filename, file_size),
+        user_email=user_email,
+    )
+    await session.commit()
 
     # .delay() is a plain synchronous call (it blocks on a broker round trip
     # even outside of eager mode, and - under the test suite's eager mode -
@@ -221,7 +219,7 @@ async def delete_document(
     row = (
         await session.execute(
             text(
-                "SELECT filename, storage_key, status FROM documents "
+                "SELECT filename, storage_key, status, file_size_bytes FROM documents "
                 "WHERE id = :document_id"
             ),
             {"document_id": str(document_id)},
@@ -249,7 +247,7 @@ async def delete_document(
     await record_event_async(
         session,
         DashboardEventType.DOCUMENT_DELETED,
-        f"filename = {row.filename}",
+        build_document_event_detail(row.filename, row.file_size_bytes),
         user_email=user_email,
     )
     await session.commit()

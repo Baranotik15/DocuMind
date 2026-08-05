@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.documents import router as documents_router
 from app.db.sync_session import SyncSessionLocal
 from app.documents.deps import get_storage
+from app.documents.formatting import format_file_size
 from app.documents.storage import StorageKeyNotFoundError
 from app.documents.tasks import run_document_pipeline
 from app.main import app
@@ -517,13 +518,14 @@ def test_upload_document_records_document_uploaded_event_with_user_email(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    content = b"Event check."
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             upload = client.post(
                 "/internal/documents",
-                files={"file": (filename, io.BytesIO(b"Event check."), "text/plain")},
+                files={"file": (filename, io.BytesIO(content), "text/plain")},
             )
         assert upload.status_code == 200
 
@@ -540,6 +542,8 @@ def test_upload_document_records_document_uploaded_event_with_user_email(
         ]
         assert len(matching) == 1
         assert matching[0]["userEmail"] == expected_email
+        assert f"filename = {filename}" in matching[0]["detail"]
+        assert f"filesize = {format_file_size(len(content))}" in matching[0]["detail"]
     finally:
         _cleanup(filename)
 
@@ -589,13 +593,14 @@ def test_delete_document_records_document_deleted_dashboard_event_with_user_emai
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    content = b"Event check."
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             upload = client.post(
                 "/internal/documents",
-                files={"file": (filename, io.BytesIO(b"Event check."), "text/plain")},
+                files={"file": (filename, io.BytesIO(content), "text/plain")},
             )
         assert upload.status_code == 200
         document_id = upload.json()["id"]
@@ -616,6 +621,8 @@ def test_delete_document_records_document_deleted_dashboard_event_with_user_emai
         ]
         assert len(matching) == 1
         assert matching[0]["userEmail"] == expected_email
+        assert f"filename = {filename}" in matching[0]["detail"]
+        assert f"filesize = {format_file_size(len(content))}" in matching[0]["detail"]
     finally:
         # No document_id needed for _cleanup - it matches dashboard_events
         # by filename now, which stays in `detail` even though the document

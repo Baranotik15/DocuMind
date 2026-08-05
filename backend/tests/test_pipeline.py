@@ -5,7 +5,9 @@ import pytest
 from sqlalchemy import text
 
 from app.chunks.headings import HeadingMarker
+from app.chunks.tokens import count_tokens
 from app.db.sync_session import SyncSessionLocal
+from app.documents.formatting import format_file_size
 from app.documents.pipeline import (
     DocumentProcessingError,
     run_pipeline,
@@ -26,14 +28,21 @@ def _celery_eager() -> None:
     celery_app.conf.task_eager_propagates = True
 
 
-def _insert_document(session, *, status: str = "uploaded") -> tuple[str, str]:
+def _insert_document(
+    session, *, status: str = "uploaded", file_size_bytes: int | None = None
+) -> tuple[str, str]:
     filename = f"pipeline-{uuid.uuid4()}.txt"
     document_id = session.execute(
         text(
-            "INSERT INTO documents (filename, storage_key, status) "
-            "VALUES (:filename, :storage_key, :status) RETURNING id"
+            "INSERT INTO documents (filename, storage_key, status, file_size_bytes) "
+            "VALUES (:filename, :storage_key, :status, :file_size_bytes) RETURNING id"
         ),
-        {"filename": filename, "storage_key": f"docs/{filename}", "status": status},
+        {
+            "filename": filename,
+            "storage_key": f"docs/{filename}",
+            "status": status,
+            "file_size_bytes": file_size_bytes,
+        },
     ).scalar_one()
     session.commit()
     return str(document_id), filename
@@ -222,6 +231,82 @@ def test_run_pipeline_records_the_given_user_email_on_pipeline_events() -> None:
         _cleanup(document_id, filename)
 
 
+def test_run_pipeline_records_filesize_in_chunking_event_details_when_known() -> None:
+    # _transition_status's detail string goes through the same
+    # build_document_event_detail as documents/router.py's upload/delete
+    # events (see app.documents.formatting) - a document inserted with a
+    # known file_size_bytes should carry a 'filesize = ...' second line on
+    # both its chunking_started and chunking_succeeded events, not just
+    # 'filename = ...'.
+    source_text = "Some source text.\n\nWith two paragraphs."
+    known_size = 12345
+
+    with SyncSessionLocal() as session:
+        document_id, filename = _insert_document(session, file_size_bytes=known_size)
+
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            with SyncSessionLocal() as session:
+                run_pipeline(document_id, source_text, session)
+
+        with SyncSessionLocal() as session:
+            assert _document_status(session, document_id) == "ready"
+
+            started = _matching_events(session, "document.chunking_started", filename)
+            succeeded = _matching_events(session, "document.chunking_succeeded", filename)
+            assert started
+            assert succeeded
+            expected_filesize_line = f"filesize = {format_file_size(known_size)}"
+            assert all(
+                f"filename = {filename}" in row.detail
+                and expected_filesize_line in row.detail
+                for row in started + succeeded
+            )
+    finally:
+        _cleanup(document_id, filename)
+
+
+def test_run_pipeline_records_token_count_only_on_chunking_succeeded_event() -> None:
+    # Tokens are only knowable once chunking + embedding have both
+    # succeeded (see documents/pipeline.py's _replace_chunks) - never on
+    # chunking_started, which fires before embedding even runs. The
+    # expected count is computed the same way production code does, summed
+    # over the actual chunk texts that landed in the DB (proven elsewhere,
+    # e.g. test_run_pipeline_success_leaves_document_ready_with_exact_
+    # reconstruction, to be exactly the list run_pipeline embedded) - never
+    # a hardcoded magic number.
+    source_text = "First paragraph of the document.\n\nSecond paragraph, a bit longer.\n\nThird and final paragraph."
+
+    with SyncSessionLocal() as session:
+        document_id, filename = _insert_document(session)
+
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            with SyncSessionLocal() as session:
+                run_pipeline(document_id, source_text, session)
+
+        with SyncSessionLocal() as session:
+            assert _document_status(session, document_id) == "ready"
+
+            rows = _chunk_rows(session, document_id)
+            expected_token_count = sum(count_tokens(row.original_content) for row in rows)
+
+            started = _matching_events(session, "document.chunking_started", filename)
+            succeeded = _matching_events(session, "document.chunking_succeeded", filename)
+            assert started
+            assert succeeded
+            assert all("tokens = " not in row.detail for row in started)
+            assert all(
+                f"tokens = {expected_token_count}" in row.detail for row in succeeded
+            )
+    finally:
+        _cleanup(document_id, filename)
+
+
 def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -> None:
     # Reproduces the scanned-PDF bug: pypdf/extract_text can "succeed" (no
     # exception) while returning nothing but newlines - e.g. one \n per page
@@ -244,7 +329,12 @@ def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -
 
             matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
+            assert all(
+                len(row.detail) > 0
+                and row.user_email is None
+                and "tokens = " not in row.detail
+                for row in matching
+            )
 
             rows = _chunk_rows(session, document_id)
             assert len(rows) == 0
@@ -281,7 +371,15 @@ def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouc
 
             matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
+            # embed_texts itself raised here (never returned), so a token
+            # count could never have been computed - confirms the failure
+            # path never leaks a stale/partial count into the event.
+            assert all(
+                len(row.detail) > 0
+                and row.user_email is None
+                and "tokens = " not in row.detail
+                for row in matching
+            )
 
             rows = _chunk_rows(session, document_id)
             assert len(rows) == 1

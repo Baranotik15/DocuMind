@@ -43,9 +43,16 @@
    several lines instead of stretching the column arbitrarily wide - the
    full text still renders (nothing is truncated with an ellipsis),
    `word-break` covers detail strings with no natural break points (e.g. a
-   long path or UUID) that `white-space: normal` alone wouldn't wrap. */
+   long path or UUID) that wrapping alone wouldn't wrap. `pre-wrap` (not
+   `normal`) - some `detail` values now carry a literal '\n' (e.g.
+   "filename = x.txt\nfilesize = 5.1 KB", see
+   app/documents/formatting.py's build_document_event_detail on the
+   backend) that must render as an actual line break, not collapse into a
+   space the way `white-space: normal` treats any whitespace run;
+   `pre-wrap` still wraps long lines exactly like `normal` did, it just
+   additionally respects explicit newlines. */
 .detailCell {
   max-width: 32rem;
-  white-space: normal;
+  white-space: pre-wrap;
   word-break: break-word;
 }
