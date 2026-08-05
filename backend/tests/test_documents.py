@@ -3,10 +3,16 @@ from pathlib import Path
 
 import pytest
 from docx import Document as DocxDocument
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.chunks.headings import HeadingMarker
 from app.chunks.splitting import split_into_chunks
-from app.documents.extraction import UnsupportedFileTypeError, extract_document
+from app.documents.extraction import (
+    UnsupportedFileTypeError,
+    _locate_heading_offsets,
+    extract_document,
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -25,6 +31,36 @@ def _build_docx_bytes(paragraphs: list[str], styles: list[str | None] | None = N
             document.add_paragraph(paragraph)
     buffer = io.BytesIO()
     document.save(buffer)
+    return buffer.getvalue()
+
+
+def _build_pdf_bytes(
+    lines: list[tuple[str, int]], outline_titles: list[str] | None = None
+) -> bytes:
+    """Builds a single-page PDF with one `text` line per (text, font_size)
+    tuple, each drawn at that font size (mirrors _build_docx_bytes's role
+    for DOCX fixtures, using reportlab instead of python-docx). If
+    `outline_titles` is given, adds each as a top-level PDF outline/
+    bookmark entry pointing at the page - a distinct bookmark key per
+    title is required here, since reportlab's Canvas.addOutlineEntry
+    mixes up titles when multiple entries share the same key (reusing one
+    key for every entry made every outline title resolve to the *last*
+    title added, confirmed against this installed reportlab version)."""
+    buffer = io.BytesIO()
+    canvas = pdf_canvas.Canvas(buffer, pagesize=letter)
+    _, height = letter
+    y = height - 72
+    for text, font_size in lines:
+        canvas.setFont("Helvetica", font_size)
+        canvas.drawString(72, y, text)
+        y -= font_size + 6
+    if outline_titles:
+        for index, title in enumerate(outline_titles):
+            key = f"heading-{index}"
+            canvas.bookmarkPage(key)
+            canvas.addOutlineEntry(title, key, level=0)
+    canvas.showPage()
+    canvas.save()
     return buffer.getvalue()
 
 
@@ -114,6 +150,93 @@ def test_extract_document_docx_heading_styles_produce_markers() -> None:
         HeadingMarker(offset=overview_offset, level=1),
         HeadingMarker(offset=details_offset, level=2),
     ]
+
+
+# --- extract_document: PDF outline / font-size headings (tiers 2, 4) -------
+
+
+def test_extract_document_pdf_with_outline_uses_outline_titles() -> None:
+    lines = [
+        ("Introduction", 12),
+        ("Body text explaining the overview of this document.", 12),
+        ("Conclusion", 12),
+        ("Body text wrapping everything up.", 12),
+    ]
+    data = _build_pdf_bytes(lines, outline_titles=["Introduction", "Conclusion"])
+
+    result = extract_document("outline.pdf", data)
+
+    assert result.headings == [
+        HeadingMarker(offset=result.text.index("Introduction"), level=1),
+        HeadingMarker(offset=result.text.index("Conclusion"), level=1),
+    ]
+
+
+def test_extract_document_pdf_no_outline_larger_font_line_is_heading() -> None:
+    lines = [
+        ("Body text at normal size before the heading.", 10),
+        ("A Bigger Heading Line", 18),
+        ("Body text at normal size after the heading.", 10),
+        ("More body text to strengthen the normal-size mode.", 10),
+    ]
+    data = _build_pdf_bytes(lines)
+
+    result = extract_document("no-outline.pdf", data)
+
+    assert result.headings == [
+        HeadingMarker(offset=result.text.index("A Bigger Heading Line"), level=1),
+    ]
+
+
+def test_extract_document_pdf_uniform_font_no_outline_returns_no_headings() -> None:
+    lines = [
+        ("Line one is here.", 12),
+        ("Line two follows along.", 12),
+        ("Line three wraps it up nicely.", 12),
+    ]
+    data = _build_pdf_bytes(lines)
+
+    result = extract_document("uniform.pdf", data)
+
+    assert result.headings == []
+
+
+def test_extract_document_pdf_outline_wins_over_larger_font_line() -> None:
+    lines = [
+        ("Introduction", 12),
+        ("Body text explaining things in normal size.", 12),
+        ("A Bigger Heading Line", 18),
+        ("More normal body text after the big line.", 12),
+    ]
+    data = _build_pdf_bytes(lines, outline_titles=["Introduction"])
+
+    result = extract_document("both.pdf", data)
+
+    # Only the outline-derived marker appears - if tier 4 had also run
+    # (rather than being skipped once tier 2 fired), "A Bigger Heading
+    # Line" would show up as a second marker here too.
+    assert result.headings == [
+        HeadingMarker(offset=result.text.index("Introduction"), level=1),
+    ]
+
+
+def test_locate_heading_offsets_resolves_duplicate_titles_to_distinct_offsets() -> None:
+    full_text = "Intro\n\nBody one.\n\nIntro\n\nBody two."
+    first_offset = full_text.index("Intro")
+    second_offset = full_text.index("Intro", first_offset + len("Intro"))
+    assert first_offset != second_offset
+
+    result = _locate_heading_offsets(full_text, ["Intro", "Intro"])
+
+    assert result == [first_offset, second_offset]
+
+
+def test_locate_heading_offsets_omits_titles_not_found() -> None:
+    full_text = "Alpha\n\nBody.\n\nGamma\n\nMore body."
+
+    result = _locate_heading_offsets(full_text, ["Alpha", "Missing Title", "Gamma"])
+
+    assert result == [full_text.index("Alpha"), full_text.index("Gamma")]
 
 
 # --- split_into_chunks -----------------------------------------------------
