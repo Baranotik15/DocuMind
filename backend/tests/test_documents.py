@@ -7,7 +7,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.chunks.headings import HeadingMarker
-from app.chunks.splitting import split_into_chunks
+from app.chunks.splitting import split_document
+from app.chunks.tokens import count_tokens
 from app.documents.extraction import (
     UnsupportedFileTypeError,
     _locate_heading_offsets,
@@ -239,64 +240,135 @@ def test_locate_heading_offsets_omits_titles_not_found() -> None:
     assert result == [full_text.index("Alpha"), full_text.index("Gamma")]
 
 
-# --- split_into_chunks -----------------------------------------------------
+# --- split_document ---------------------------------------------------------
 #
-# Hard contract: "".join(split_into_chunks(text)) == text EXACTLY, always -
+# Hard contract: "".join(split_document(text, ...)) == text EXACTLY, always -
 # no trimming, no whitespace normalization, no dropped characters.
 #
 # Guarantee this implementation provides beyond the bare minimum: every
-# returned chunk (not just all-but-the-last) has length <= max_chars. This
-# is achievable because a paragraph longer than max_chars is hard-split
-# (at sentence boundaries, falling back to a raw character cut) rather than
-# ever being allowed to stand as an oversized chunk.
+# returned chunk (not just all-but-the-last) has count_tokens(chunk) <=
+# max_tokens. This is achievable because a paragraph whose own token count
+# exceeds max_tokens is hard-split further (at sentence boundaries, falling
+# back to a raw character cut) rather than ever being allowed to stand as a
+# single oversized chunk.
+#
+# These fixtures have no markdown/numbered structure, so split_document's
+# tier 1/3 fallback finds nothing and the whole text is one section - same
+# paragraph/sentence/raw-cut behavior split_into_chunks used to have,
+# exercised through split_document's token-counted _split_section_to_size.
 
 
-def test_split_into_chunks_short_text_returns_single_chunk() -> None:
+def test_split_document_short_text_returns_single_chunk() -> None:
     text = "Just a short paragraph, well under the limit."
 
-    result = split_into_chunks(text, max_chars=1500)
+    result = split_document(text, max_tokens=1500)
 
     assert result == [text]
     assert "".join(result) == text
 
 
-def test_split_into_chunks_multi_paragraph_over_limit_splits_on_paragraphs() -> None:
+def test_split_document_multi_paragraph_over_limit_splits_on_paragraphs() -> None:
     paragraph = "Lorem ipsum dolor sit amet. " * 3
     text = "\n\n".join([paragraph] * 5)
+    # A single paragraph fits under this limit but two back-to-back don't,
+    # so each chunk holds (at most) one paragraph - computed from the
+    # fixture's actual token count rather than reusing the old char-based
+    # max_chars=200 magic number, since token count != character count.
+    max_tokens = count_tokens(paragraph) + 5
 
-    result = split_into_chunks(text, max_chars=200)
+    result = split_document(text, max_tokens=max_tokens)
 
     assert "".join(result) == text
     assert len(result) > 1
     for chunk in result:
-        assert len(chunk) <= 200
+        assert count_tokens(chunk) <= max_tokens
 
 
-def test_split_into_chunks_huge_single_paragraph_hard_splits() -> None:
+def test_split_document_huge_single_paragraph_hard_splits() -> None:
     sentence = "This is one sentence in a very long paragraph. "
     text = sentence * 50  # no blank lines anywhere in the whole string
+    max_tokens = 50
+    assert count_tokens(text) > max_tokens  # sanity: fixture must exceed the limit
 
-    result = split_into_chunks(text, max_chars=200)
+    result = split_document(text, max_tokens=max_tokens)
 
     assert "".join(result) == text
     assert len(result) > 1
     for chunk in result:
-        assert len(chunk) <= 200
+        assert count_tokens(chunk) <= max_tokens
 
 
-def test_split_into_chunks_empty_string_returns_empty_list() -> None:
-    result = split_into_chunks("")
+def test_split_document_empty_string_returns_empty_list() -> None:
+    result = split_document("")
 
     assert result == []
     assert "".join(result) == ""
 
 
-def test_split_into_chunks_uses_default_max_chars() -> None:
-    text = "x" * 3000
+def test_split_document_uses_default_max_tokens() -> None:
+    # "x" repeated 3000 times is only ~375 cl100k_base tokens - under the
+    # old char-based default (1500) it would have split, but token-counted
+    # it wouldn't, so this fixture is sized to exceed the new default
+    # (DEFAULT_MAX_TOKENS = 400) instead of reusing the old char count.
+    text = "x" * 5000
+    assert count_tokens(text) > 400  # sanity: fixture must exceed the default
 
-    result = split_into_chunks(text)
+    result = split_document(text)
 
     assert "".join(result) == text
     assert len(result) > 1
     for chunk in result:
-        assert len(chunk) <= 1500
+        assert count_tokens(chunk) <= 400
+
+
+# --- split_document: heading-aware sectioning -------------------------------
+
+
+def test_split_document_no_headings_given_falls_back_to_markdown_tier() -> None:
+    text = (
+        "# Intro\n\nSome intro text.\n\n"
+        "## Details\n\nMore body text here, still short.\n"
+    )
+    details_offset = text.index("## Details")
+
+    result = split_document(text, max_tokens=1500)
+
+    assert result == [text[:details_offset], text[details_offset:]]
+    assert "".join(result) == text
+
+
+def test_split_document_given_headings_win_over_markdown_tier() -> None:
+    # The text also contains '#'-prefixed lines that tier 1 would detect
+    # on its own - given headings must be used as-is and tier 1/3 must
+    # never run, so the split lands only at the explicitly given offset,
+    # not at either '#' line.
+    text = "# Heading A\n\nSome body.\n\n# Heading B\n\nMore body.\n"
+    custom_offset = text.index("Some body")
+    headings = [HeadingMarker(offset=custom_offset, level=1)]
+
+    result = split_document(text, headings=headings, max_tokens=1500)
+
+    assert result == [text[:custom_offset], text[custom_offset:]]
+    assert "".join(result) == text
+    # The second section still contains the untouched "# Heading B" line -
+    # proof tier 1 never ran against it.
+    assert "# Heading B" in result[1]
+
+
+def test_split_document_oversized_section_is_split_further() -> None:
+    heading1 = "# Intro\n\n"
+    body1 = "Short body.\n\n"
+    heading2 = "# Details\n\n"
+    body2 = "This is one sentence in a very long paragraph. " * 30
+    text = heading1 + body1 + heading2 + body2
+    max_tokens = 50
+    assert count_tokens(body2) > max_tokens  # sanity: second section must overflow
+
+    result = split_document(text, max_tokens=max_tokens)
+
+    assert "".join(result) == text
+    # Two headings, but the oversized second section produces more than
+    # one chunk on its own, so the total exceeds the heading count.
+    assert len(result) > 2
+    for chunk in result:
+        assert count_tokens(chunk) <= max_tokens
