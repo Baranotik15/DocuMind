@@ -74,6 +74,13 @@ const events: DashboardEvent[] = [
     detail: 'release-plan.md chunking started.',
     userEmail: null,
   },
+  {
+    id: 'event-5',
+    type: 'analysis.run_completed',
+    timestamp: '2026-01-01T00:04:00.000Z',
+    detail: 'Documentation analysis completed - 842 tokens used.',
+    userEmail: 'admin@documind.dev',
+  },
 ]
 
 // Timezone-safe conversion from an ISO instant to the local date/time parts
@@ -182,6 +189,11 @@ describe('DashboardPage', () => {
 
     expect(await within(table).findByText('Rechunk Document — Started')).toBeInTheDocument()
     expect(await screen.findByText('release-plan.md chunking started.')).toBeInTheDocument()
+
+    // 'analysis.*' events (from the Documentation Analysis feature) also
+    // belong on the Logs tab, alongside 'document.*' - not just the latter.
+    expect(await within(table).findByText('Documentation Analysis — Completed')).toBeInTheDocument()
+    expect(await screen.findByText('Documentation analysis completed - 842 tokens used.')).toBeInTheDocument()
   })
 
   it('excludes non-document events (e.g. chat.message_sent) from the Logs view', async () => {
@@ -360,7 +372,8 @@ describe('DashboardPage', () => {
 
     fireEvent.click(timestampHeaderButton)
     expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'descending')
-    expect(firstRowTypeCell()).toHaveTextContent('Rechunk Document — Started')
+    // event-5 (analysis.run_completed) is now the fixture's newest event.
+    expect(firstRowTypeCell()).toHaveTextContent('Documentation Analysis — Completed')
 
     fireEvent.click(timestampHeaderButton)
     expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'ascending')

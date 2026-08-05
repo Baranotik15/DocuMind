@@ -342,17 +342,20 @@ function StatsBarChart({ title, data, range, timezone, color, glow, loading, dat
 const LOGS_PAGE_SIZE = 20
 
 // The Logs tab only cares about file-affecting activity - uploads, deletes,
-// and (re)chunking - not every dashboard_events row. Every event type the
-// backend ever records (see app/events.py's call sites: pipeline.py,
-// routers/documents.py, routers/chat.py) is either "document.*" (uploaded/
-// deleted/chunking_started/chunking_succeeded/chunking_failed - manual chunk
-// edits from ChunkPreviewPage's Save re-run the same chunking pipeline, so
-// they're already covered here too) or "chat.*" (chat.message_sent) -
-// prefix-matching "document." is exactly this split, with no per-type
-// allowlist to keep in sync if a new document.* event type is ever added.
-// The Stats tab's own counts deliberately still use the full, unfiltered
-// `events` list below - this restriction is Logs-only.
-const LOG_EVENT_TYPE_PREFIX = 'document.'
+// (re)chunking, and documentation-analysis runs - not every dashboard_events
+// row. Every event type the backend ever records (see app/events.py's call
+// sites: pipeline.py, routers/documents.py, routers/chat.py, analysis/
+// service.py) is one of "document.*" (uploaded/deleted/chunking_started/
+// chunking_succeeded/chunking_failed - manual chunk edits from
+// ChunkPreviewPage's Save re-run the same chunking pipeline, so they're
+// already covered here too), "analysis.*" (run_completed/run_failed - see
+// app/analysis/service.py's run_full_analysis), or "chat.*"
+// (chat.message_sent) - prefix-matching against this list is exactly that
+// split, with no per-type allowlist to keep in sync if a new document.*/
+// analysis.* event type is ever added. The Stats tab's own counts
+// deliberately still use the full, unfiltered `events` list below - this
+// restriction is Logs-only.
+const LOG_EVENT_TYPE_PREFIXES = ['document.', 'analysis.']
 
 // Human-readable Type-column labels for the raw `document.*` event types
 // (see LOG_EVENT_TYPE_PREFIX above for the full set the backend records) -
@@ -368,6 +371,8 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   'document.chunking_succeeded': 'Rechunk Document — Succeeded',
   'document.chunking_failed': 'Rechunk Document — Failed',
   'document.deleted': 'Delete Document',
+  'analysis.run_completed': 'Documentation Analysis — Completed',
+  'analysis.run_failed': 'Documentation Analysis — Failed',
 }
 
 function formatEventType(type: string): string {
@@ -762,7 +767,7 @@ export function DashboardPage(): JSX.Element {
       : null
 
     const filtered = events.filter((event) => {
-      if (!event.type.startsWith(LOG_EVENT_TYPE_PREFIX)) {
+      if (!LOG_EVENT_TYPE_PREFIXES.some((prefix) => event.type.startsWith(prefix))) {
         return false
       }
       if (query && !event.detail.toLowerCase().includes(query)) {
