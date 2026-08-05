@@ -306,19 +306,18 @@ def test_split_document_empty_string_returns_empty_list() -> None:
 
 
 def test_split_document_uses_default_max_tokens() -> None:
-    # "x" repeated 3000 times is only ~375 cl100k_base tokens - under the
-    # old char-based default (1500) it would have split, but token-counted
-    # it wouldn't, so this fixture is sized to exceed the new default
-    # (DEFAULT_MAX_TOKENS = 400) instead of reusing the old char count.
+    # Sized well past DEFAULT_MAX_TOKENS (80, deliberately small - about
+    # 3-4 lines of body text) so this fixture reliably exercises the
+    # default without hardcoding an unrelated char count.
     text = "x" * 5000
-    assert count_tokens(text) > 400  # sanity: fixture must exceed the default
+    assert count_tokens(text) > 80  # sanity: fixture must exceed the default
 
     result = split_document(text)
 
     assert "".join(result) == text
     assert len(result) > 1
     for chunk in result:
-        assert count_tokens(chunk) <= 400
+        assert count_tokens(chunk) <= 80
 
 
 # --- split_document: heading-aware sectioning -------------------------------

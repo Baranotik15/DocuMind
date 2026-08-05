@@ -17,9 +17,13 @@ _PARAGRAPH_SEPARATOR_RE = re.compile(r"\n[ \t\r]*\n")
 # cut points, not text that gets removed.
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
 
-# Roughly equivalent to the old 1500-character default, now measured
-# accurately via cl100k_base tokens instead of raw character count.
-DEFAULT_MAX_TOKENS = 400
+# Deliberately small - about 3-4 lines of body text (an average line runs
+# roughly 15-20 tokens), per explicit request for much finer-grained
+# fallback chunks than the old 1500-character/400-token default. Only
+# applies to tiers 5-7 (paragraph/sentence/fixed fallback, see
+# _split_section_to_size) - tiers 1-4 still section on real headings first
+# regardless of this limit.
+DEFAULT_MAX_TOKENS = 80
 
 
 def split_document(
