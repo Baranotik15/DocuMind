@@ -130,13 +130,14 @@ def _force_status(filename: str, status: str) -> None:
 
 def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
     filename = _unique_filename()
+    content = b"Hello, router test."
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             response = client.post(
                 "/internal/documents",
-                files={"file": (filename, io.BytesIO(b"Hello, router test."), "text/plain")},
+                files={"file": (filename, io.BytesIO(content), "text/plain")},
             )
 
         assert response.status_code == 200
@@ -147,11 +148,15 @@ def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
         assert body["status"] in ("uploaded", "ready")
         assert "id" in body
         assert "uploadedAt" in body
+        assert body["fileSizeBytes"] == len(content)
 
         list_response = client.get("/internal/documents")
         assert list_response.status_code == 200
-        filenames = [doc["filename"] for doc in list_response.json()]
+        listed = list_response.json()
+        filenames = [doc["filename"] for doc in listed]
         assert filename in filenames
+        matching = [doc for doc in listed if doc["filename"] == filename]
+        assert matching[0]["fileSizeBytes"] == len(content)
     finally:
         _cleanup(filename)
 
@@ -296,6 +301,48 @@ def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
         list_response = client.get("/internal/documents")
         matching = [doc for doc in list_response.json() if doc["filename"] == filename]
         assert len(matching) == 1
+    finally:
+        _cleanup(filename)
+
+
+def test_upload_overwrite_updates_file_size_to_new_content_not_original(
+    client: TestClient,
+) -> None:
+    # The overwrite path replaces the file's actual content in place, so
+    # fileSizeBytes must track the new content's length, not stay pinned to
+    # whatever the original upload's size was - easy to get wrong by only
+    # setting file_size_bytes on the INSERT branch and forgetting the
+    # UPDATE branch.
+    filename = _unique_filename()
+    original_content = b"Original content."
+    replacement_content = b"Much longer replacement content than the original."
+    assert len(replacement_content) != len(original_content)
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            first = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(original_content), "text/plain")},
+            )
+            assert first.status_code == 200
+            assert first.json()["fileSizeBytes"] == len(original_content)
+
+            second = client.post(
+                "/internal/documents",
+                files={
+                    "file": (filename, io.BytesIO(replacement_content), "text/plain")
+                },
+                data={"overwrite": "true"},
+            )
+
+        assert second.status_code == 200
+        assert second.json()["fileSizeBytes"] == len(replacement_content)
+
+        list_response = client.get("/internal/documents")
+        matching = [doc for doc in list_response.json() if doc["filename"] == filename]
+        assert len(matching) == 1
+        assert matching[0]["fileSizeBytes"] == len(replacement_content)
     finally:
         _cleanup(filename)
 

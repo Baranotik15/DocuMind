@@ -59,6 +59,7 @@ def _document_summary(row) -> DocumentSummary:
         id=str(row.id),
         filename=row.filename,
         status=row.status,
+        fileSizeBytes=row.file_size_bytes,
         uploadedAt=row.uploaded_at.isoformat(),
     )
 
@@ -81,6 +82,7 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="unsupported_file_type")
 
     data = await _read_upload_within_limit(file, get_settings().max_upload_size_bytes)
+    file_size = len(data)
 
     existing = (
         await session.execute(
@@ -109,14 +111,15 @@ async def upload_document(
             row = (
                 await session.execute(
                     text(
-                        "INSERT INTO documents (filename, storage_key, status) "
-                        "VALUES (:filename, :storage_key, :status) "
-                        "RETURNING id, filename, status, uploaded_at"
+                        "INSERT INTO documents (filename, storage_key, status, file_size_bytes) "
+                        "VALUES (:filename, :storage_key, :status, :file_size_bytes) "
+                        "RETURNING id, filename, status, uploaded_at, file_size_bytes"
                     ),
                     {
                         "filename": filename,
                         "storage_key": storage_key,
                         "status": str(DocumentStatus.UPLOADED),
+                        "file_size_bytes": file_size,
                     },
                 )
             ).one()
@@ -145,11 +148,15 @@ async def upload_document(
         row = (
             await session.execute(
                 text(
-                    "UPDATE documents SET status = :status "
+                    "UPDATE documents SET status = :status, file_size_bytes = :file_size_bytes "
                     "WHERE id = :id "
-                    "RETURNING id, filename, status, uploaded_at"
+                    "RETURNING id, filename, status, uploaded_at, file_size_bytes"
                 ),
-                {"status": str(DocumentStatus.UPLOADED), "id": existing.id},
+                {
+                    "status": str(DocumentStatus.UPLOADED),
+                    "file_size_bytes": file_size,
+                    "id": existing.id,
+                },
             )
         ).one()
         await record_event_async(
@@ -182,7 +189,7 @@ async def list_documents(session: AsyncSession = Depends(get_session)) -> list[D
     rows = (
         await session.execute(
             text(
-                "SELECT id, filename, status, uploaded_at FROM documents "
+                "SELECT id, filename, status, uploaded_at, file_size_bytes FROM documents "
                 "ORDER BY uploaded_at"
             )
         )
