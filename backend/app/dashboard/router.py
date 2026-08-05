@@ -37,20 +37,27 @@ router = APIRouter()
 DashboardRange = Literal["day", "7days", "month", "year"]
 
 
+def _local_now(now: datetime, tz_name: str) -> tuple[datetime, ZoneInfo]:
+    """Resolves `tz_name` (falling back to UTC for a missing, garbled, or
+    otherwise unrecognized name - this endpoint has never 422'd on
+    anything but the `range` Literal itself) and returns (`now` converted
+    into that zone, the zone itself) - both are needed by every
+    `_*_bucket_starts` function below, which previously each repeated this
+    same resolve-then-convert preamble."""
+    try:
+        zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        zone = ZoneInfo("UTC")
+    return now.astimezone(zone), zone
+
+
 def _year_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
     """Calendar-aligned bucket starts for the `year` range: 12 buckets, one
     per calendar month, January through December of the CURRENT year in
     `tz_name` - not a trailing 12-month window ending at "now"'s month
     (which could straddle two calendar years, e.g. Sep-Aug). "This year"
-    is `now` converted into `tz_name`, same as day/7days/month above.
-
-    Falls back to UTC on the same invalid-`tz_name` cases day/7days/month
-    fall back on."""
-    try:
-        zone = ZoneInfo(tz_name)
-    except (ZoneInfoNotFoundError, ValueError, KeyError):
-        zone = ZoneInfo("UTC")
-    local_now = now.astimezone(zone)
+    is `now` converted into `tz_name`, same as day/7days/month above."""
+    local_now, zone = _local_now(now, tz_name)
     return [
         datetime(local_now.year, month, 1, tzinfo=zone).astimezone(timezone.utc)
         for month in range(1, 13)
@@ -64,20 +71,11 @@ def _day_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
     day this covers can shift with the selected zone (e.g. right after
     local midnight, "today" locally may still be "yesterday" in UTC).
 
-    Falls back to UTC if `tz_name` doesn't resolve to a real IANA zone
-    (missing, garbled, or otherwise unrecognized) - this endpoint has never
-    422'd on anything but the `range` Literal itself, and a bad timezone
-    string shouldn't take down the whole Stats tab.
-
     Returned starts are UTC-aware datetimes (converted back from local
     time) so they compare correctly against created_at, which is stored as
     UTC in Postgres, and so the response's bucketStart values stay
     absolute, UTC-serializable instants like every other range."""
-    try:
-        zone = ZoneInfo(tz_name)
-    except (ZoneInfoNotFoundError, ValueError, KeyError):
-        zone = ZoneInfo("UTC")
-    local_now = now.astimezone(zone)
+    local_now, _zone = _local_now(now, tz_name)
     local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     return [
         (local_midnight + timedelta(hours=i)).astimezone(timezone.utc)
@@ -96,15 +94,10 @@ def _week_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
     old trailing window did.
 
     `datetime.weekday()` (Monday == 0) locates the current week's Monday by
-    subtracting that many days from local midnight; falls back to UTC on
-    the same invalid-`tz_name` cases _day_bucket_starts falls back on, and
-    returns UTC-aware datetimes for the same created_at-comparison reason.
-    """
-    try:
-        zone = ZoneInfo(tz_name)
-    except (ZoneInfoNotFoundError, ValueError, KeyError):
-        zone = ZoneInfo("UTC")
-    local_now = now.astimezone(zone)
+    subtracting that many days from local midnight; returns UTC-aware
+    datetimes for the same created_at-comparison reason as
+    _day_bucket_starts."""
+    local_now, _zone = _local_now(now, tz_name)
     local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     monday = local_midnight - timedelta(days=local_midnight.weekday())
     return [(monday + timedelta(days=i)).astimezone(timezone.utc) for i in range(7)]
@@ -124,15 +117,8 @@ def _month_range_bucket_starts(now: datetime, tz_name: str) -> list[datetime]:
     the 22nd through however many days this particular month actually has
     left lands in that one bucket for free, per explicit request (the
     22nd-28th/29th/30th/31st stretch is one bucket, not a separate
-    trailing sliver).
-
-    Falls back to UTC on the same invalid-`tz_name` cases day/7days fall
-    back on."""
-    try:
-        zone = ZoneInfo(tz_name)
-    except (ZoneInfoNotFoundError, ValueError, KeyError):
-        zone = ZoneInfo("UTC")
-    local_now = now.astimezone(zone)
+    trailing sliver)."""
+    local_now, zone = _local_now(now, tz_name)
     return [
         datetime(local_now.year, local_now.month, day, tzinfo=zone).astimezone(timezone.utc)
         for day in (1, 8, 15, 22)
@@ -601,6 +587,21 @@ def _bucket_spend_amount(bucket) -> tuple[float, str | None]:
     return total, currency
 
 
+def _windows_containing(bucket, now: datetime) -> list[str]:
+    """Which of _OPENAI_SPEND_WINDOWS' rolling windows `bucket` counts
+    toward, as of `now` - shared by _summarize_openai_spend (cost buckets)
+    and _sum_tokens_into_windows (token buckets) below, whose per-bucket
+    accumulation otherwise differs (a dollar amount + currency vs. a token
+    count) but whose "which windows does this bucket belong to" rule is
+    identical - previously duplicated in both functions' loops."""
+    bucket_start = datetime.fromtimestamp(bucket.start_time, tz=timezone.utc)
+    return [
+        window
+        for window, duration in _OPENAI_SPEND_WINDOWS.items()
+        if bucket_start >= now - duration
+    ]
+
+
 def _summarize_openai_spend(buckets: list, now: datetime) -> dict:
     """Sums `buckets` (one entry per daily OpenAI cost bucket, any order)
     into the four rolling-window totals GET /internal/dashboard/openai-spend
@@ -625,13 +626,11 @@ def _summarize_openai_spend(buckets: list, now: datetime) -> dict:
     totals = {window: 0.0 for window in _OPENAI_SPEND_WINDOWS}
     currency: str | None = None
     for bucket in buckets:
-        bucket_start = datetime.fromtimestamp(bucket.start_time, tz=timezone.utc)
         amount, bucket_currency = _bucket_spend_amount(bucket)
         if currency is None and bucket_currency:
             currency = bucket_currency
-        for window, duration in _OPENAI_SPEND_WINDOWS.items():
-            if bucket_start >= now - duration:
-                totals[window] += amount
+        for window in _windows_containing(bucket, now):
+            totals[window] += amount
     return {**totals, "currency": currency or "usd"}
 
 
@@ -681,11 +680,9 @@ def _sum_tokens_into_windows(
     """
     totals = {window: 0 for window in _OPENAI_SPEND_WINDOWS}
     for bucket in buckets:
-        bucket_start = datetime.fromtimestamp(bucket.start_time, tz=timezone.utc)
         tokens = tokens_per_bucket(bucket)
-        for window, duration in _OPENAI_SPEND_WINDOWS.items():
-            if bucket_start >= now - duration:
-                totals[window] += tokens
+        for window in _windows_containing(bucket, now):
+            totals[window] += tokens
     return totals
 
 
