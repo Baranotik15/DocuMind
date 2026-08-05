@@ -11,7 +11,12 @@ from app.config import get_settings
 from app.dashboard_events.constants import DashboardEventType
 from app.dashboard_events.recording import record_event_async
 from app.db.session import get_session
-from app.documents.constants import DocumentStatus, SUPPORTED_DOCUMENT_EXTENSIONS
+from app.documents.constants import (
+    DOCUMENT_NOT_FOUND_ERROR,
+    DOCUMENT_PROCESSING_ERROR,
+    DocumentStatus,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+)
 from app.documents.deps import get_storage
 from app.documents.schemas import DocumentSummary
 from app.documents.storage import StorageAdapter, StorageKeyNotFoundError
@@ -19,13 +24,11 @@ from app.documents.tasks import run_document_pipeline
 
 router = APIRouter()
 
-# Detail codes shared across more than one endpoint below - kept as
-# constants so all raise sites for the same condition stay in sync (see
-# app/documents/constants.py for the DocumentStatus registry, and
-# app/dashboard_events/constants.py for DashboardEventType, these
-# endpoints also use).
-_DOCUMENT_PROCESSING_ERROR = "document_processing"
-_DOCUMENT_NOT_FOUND_ERROR = "document_not_found"
+# Detail code unique to this router (DOCUMENT_PROCESSING_ERROR and
+# DOCUMENT_NOT_FOUND_ERROR - shared with chunks/router.py's sibling
+# endpoints - now live in app/documents/constants.py instead of being
+# copy-pasted per file; see also app/dashboard_events/constants.py for
+# DashboardEventType, which this router also uses).
 _FILE_TOO_LARGE_ERROR = "file_too_large"
 
 # Read in bounded chunks rather than a single file.read() - the client's
@@ -88,7 +91,7 @@ async def upload_document(
     ).one_or_none()
 
     if existing is not None and existing.status == DocumentStatus.CHUNKING:
-        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
+        raise HTTPException(status_code=409, detail=DOCUMENT_PROCESSING_ERROR)
 
     if existing is not None and not overwrite:
         raise HTTPException(status_code=409, detail="duplicate_filename")
@@ -208,10 +211,10 @@ async def delete_document(
     ).one_or_none()
 
     if row is None:
-        raise HTTPException(status_code=404, detail=_DOCUMENT_NOT_FOUND_ERROR)
+        raise HTTPException(status_code=404, detail=DOCUMENT_NOT_FOUND_ERROR)
 
     if row.status == DocumentStatus.CHUNKING:
-        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
+        raise HTTPException(status_code=409, detail=DOCUMENT_PROCESSING_ERROR)
 
     try:
         storage.delete(row.storage_key)

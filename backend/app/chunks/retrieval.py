@@ -15,7 +15,7 @@ from app.documents.constants import DocumentStatus
 _SIMILAR_CHUNKS_FROM_CLAUSE = (
     "FROM chunks "
     "JOIN documents ON documents.id = chunks.document_id "
-    f"WHERE documents.status = '{DocumentStatus.READY}' "
+    "WHERE documents.status = :ready_status "
     "ORDER BY chunks.embedding <=> :query_embedding ::vector "
     "LIMIT :top_k"
 )
@@ -57,6 +57,7 @@ async def fetch_similar_chunks(
             {
                 "query_embedding": format_vector(query_embedding),
                 "top_k": top_k,
+                "ready_status": str(DocumentStatus.READY),
             },
         )
     ).all()
