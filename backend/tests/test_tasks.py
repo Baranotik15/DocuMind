@@ -56,7 +56,21 @@ def _event_details(session, event_type: str) -> list[str]:
 
 
 def _cleanup(document_id: str) -> None:
+    # Also deletes every dashboard_events row this test's own
+    # run_document_pipeline call created (document.chunking_failed here -
+    # see app.documents.pipeline's mark_document_failed/record_event_sync)
+    # so it never lingers in the live-shared dashboard_events table the
+    # live Dashboard reads from - every one of those rows embeds
+    # `document_id=<id>` in `detail`, so a LIKE match on this test's own id
+    # is precise and doesn't touch any other test's rows.
     with SyncSessionLocal() as session:
+        session.execute(
+            text(
+                "DELETE FROM dashboard_events WHERE detail LIKE "
+                "'%' || :document_id || '%'"
+            ),
+            {"document_id": document_id},
+        )
         session.execute(
             text("DELETE FROM documents WHERE id = :document_id"),
             {"document_id": document_id},

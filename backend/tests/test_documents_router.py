@@ -13,6 +13,7 @@ from app.documents import router as documents_router
 from app.db.sync_session import SyncSessionLocal
 from app.documents.deps import get_storage
 from app.documents.storage import StorageKeyNotFoundError
+from app.documents.tasks import run_document_pipeline
 from app.main import app
 
 
@@ -39,6 +40,46 @@ def _celery_eager() -> None:
     celery_app.conf.task_eager_propagates = True
 
 
+@pytest.fixture(autouse=True)
+def _pipeline_dispatch_runs_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fixes the real root cause of the live Dashboard's event log getting
+    polluted with test noise every time this suite runs: `run_document_pipeline
+    .delay(...)` on a live, real Celery app (this project's `celery_broker_url`
+    always points at the real, shared Redis broker - there is no separate
+    test broker) publishes a real message, and the separately-running
+    `worker` container (a different OS process entirely) picks it up and
+    executes the pipeline for real - against this same shared dev DB and
+    dev Dashboard.
+
+    Worse, this file's own `patch("app.documents.pipeline.embed_texts", ...)`
+    mocks below only patch THIS test process's own memory - they have zero
+    effect on whatever the separate worker process actually runs. So without
+    this fixture, hitting POST /internal/documents for real isn't just
+    polluting the live event log, it also silently stops testing what it
+    looks like it's testing (the worker's real, unpatched pipeline decides
+    the resulting document/chunk state, asynchronously, well after this
+    test's own assertions already ran).
+
+    Patches `run_document_pipeline.delay` itself - the same Task singleton
+    referenced both here (via app.documents.router) and by
+    app.chunks.router - to call the task's own underlying function directly
+    instead of going through Celery's dispatch machinery at all: synchronous,
+    in-process, no broker round trip, no dependence on the `task_always_eager`
+    config `_celery_eager` above sets (this makes that guarantee
+    unconditional rather than relying on a mutable global Celery singleton
+    staying correctly configured). Every assertion below that treats the
+    pipeline as having already finished by the time the response comes back
+    (e.g. status == "ready") stays true and deterministic under this, exactly
+    as it did when eager mode was doing its job - it just no longer depends
+    on that global config bit.
+    """
+
+    def _run_inline(*args, **kwargs):
+        return run_document_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(run_document_pipeline, "delay", _run_inline)
+
+
 async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
     # External-boundary mock (app.documents.pipeline.embed_texts) so no real OpenAI
     # call happens - same pattern as test_pipeline.py.
@@ -49,8 +90,36 @@ def _unique_filename(suffix: str = ".txt") -> str:
     return f"router-test-{uuid.uuid4()}{suffix}"
 
 
-def _cleanup(filename: str) -> None:
+def _cleanup(filename: str, document_id: str | None = None) -> None:
+    """Deletes the test's own `documents` row (by filename) AND every
+    `dashboard_events` row it created - both the router's own
+    document.uploaded/document.deleted events and, now that the pipeline
+    fixture above runs inline in-process, the pipeline's own
+    document.chunking_started/succeeded/failed events, all recorded into
+    this same shared dev Postgres the live Dashboard reads from (see
+    app.documents.router/app.documents.pipeline's record_event_* call
+    sites - every one of them embeds `document_id=<id>` in `detail`).
+
+    `document_id` should be passed explicitly whenever the caller already
+    has it (most tests below do) - required for tests whose own endpoint
+    call already deleted the document row before this runs (the filename
+    lookup below would otherwise find nothing to key the events cleanup
+    off of). Falls back to looking it up by filename otherwise.
+    """
     with SyncSessionLocal() as session:
+        if document_id is None:
+            document_id = session.execute(
+                text("SELECT id FROM documents WHERE filename = :filename"),
+                {"filename": filename},
+            ).scalar_one_or_none()
+        if document_id is not None:
+            session.execute(
+                text(
+                    "DELETE FROM dashboard_events WHERE detail LIKE "
+                    "'%' || :document_id || '%'"
+                ),
+                {"document_id": str(document_id)},
+            )
         session.execute(
             text("DELETE FROM documents WHERE filename = :filename"),
             {"filename": filename},
@@ -69,6 +138,7 @@ def _force_status(filename: str, status: str) -> None:
 
 def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
     filename = _unique_filename()
+    document_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -80,8 +150,9 @@ def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
 
         assert response.status_code == 200
         body = response.json()
+        document_id = body["id"]
         assert body["filename"] == filename
-        # Celery is eager, so the pipeline runs inline during the request -
+        # The pipeline dispatch fixture above runs it inline, in-process -
         # by the time we get a response, status may already be 'ready'.
         assert body["status"] in ("uploaded", "ready")
         assert "id" in body
@@ -92,13 +163,14 @@ def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
         filenames = [doc["filename"] for doc in list_response.json()]
         assert filename in filenames
     finally:
-        _cleanup(filename)
+        _cleanup(filename, document_id)
 
 
 def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
     client: TestClient,
 ) -> None:
     malicious_filename = "../../../../evil-traversal.txt"
+    document_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -112,6 +184,7 @@ def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
 
         assert response.status_code == 200
         body = response.json()
+        document_id = body["id"]
         # filename is kept verbatim as display/lookup metadata...
         assert body["filename"] == malicious_filename
 
@@ -130,7 +203,7 @@ def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
         assert resolved.is_relative_to(base_dir)
         assert resolved.is_file()
     finally:
-        _cleanup(malicious_filename)
+        _cleanup(malicious_filename, document_id)
 
 
 def test_upload_over_size_limit_returns_413_and_is_not_listed(
@@ -177,6 +250,7 @@ def test_upload_duplicate_filename_without_overwrite_returns_409(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    original_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -201,13 +275,14 @@ def test_upload_duplicate_filename_without_overwrite_returns_409(
         assert len(matching) == 1
         assert matching[0]["id"] == original_id
     finally:
-        _cleanup(filename)
+        _cleanup(filename, original_id)
 
 
 def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    original_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -234,13 +309,14 @@ def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
         matching = [doc for doc in list_response.json() if doc["filename"] == filename]
         assert len(matching) == 1
     finally:
-        _cleanup(filename)
+        _cleanup(filename, original_id)
 
 
 def test_upload_overwrite_while_chunking_returns_409_document_processing(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    document_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -250,6 +326,7 @@ def test_upload_overwrite_while_chunking_returns_409_document_processing(
                 files={"file": (filename, io.BytesIO(b"Original content."), "text/plain")},
             )
         assert first.status_code == 200
+        document_id = first.json()["id"]
 
         _force_status(filename, "chunking")
 
@@ -264,7 +341,7 @@ def test_upload_overwrite_while_chunking_returns_409_document_processing(
         assert second.status_code == 409
         assert second.json()["detail"] == "document_processing"
     finally:
-        _cleanup(filename)
+        _cleanup(filename, document_id)
 
 
 def test_delete_ready_document_returns_204_and_removes_document_chunks_and_file(
@@ -309,7 +386,7 @@ def test_delete_ready_document_returns_204_and_removes_document_chunks_and_file(
         with pytest.raises(StorageKeyNotFoundError):
             storage.read(storage_key)
     finally:
-        _cleanup(filename)
+        _cleanup(filename, document_id)
 
 
 def test_delete_chunking_document_returns_409_and_leaves_it_and_chunks_intact(
@@ -342,7 +419,7 @@ def test_delete_chunking_document_returns_409_and_leaves_it_and_chunks_intact(
         assert chunks_response.status_code == 200
         assert len(chunks_response.json()) > 0
     finally:
-        _cleanup(filename)
+        _cleanup(filename, document_id)
 
 
 def test_delete_nonexistent_document_returns_404(client: TestClient) -> None:
@@ -368,6 +445,7 @@ def test_concurrent_uploads_of_a_new_filename_never_500(client: TestClient) -> N
     barrier = threading.Barrier(2)
     results: list[int] = []
     results_lock = threading.Lock()
+    document_id = None
 
     def _upload() -> None:
         barrier.wait()
@@ -399,14 +477,16 @@ def test_concurrent_uploads_of_a_new_filename_never_500(client: TestClient) -> N
         list_response = client.get("/internal/documents")
         matching = [doc for doc in list_response.json() if doc["filename"] == filename]
         assert len(matching) == 1
+        document_id = matching[0]["id"]
     finally:
-        _cleanup(filename)
+        _cleanup(filename, document_id)
 
 
 def test_delete_document_records_document_deleted_dashboard_event(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    document_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -430,7 +510,12 @@ def test_delete_document_records_document_deleted_dashboard_event(
         ]
         assert len(matching) == 1
     finally:
-        _cleanup(filename)
+        # document_id is passed explicitly (not left to _cleanup's own
+        # filename-based fallback lookup) because the document row itself is
+        # already gone by this point (deleted above) - a filename lookup
+        # here would find nothing, and the document.uploaded/chunking_*/
+        # deleted events this test's own requests created would leak.
+        _cleanup(filename, document_id)
 
 
 def test_list_documents_without_session_cookie_returns_401() -> None:

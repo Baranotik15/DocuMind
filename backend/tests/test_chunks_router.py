@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.db.sync_session import SyncSessionLocal
 from app.documents.pipeline import DocumentProcessingError
+from app.documents.tasks import run_document_pipeline
 
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 
@@ -29,6 +30,27 @@ def _celery_eager() -> None:
 
     celery_app.conf.task_always_eager = True
     celery_app.conf.task_eager_propagates = True
+
+
+@pytest.fixture(autouse=True)
+def _pipeline_dispatch_runs_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same fix as test_documents_router.py's own fixture of the same name
+    (see its docstring for the full root-cause explanation): `.delay()` on
+    this project's real, live Celery app publishes to the real Redis broker,
+    which the separately-running `worker` container would pick up and
+    execute for real - polluting the live Dashboard's event log and running
+    this file's `patch("app.documents.pipeline.embed_texts", ...)` mocks
+    against a process they never touch. Patches `run_document_pipeline
+    .delay` itself (the same Task singleton app.chunks.router references) to
+    call the task's own underlying function directly instead - synchronous,
+    in-process, no broker round trip, unconditionally (not dependent on the
+    `task_always_eager` config `_celery_eager` above sets).
+    """
+
+    def _run_inline(*args, **kwargs):
+        return run_document_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(run_document_pipeline, "delay", _run_inline)
 
 
 async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
@@ -100,7 +122,23 @@ def _force_status(document_id: str, status: str) -> None:
 
 
 def _cleanup(document_id: str) -> None:
+    # Also deletes every dashboard_events row this test's own save_chunks
+    # call(s) created (document.chunking_started/succeeded/failed - see
+    # app.documents.pipeline's record_event_sync call sites, now running
+    # inline in-process via the fixture above) - every one of them embeds
+    # `document_id=<id>` in `detail`, so a LIKE match on this test's own id
+    # is precise. Every test in this file already has document_id in scope
+    # (documents are inserted directly via _insert_document, never through
+    # the upload endpoint), so no fallback lookup is needed here, unlike
+    # test_documents_router.py's own _cleanup.
     with SyncSessionLocal() as session:
+        session.execute(
+            text(
+                "DELETE FROM dashboard_events WHERE detail LIKE "
+                "'%' || :document_id || '%'"
+            ),
+            {"document_id": document_id},
+        )
         session.execute(
             text("DELETE FROM documents WHERE id = :document_id"),
             {"document_id": document_id},
