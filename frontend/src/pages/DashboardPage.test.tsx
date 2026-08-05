@@ -171,13 +171,16 @@ describe('DashboardPage', () => {
     // remain unique to the table, so those queries are unchanged.
     const table = await screen.findByRole('table')
 
-    expect(await within(table).findByText('document.uploaded')).toBeInTheDocument()
+    expect(await within(table).findByText('Upload Document')).toBeInTheDocument()
     expect(await screen.findByText('onboarding-notes.docx was uploaded.')).toBeInTheDocument()
 
+    // 'document.chunked' isn't a real backend event type (this fixture's
+    // own placeholder) - not in EVENT_TYPE_LABELS, so formatEventType falls
+    // back to rendering it verbatim.
     expect(await within(table).findByText('document.chunked')).toBeInTheDocument()
     expect(await screen.findByText('architecture-guide.pdf was split into 3 chunks.')).toBeInTheDocument()
 
-    expect(await within(table).findByText('document.chunking_started')).toBeInTheDocument()
+    expect(await within(table).findByText('Rechunk Document — Started')).toBeInTheDocument()
     expect(await screen.findByText('release-plan.md chunking started.')).toBeInTheDocument()
   })
 
@@ -185,7 +188,7 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
 
-    await screen.findByText('document.uploaded')
+    await screen.findByText('Upload Document')
     expect(screen.queryByText('chat.message')).not.toBeInTheDocument()
     expect(screen.queryByText('A user asked how to upload a new document.')).not.toBeInTheDocument()
   })
@@ -305,7 +308,7 @@ describe('DashboardPage', () => {
   it('filters the Logs table by text match in Detail, only once Search is clicked', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
-    await screen.findByText('document.uploaded')
+    await screen.findByText('Upload Document')
 
     fireEvent.change(screen.getByRole('textbox', { name: /search in details/i }), { target: { value: 'chunks' } })
 
@@ -328,7 +331,7 @@ describe('DashboardPage', () => {
   it('pressing Enter in the search field also applies the filter', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
-    await screen.findByText('document.uploaded')
+    await screen.findByText('Upload Document')
 
     const searchInput = screen.getByRole('textbox', { name: /search in details/i })
     fireEvent.change(searchInput, { target: { value: 'chunks' } })
@@ -353,15 +356,15 @@ describe('DashboardPage', () => {
 
     // Unsorted (default): this fixture's own fetch/insertion order.
     expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'none')
-    expect(firstRowTypeCell()).toHaveTextContent('document.uploaded')
+    expect(firstRowTypeCell()).toHaveTextContent('Upload Document')
 
     fireEvent.click(timestampHeaderButton)
     expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'descending')
-    expect(firstRowTypeCell()).toHaveTextContent('document.chunking_started')
+    expect(firstRowTypeCell()).toHaveTextContent('Rechunk Document — Started')
 
     fireEvent.click(timestampHeaderButton)
     expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'ascending')
-    expect(firstRowTypeCell()).toHaveTextContent('document.uploaded')
+    expect(firstRowTypeCell()).toHaveTextContent('Upload Document')
 
     fireEvent.click(timestampHeaderButton)
     expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'none')
@@ -370,7 +373,7 @@ describe('DashboardPage', () => {
   it('filters the Logs table by a From/To date-time range', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
-    await screen.findByText('document.uploaded')
+    await screen.findByText('Upload Document')
 
     const from = toLocalDateTimeParts(events[1].timestamp)
     const to = toLocalDateTimeParts(events[3].timestamp)
@@ -392,14 +395,14 @@ describe('DashboardPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
 
     expect(await screen.findByText('document.chunked')).toBeInTheDocument()
-    expect(screen.getByText('document.chunking_started')).toBeInTheDocument()
-    expect(screen.queryByText('document.uploaded')).not.toBeInTheDocument()
+    expect(screen.getByText('Rechunk Document — Started')).toBeInTheDocument()
+    expect(screen.queryByText('Upload Document')).not.toBeInTheDocument()
   })
 
   it('shows a "no matching entries" message instead of an empty table when the filters match nothing', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
-    await screen.findByText('document.uploaded')
+    await screen.findByText('Upload Document')
 
     fireEvent.change(screen.getByRole('textbox', { name: /search in details/i }), {
       target: { value: 'no such detail text exists' },
@@ -413,7 +416,7 @@ describe('DashboardPage', () => {
   it('clears search, sort, and date-range filters via the Clear filters button', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
-    await screen.findByText('document.uploaded')
+    await screen.findByText('Upload Document')
 
     expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument()
 
