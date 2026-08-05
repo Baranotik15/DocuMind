@@ -5,7 +5,7 @@ from app.config import get_settings
 celery_app = Celery(
     "documind",
     broker=get_settings().celery_broker_url,
-    include=["app.documents.tasks", "app.smoke_jobs.tasks"],
+    include=["app.documents.tasks", "app.smoke_jobs.tasks", "app.analysis.tasks"],
 )
 # Task outcomes are written to Postgres by the task itself (see
 # app.documents.tasks/app.smoke_jobs.tasks), never read back from the

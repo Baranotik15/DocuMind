@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import text
@@ -14,9 +14,12 @@ from app.analysis.service import (
     ConflictCheckResult,
     GapAnalysisResult,
     check_conflict,
+    run_full_analysis,
     run_gap_analysis,
 )
+from app.chunks.embedding import LLMError
 from app.chunks.vectors import format_vector
+from app.dashboard_events.constants import DashboardEventType
 from app.db.session import async_session_factory
 from app.db.sync_session import SyncSessionLocal
 
@@ -287,10 +290,228 @@ def test_check_conflict_request_includes_both_chunk_texts() -> None:
 
 
 def test_check_conflict_raises_llm_error_on_sdk_failure() -> None:
-    from app.chunks.embedding import LLMError
-
     client = MagicMock()
     client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
 
     with pytest.raises(LLMError):
         _run(check_conflict("a", "b", client=client))
+
+
+# --- run_full_analysis --------------------------------------------------------
+
+
+def _insert_report(*, status: str, started_by_email: str) -> str:
+    with SyncSessionLocal() as session:
+        report_id = session.execute(
+            text(
+                "INSERT INTO analysis_reports (status, started_by_email) "
+                "VALUES (:status, :started_by_email) RETURNING id"
+            ),
+            {"status": status, "started_by_email": started_by_email},
+        ).scalar_one()
+        session.commit()
+    return str(report_id)
+
+
+def _report_row(report_id: str):
+    with SyncSessionLocal() as session:
+        return session.execute(
+            text(
+                "SELECT status, gap_analysis, conflicts, total_tokens, "
+                "completed_at, error_detail FROM analysis_reports WHERE id = :id"
+            ),
+            {"id": report_id},
+        ).one()
+
+
+def _cleanup_report(report_id: str) -> None:
+    with SyncSessionLocal() as session:
+        session.execute(
+            text("DELETE FROM analysis_reports WHERE id = :id"), {"id": report_id}
+        )
+        session.commit()
+
+
+def _insert_chat_message(
+    *, role: str, content: str, disliked: bool = False, no_answer_found: bool = False,
+    question_id: str | None = None,
+) -> str:
+    with SyncSessionLocal() as session:
+        message_id = session.execute(
+            text(
+                "INSERT INTO chat_messages "
+                "(role, content, disliked, disliked_at, no_answer_found, question_id) "
+                "VALUES (:role, :content, :disliked, "
+                "CASE WHEN :disliked THEN now() ELSE NULL END, "
+                ":no_answer_found, :question_id) "
+                "RETURNING id"
+            ),
+            {
+                "role": role,
+                "content": content,
+                "disliked": disliked,
+                "no_answer_found": no_answer_found,
+                "question_id": question_id,
+            },
+        ).scalar_one()
+        session.commit()
+    return str(message_id)
+
+
+def _cleanup_messages(message_ids: list[str]) -> None:
+    if not message_ids:
+        return
+    with SyncSessionLocal() as session:
+        session.execute(
+            text("DELETE FROM chat_messages WHERE id = ANY(:ids)"), {"ids": message_ids}
+        )
+        session.commit()
+
+
+def _events_for(user_email: str, event_type: str) -> list:
+    with SyncSessionLocal() as session:
+        return session.execute(
+            text(
+                "SELECT type, detail, user_email FROM dashboard_events "
+                "WHERE user_email = :user_email AND type = :type"
+            ),
+            {"user_email": user_email, "type": event_type},
+        ).all()
+
+
+def _cleanup_events(user_email: str) -> None:
+    with SyncSessionLocal() as session:
+        session.execute(
+            text("DELETE FROM dashboard_events WHERE user_email = :user_email"),
+            {"user_email": user_email},
+        )
+        session.commit()
+
+
+def test_run_full_analysis_completes_and_records_one_completed_event() -> None:
+    user_email = f"analysis-run-{uuid.uuid4()}@example.com"
+    report_id = _insert_report(status="running", started_by_email=user_email)
+    document_ids: list[str] = []
+    message_ids: list[str] = []
+    try:
+        # A couple of disliked/no-answer chat_messages - the gap-analysis
+        # half's real input.
+        question_id = _insert_chat_message(
+            role="user", content=f"why is x broken {uuid.uuid4()}"
+        )
+        message_ids.append(question_id)
+        disliked_id = _insert_chat_message(
+            role="assistant",
+            content="a disliked reply",
+            disliked=True,
+            question_id=question_id,
+        )
+        message_ids.append(disliked_id)
+        no_answer_question_id = _insert_chat_message(
+            role="user", content=f"how do I do y {uuid.uuid4()}"
+        )
+        message_ids.append(no_answer_question_id)
+        no_answer_id = _insert_chat_message(
+            role="assistant",
+            content="no answer",
+            no_answer_found=True,
+            question_id=no_answer_question_id,
+        )
+        message_ids.append(no_answer_id)
+
+        # Two close-embedding cross-document ready chunks - a candidate pair
+        # for the conflict-detection half.
+        doc_a = _insert_document(status="ready")
+        doc_b = _insert_document(status="ready")
+        document_ids += [doc_a, doc_b]
+        suffix = uuid.uuid4()
+        chunk_a_id = _insert_chunk(
+            doc_a, 0, f"full-analysis chunk a {suffix}", _axis_embedding(1.0, 0.0)
+        )
+        chunk_b_id = _insert_chunk(
+            doc_b, 0, f"full-analysis chunk b {suffix}", _axis_embedding(1.0, 0.0)
+        )
+
+        with (
+            patch(
+                "app.analysis.service.run_gap_analysis",
+                new=AsyncMock(
+                    return_value=GapAnalysisResult(content="gap report", tokens_used=100)
+                ),
+            ) as mock_gap,
+            patch(
+                "app.analysis.service.check_conflict",
+                new=AsyncMock(
+                    return_value=ConflictCheckResult(
+                        is_conflict=True, description="they disagree", tokens_used=20
+                    )
+                ),
+            ) as mock_check,
+        ):
+            _run(run_full_analysis(report_id))
+
+        mock_gap.assert_awaited_once()
+        assert mock_check.await_count >= 1
+
+        row = _report_row(report_id)
+        assert row.status == "completed"
+        assert row.gap_analysis == "gap report"
+        assert row.conflicts is not None
+        assert row.total_tokens is not None
+        assert row.total_tokens >= 100 + 20
+        assert row.completed_at is not None
+        assert row.error_detail is None
+
+        matching_conflicts = [
+            conflict
+            for conflict in row.conflicts
+            if conflict["chunkAId"] in (chunk_a_id, chunk_b_id)
+            or conflict["chunkBId"] in (chunk_a_id, chunk_b_id)
+        ]
+        assert matching_conflicts, row.conflicts
+        conflict = matching_conflicts[0]
+        assert conflict["description"] == "they disagree"
+        assert {conflict["documentAId"], conflict["documentBId"]} == {doc_a, doc_b}
+
+        events = _events_for(user_email, DashboardEventType.ANALYSIS_RUN_COMPLETED)
+        assert len(events) == 1
+        assert events[0].user_email == user_email
+        assert f"tokens = {row.total_tokens}" in events[0].detail
+
+        no_failed_events = _events_for(user_email, DashboardEventType.ANALYSIS_RUN_FAILED)
+        assert no_failed_events == []
+    finally:
+        _cleanup_report(report_id)
+        _cleanup_documents(document_ids)
+        _cleanup_messages(message_ids)
+        _cleanup_events(user_email)
+
+
+def test_run_full_analysis_llm_failure_marks_row_failed_and_records_failed_event() -> None:
+    user_email = f"analysis-run-fail-{uuid.uuid4()}@example.com"
+    report_id = _insert_report(status="running", started_by_email=user_email)
+    try:
+        with patch(
+            "app.analysis.service.run_gap_analysis",
+            new=AsyncMock(side_effect=LLMError("boom")),
+        ):
+            _run(run_full_analysis(report_id))
+
+        row = _report_row(report_id)
+        assert row.status == "failed"
+        assert row.error_detail is not None
+        assert "boom" in row.error_detail
+        assert row.completed_at is not None
+        assert row.gap_analysis is None
+
+        events = _events_for(user_email, DashboardEventType.ANALYSIS_RUN_FAILED)
+        assert len(events) == 1
+        assert events[0].user_email == user_email
+
+        no_completed_events = _events_for(
+            user_email, DashboardEventType.ANALYSIS_RUN_COMPLETED
+        )
+        assert no_completed_events == []
+    finally:
+        _cleanup_report(report_id)
+        _cleanup_events(user_email)
