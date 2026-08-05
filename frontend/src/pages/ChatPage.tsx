@@ -166,7 +166,12 @@ function ThumbsDownIcon(): JSX.Element {
  */
 const BOT_AVATAR_IMAGE_SRC = '/bot-avatar.png'
 
-function BotAvatar(): JSX.Element {
+/**
+ * Exported so ImprovementsPage.tsx's Analysis placeholder can reuse the
+ * exact same bot identity instead of forking a second copy of this markup -
+ * same idiom as AppLayout.tsx's own BrandMark export for LoginPage.tsx.
+ */
+export function BotAvatar(): JSX.Element {
   // Falls back to the hand-drawn glyph below if the image 404s (e.g. no
   // custom avatar has been dropped in at BOT_AVATAR_IMAGE_SRC yet) - a
   // broken-image icon would otherwise show in every message bubble.
