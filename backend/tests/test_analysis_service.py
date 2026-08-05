@@ -515,3 +515,76 @@ def test_run_full_analysis_llm_failure_marks_row_failed_and_records_failed_event
     finally:
         _cleanup_report(report_id)
         _cleanup_events(user_email)
+
+
+def test_run_full_analysis_survives_a_second_call_in_the_same_process() -> None:
+    """Regression test for a live bug (found via manual smoke testing, not
+    caught by the tests above): app.db.session's async engine is a
+    module-level singleton whose connection pool binds to whichever event
+    loop first used it. tasks.py's Celery task calls run_full_analysis via
+    a bare `asyncio.run(...)` per task execution - a FRESH loop every time
+    - but the worker process itself, and therefore this module-level
+    engine, stays alive across many task executions. Without disposing the
+    engine before this function's own event loop closes, a SECOND call in
+    the same process reuses a connection pooled from the FIRST call's
+    (now-closed) loop and crashes with "got Future ... attached to a
+    different loop" the moment it's actually used - exactly what the two
+    calls below did before this function started disposing the engine
+    itself (see its own comment right after the find_conflict_candidates
+    call).
+
+    The two tests above don't catch this: conftest.py's own
+    `_dispose_engine_after_test` autouse fixture disposes the engine
+    between every test FUNCTION, which - ironically, for testing this
+    exact scenario - masks the bug entirely, since in production nothing
+    outside run_full_analysis ever disposes it between Celery task runs.
+    This test reproduces the real shape (two bare asyncio.run() calls with
+    nothing disposing the engine in between) inside a single test function
+    instead, bypassing that fixture's protection."""
+    user_email = f"analysis-run-twice-{uuid.uuid4()}@example.com"
+    report_ids = [
+        _insert_report(status="running", started_by_email=user_email) for _ in range(2)
+    ]
+    document_ids: list[str] = []
+    try:
+        for report_id in report_ids:
+            doc_a = _insert_document(status="ready")
+            doc_b = _insert_document(status="ready")
+            document_ids += [doc_a, doc_b]
+            suffix = uuid.uuid4()
+            _insert_chunk(doc_a, 0, f"twice-run chunk a {suffix}", _axis_embedding(1.0, 0.0))
+            _insert_chunk(doc_b, 0, f"twice-run chunk b {suffix}", _axis_embedding(1.0, 0.0))
+
+        with (
+            patch(
+                "app.analysis.service.run_gap_analysis",
+                new=AsyncMock(
+                    return_value=GapAnalysisResult(content="gap report", tokens_used=1)
+                ),
+            ),
+            patch(
+                "app.analysis.service.check_conflict",
+                new=AsyncMock(
+                    return_value=ConflictCheckResult(
+                        is_conflict=False, description=None, tokens_used=1
+                    )
+                ),
+            ),
+        ):
+            # Two SEPARATE bare asyncio.run() calls, matching tasks.py's own
+            # asyncio.run(run_full_analysis(report_id)) shape exactly - a
+            # pytest-asyncio-style shared event loop across both calls would
+            # NOT reproduce this bug, since the whole failure mode is about
+            # a connection surviving from one CLOSED loop into a NEW one.
+            asyncio.run(run_full_analysis(report_ids[0]))
+            asyncio.run(run_full_analysis(report_ids[1]))
+
+        for report_id in report_ids:
+            row = _report_row(report_id)
+            assert row.status == "completed", row.error_detail
+            assert row.error_detail is None
+    finally:
+        for report_id in report_ids:
+            _cleanup_report(report_id)
+        _cleanup_documents(document_ids)
+        _cleanup_events(user_email)

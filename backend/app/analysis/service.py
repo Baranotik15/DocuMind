@@ -17,7 +17,7 @@ from app.chunks.embedding import LLMError, get_client
 from app.config import get_settings
 from app.dashboard_events.constants import DashboardEventType
 from app.dashboard_events.recording import record_event_sync
-from app.db.session import async_session_factory
+from app.db.session import async_session_factory, engine
 from app.db.sync_session import SyncSessionLocal
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -267,8 +267,25 @@ async def run_full_analysis(report_id: str) -> None:
             questions = _fetch_gap_analysis_questions(session)
         gap_result = await run_gap_analysis(questions)
 
-        async with async_session_factory() as async_session:
-            candidate_rows = await find_conflict_candidates(async_session)
+        # Same root cause as tests/conftest.py's own _dispose_engine_after_test
+        # fixture (see its comment): the async engine's connection pool is a
+        # module-level singleton bound to whichever event loop first used it.
+        # run_full_analysis runs inside a FRESH event loop every time (one
+        # asyncio.run() per Celery task execution, see tasks.py) - without
+        # disposing here, a connection pooled from THIS run's loop survives
+        # into the pool and gets handed to the NEXT run's (different) loop,
+        # which raises "got Future ... attached to a different loop" the
+        # instant that stale connection is actually used (confirmed live:
+        # reproduced in isolation with two bare asyncio.run() calls sharing
+        # this same engine, fixed by disposing between them). The `finally`
+        # covers a find_conflict_candidates failure too, not just the happy
+        # path - any exception here still leaves a connection checked out
+        # that must not survive into the next run's loop.
+        try:
+            async with async_session_factory() as async_session:
+                candidate_rows = await find_conflict_candidates(async_session)
+        finally:
+            await engine.dispose()
 
         check_results = await asyncio.gather(
             *(
@@ -336,3 +353,30 @@ async def run_full_analysis(report_id: str) -> None:
                 user_email=user_email,
             )
             session.commit()
+    finally:
+        # Same class of bug as the engine.dispose() above, different
+        # resource: get_client() is @lru_cache'd (app/chunks/embedding.py),
+        # so the SAME AsyncOpenAI instance - and its underlying httpx
+        # connection pool - survives across separate run_full_analysis
+        # calls in this same worker process. httpx keeps idle keep-alive
+        # connections open after a request, bound to the loop that made it;
+        # a LATER asyncio.run() call (a fresh loop) reusing one of those
+        # crashes with "RuntimeError: Event loop is closed" the moment
+        # httpx tries to close/reuse it (confirmed live: reproduced in
+        # isolation with a gap-analysis-call + concurrent-gather shape
+        # matching this function's own steps 2-3, exactly what surfaced
+        # this in production - a single simple call per run did NOT
+        # reproduce it, only concurrent usage leaving multiple pooled
+        # connections did). `.close()` makes the client permanently unusable
+        # (per its own docstring), so cache_clear() is required too -
+        # without it, get_client() would keep handing back the now-closed
+        # instance forever instead of constructing a fresh one next call.
+        # The cache_info().currsize guard matters for tests: this codebase's
+        # tests mock run_gap_analysis/check_conflict directly rather than
+        # get_client() itself, so get_client() is never actually called
+        # (nothing cached, currsize == 0) when those are mocked - calling it
+        # unconditionally here would construct a real AsyncOpenAI() and
+        # crash on missing credentials in a test environment that has none.
+        if get_client.cache_info().currsize > 0:
+            await get_client().close()
+            get_client.cache_clear()
