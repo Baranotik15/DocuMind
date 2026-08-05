@@ -11,17 +11,20 @@ create-user prompts for email/password/confirmation in the terminal (the
 `-it` flags above are what give the container a real tty for that) rather
 than taking them as --flags, so the password never ends up in shell
 history or `docker inspect`/`ps` output.
+
+Terminal I/O only - the actual user-provisioning logic (create_user/
+revoke_user/UserNotFoundError) lives in service.py, which has no Unix-only
+imports and stays importable on any platform without dragging in
+termios/tty just to reuse it.
 """
 import argparse
 import sys
 import termios
 import tty
 
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.auth.hashing import hash_password
-from app.db.sync_session import SyncSessionLocal
+from app.auth.service import UserNotFoundError, create_user, revoke_user
 
 # Length matters far more for password strength than composition rules
 # (NIST 800-63B) - this is a floor against trivially weak passwords
@@ -79,9 +82,9 @@ def _validate_password_strength(password: str) -> str | None:
 
 
 def _prompt_for_new_user() -> tuple[str, str]:
-    """Prompts for email, then password + confirmation (hidden input via
-    getpass, re-prompting on a weak password or a mismatched confirmation)
-    until both are valid."""
+    """Prompts for email, then password + confirmation (masked input via
+    _read_masked_password, re-prompting on a weak password or a mismatched
+    confirmation) until both are valid."""
     email = input("Email: ").strip()
     while True:
         password = _read_masked_password("Password: ")
@@ -94,58 +97,6 @@ def _prompt_for_new_user() -> tuple[str, str]:
             print("error: passwords do not match", file=sys.stderr)
             continue
         return email, password
-
-
-class UserNotFoundError(Exception):
-    pass
-
-
-def create_user(email: str, password: str) -> str:
-    """Hashes `password` and inserts a new `users` row. Returns the new
-    user's id as a str. Raises sqlalchemy.exc.IntegrityError, uncaught, if
-    `email` is already taken (the unique constraint on users.email) - the
-    CLI entrypoint below is what turns that into a clean one-line error."""
-    password_hash = hash_password(password)
-    with SyncSessionLocal() as session:
-        user_id = session.execute(
-            text(
-                "INSERT INTO users (email, password_hash) "
-                "VALUES (:email, :password_hash) RETURNING id"
-            ),
-            {"email": email, "password_hash": password_hash},
-        ).scalar_one()
-        session.commit()
-        return str(user_id)
-
-
-def revoke_user(email: str) -> str:
-    """Soft-deactivates the user with the given email (`is_active = false`)
-    and, in the same transaction, deletes every `sessions` row for that
-    user - killing any active session immediately rather than waiting for
-    its TTL. Idempotent: revoking an already-inactive user is a clean
-    no-op, not an error. Returns a short human-readable status message.
-    Raises UserNotFoundError, uncaught, if no user has this email."""
-    with SyncSessionLocal() as session:
-        row = session.execute(
-            text("SELECT id, is_active FROM users WHERE email = :email"),
-            {"email": email},
-        ).one_or_none()
-        if row is None:
-            raise UserNotFoundError(email)
-
-        if not row.is_active:
-            return f"user {email} is already revoked"
-
-        session.execute(
-            text("UPDATE users SET is_active = false WHERE id = :id"),
-            {"id": row.id},
-        )
-        session.execute(
-            text("DELETE FROM sessions WHERE user_id = :id"),
-            {"id": row.id},
-        )
-        session.commit()
-        return f"revoked {email}"
 
 
 def _cmd_create_user(args: argparse.Namespace) -> int:

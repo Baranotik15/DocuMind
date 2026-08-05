@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.auth.cli import create_user
+from app.auth.service import create_user
 from app.db.session import engine
 from app.db.sync_session import SyncSessionLocal
 from app.main import app
@@ -21,7 +21,7 @@ def client() -> TestClient:
 def authenticated_client() -> TestClient:
     """A TestClient whose cookie jar already carries a valid `session`
     cookie - obtained by CLI-provisioning a fresh throwaway user (via
-    app.auth.cli.create_user) and logging in as them through the real
+    app.auth.service.create_user) and logging in as them through the real
     POST /internal/auth/login, exactly like test_auth_router.py's own
     logout test does. Every /internal/* route other than auth's own now
     requires a session, so test files for those routers override `client`

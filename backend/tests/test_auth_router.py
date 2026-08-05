@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.auth.cli import create_user
+from app.auth.service import create_user
 from app.db.sync_session import SyncSessionLocal
 
 
