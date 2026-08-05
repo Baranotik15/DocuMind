@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,6 +9,9 @@ from app.chat.completion import generate_reply
 from app.chat.constants import ChatRole
 from app.chat.schemas import (
     ChatMessageSummary,
+    DislikedMessageSummary,
+    ImprovementsRange,
+    NoAnswerMessageSummary,
     SendMessageRequest,
     TopChunkSummary,
     TopChunksRequest,
@@ -25,6 +29,25 @@ TOP_CHUNKS_LIMIT = 5
 # chat-completion step, top_chunks's embed step) - same error contract
 # either way: any LLMError becomes a 502 with this detail.
 _CHAT_COMPLETION_FAILED_ERROR = "chat_completion_failed"
+
+# Trailing-window durations for the Improvements page's `range` query param
+# (GET /chat/dislikes, GET /chat/no-answer-messages) - "all" has no entry
+# here since it needs no lower bound at all (see _range_cutoff below).
+_IMPROVEMENTS_RANGE_WINDOWS: dict[str, timedelta] = {
+    "day": timedelta(days=1),
+    "7days": timedelta(days=7),
+    "30days": timedelta(days=30),
+}
+
+
+def _range_cutoff(range_: ImprovementsRange) -> datetime | None:
+    """The lower-bound timestamp for `range_`, or None for "all" (no lower
+    bound at all - the caller must skip the WHERE clause's cutoff condition
+    entirely in that case, not pass None as a bound param)."""
+    window = _IMPROVEMENTS_RANGE_WINDOWS.get(range_)
+    if window is None:
+        return None
+    return datetime.now(timezone.utc) - window
 
 
 def _message_summary(row) -> ChatMessageSummary:
@@ -44,13 +67,24 @@ async def send_message(
     corpus of `ready` documents via pgvector similarity search, and calls
     the OpenAI chat completion API for a reply. See
     `.claude/plans/2026-08-01-phase-2-backend-integration.md` Task 8 for
-    the full contract."""
+    the full contract.
+
+    The assistant INSERT below also writes `question_id` (this user row's
+    own id) and `no_answer_found` (from generate_reply's returned
+    GeneratedReply.no_answer_found). `reply.content` (not a bare string) is
+    what gets persisted/returned - the NO_ANSWER_MARKER, if any, was
+    already stripped by generate_reply before it ever got here."""
     # 1. Insert + commit the user message immediately, so it's persisted
     # even if everything below fails.
-    await session.execute(
-        text("INSERT INTO chat_messages (role, content) VALUES (:role, :content)"),
-        {"role": str(ChatRole.USER), "content": body.content},
-    )
+    user_row = (
+        await session.execute(
+            text(
+                "INSERT INTO chat_messages (role, content) VALUES (:role, :content) "
+                "RETURNING id"
+            ),
+            {"role": str(ChatRole.USER), "content": body.content},
+        )
+    ).one()
     await session.commit()
 
     # 2-4. Embed the incoming message, run similarity search, and generate
@@ -79,15 +113,22 @@ async def send_message(
     # 5. Insert + commit the assistant message. Deliberately NOT recorded
     # as a dashboard_events row - the Logs tab is scoped to actions that
     # change documents/chunks (upload, delete, (re)chunk), and a chat
-    # message changes neither.
+    # message changes neither. question_id points back at the user row
+    # inserted in step 1 above; no_answer_found comes straight from
+    # generate_reply's GeneratedReply.
     assistant_row = (
         await session.execute(
             text(
-                "INSERT INTO chat_messages (role, content) "
-                "VALUES (:role, :content) "
+                "INSERT INTO chat_messages (role, content, question_id, no_answer_found) "
+                "VALUES (:role, :content, :question_id, :no_answer_found) "
                 "RETURNING id, role, content, disliked"
             ),
-            {"role": str(ChatRole.ASSISTANT), "content": reply},
+            {
+                "role": str(ChatRole.ASSISTANT),
+                "content": reply.content,
+                "question_id": str(user_row.id),
+                "no_answer_found": reply.no_answer_found,
+            },
         )
     ).one()
     await session.commit()
@@ -123,13 +164,115 @@ async def dislike_message(
     doesn't exist - deliberately not a 404, unlike other "not found" cases
     elsewhere in this codebase.
 
+    Also stamps `disliked_at = now()` when flipping to disliked=true, and
+    clears it back to NULL when flipping to disliked=false - single UPDATE,
+    both the toggle and the CASE branch read the OLD (pre-update) value of
+    `disliked`, since Postgres evaluates every expression in a single
+    UPDATE's SET list against the pre-update row. This is what gives the
+    Improvements page's Dislikes list its own time axis, independent of
+    when the underlying message was first sent.
+
     `message_id` is typed as UUID (not str) purely so a malformed id 422s
     via FastAPI's own path-param validation instead of reaching the DB as
     an unhandled 500 - this doesn't change the "well-formed but missing id
     still 204s" behavior described above, it only rejects garbage input
     earlier."""
     await session.execute(
-        text("UPDATE chat_messages SET disliked = NOT disliked WHERE id = :id"),
+        text(
+            "UPDATE chat_messages SET "
+            "disliked = NOT disliked, "
+            "disliked_at = CASE WHEN disliked THEN NULL ELSE now() END "
+            "WHERE id = :id"
+        ),
+        {"id": str(message_id)},
+    )
+    await session.commit()
+
+
+def _disliked_message_summary(row) -> DislikedMessageSummary:
+    return DislikedMessageSummary(
+        id=str(row.id),
+        content=row.content,
+        questionContent=row.question_content,
+        dislikedAt=row.disliked_at.isoformat(),
+        createdAt=row.created_at.isoformat(),
+    )
+
+
+def _no_answer_message_summary(row) -> NoAnswerMessageSummary:
+    return NoAnswerMessageSummary(
+        id=str(row.id),
+        content=row.content,
+        questionContent=row.question_content,
+        createdAt=row.created_at.isoformat(),
+    )
+
+
+@router.get("/chat/dislikes")
+async def list_disliked_messages(
+    range: ImprovementsRange, session: AsyncSession = Depends(get_session)
+) -> list[DislikedMessageSummary]:
+    """Every message with disliked=true and disliked_at within `range`
+    (day/7days/30days back from now, or no lower bound at all for "all"),
+    newest disliked_at first. LEFT JOINs each row's own question_id back to
+    that user message's content for questionContent (NULL if question_id
+    itself is NULL - the FK is nullable, though in practice every
+    assistant row send_message writes always has one)."""
+    cutoff = _range_cutoff(range)
+    query = (
+        "SELECT messages.id, messages.content, messages.disliked_at, messages.created_at, "
+        "questions.content AS question_content "
+        "FROM chat_messages AS messages "
+        "LEFT JOIN chat_messages AS questions ON questions.id = messages.question_id "
+        "WHERE messages.disliked = true"
+    )
+    params: dict = {}
+    if cutoff is not None:
+        query += " AND messages.disliked_at >= :cutoff"
+        params["cutoff"] = cutoff
+    query += " ORDER BY messages.disliked_at DESC"
+
+    rows = (await session.execute(text(query), params)).all()
+    return [_disliked_message_summary(row) for row in rows]
+
+
+@router.get("/chat/no-answer-messages")
+async def list_no_answer_messages(
+    range: ImprovementsRange, session: AsyncSession = Depends(get_session)
+) -> list[NoAnswerMessageSummary]:
+    """Every message with no_answer_found=true and created_at within
+    `range`, newest created_at first. Same question_id LEFT JOIN as
+    list_disliked_messages above."""
+    cutoff = _range_cutoff(range)
+    query = (
+        "SELECT messages.id, messages.content, messages.created_at, "
+        "questions.content AS question_content "
+        "FROM chat_messages AS messages "
+        "LEFT JOIN chat_messages AS questions ON questions.id = messages.question_id "
+        "WHERE messages.no_answer_found = true"
+    )
+    params: dict = {}
+    if cutoff is not None:
+        query += " AND messages.created_at >= :cutoff"
+        params["cutoff"] = cutoff
+    query += " ORDER BY messages.created_at DESC"
+
+    rows = (await session.execute(text(query), params)).all()
+    return [_no_answer_message_summary(row) for row in rows]
+
+
+@router.post("/chat/messages/{message_id}/dismiss-no-answer", status_code=204)
+async def dismiss_no_answer(
+    message_id: UUID, session: AsyncSession = Depends(get_session)
+) -> None:
+    """UPDATE chat_messages SET no_answer_found = false WHERE id = :id -
+    one-way (not a toggle, unlike dislike_message above): there's no UI
+    path that re-flags a message as no_answer_found, only the assistant's
+    own generation step ever sets it true. Same idempotent-204-even-if-
+    missing-id contract as dislike_message - a malformed id still 422s via
+    FastAPI's own UUID path-param validation."""
+    await session.execute(
+        text("UPDATE chat_messages SET no_answer_found = false WHERE id = :id"),
         {"id": str(message_id)},
     )
     await session.commit()
