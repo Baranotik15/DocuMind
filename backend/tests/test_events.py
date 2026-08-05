@@ -17,7 +17,7 @@ def test_record_event_sync_insert_read_round_trip() -> None:
 
         row = session.execute(
             text(
-                "SELECT type, detail FROM dashboard_events "
+                "SELECT type, detail, user_email FROM dashboard_events "
                 "WHERE detail = :detail"
             ),
             {"detail": detail},
@@ -25,6 +25,33 @@ def test_record_event_sync_insert_read_round_trip() -> None:
 
         assert row.type == "document.uploaded"
         assert row.detail == detail
+        # user_email defaults to None when the caller omits it - this test
+        # calls record_event_sync directly with no user_email given.
+        assert row.user_email is None
+
+        session.execute(
+            text("DELETE FROM dashboard_events WHERE detail = :detail"),
+            {"detail": detail},
+        )
+        session.commit()
+
+
+def test_record_event_sync_persists_user_email_when_given() -> None:
+    detail = f"sync detail with email {uuid.uuid4()}"
+    user_email = "sync-event-user@example.com"
+
+    with SyncSessionLocal() as session:
+        record_event_sync(session, "document.uploaded", detail, user_email=user_email)
+        session.commit()
+
+        row = session.execute(
+            text(
+                "SELECT user_email FROM dashboard_events WHERE detail = :detail"
+            ),
+            {"detail": detail},
+        ).one()
+
+        assert row.user_email == user_email
 
         session.execute(
             text("DELETE FROM dashboard_events WHERE detail = :detail"),
@@ -59,7 +86,7 @@ def test_record_event_async_insert_read_round_trip() -> None:
             row = (
                 await session.execute(
                     text(
-                        "SELECT type, detail FROM dashboard_events "
+                        "SELECT type, detail, user_email FROM dashboard_events "
                         "WHERE detail = :detail"
                     ),
                     {"detail": detail},
@@ -68,6 +95,38 @@ def test_record_event_async_insert_read_round_trip() -> None:
 
             assert row.type == "chat.message_sent"
             assert row.detail == detail
+            assert row.user_email is None
+
+            await session.execute(
+                text("DELETE FROM dashboard_events WHERE detail = :detail"),
+                {"detail": detail},
+            )
+            await session.commit()
+
+    asyncio.run(_run())
+
+
+def test_record_event_async_persists_user_email_when_given() -> None:
+    detail = f"async detail with email {uuid.uuid4()}"
+    user_email = "async-event-user@example.com"
+
+    async def _run() -> None:
+        async with async_session_factory() as session:
+            await record_event_async(
+                session, "chat.message_sent", detail, user_email=user_email
+            )
+            await session.commit()
+
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT user_email FROM dashboard_events WHERE detail = :detail"
+                    ),
+                    {"detail": detail},
+                )
+            ).one()
+
+            assert row.user_email == user_email
 
             await session.execute(
                 text("DELETE FROM dashboard_events WHERE detail = :detail"),

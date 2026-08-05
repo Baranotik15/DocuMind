@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_session
 from app.chunks.schemas import ChunkSummary, SaveChunksRequest
 from app.db.session import get_session
 
@@ -60,6 +61,7 @@ async def save_chunks(
     document_id: UUID,
     body: SaveChunksRequest,
     session: AsyncSession = Depends(get_session),
+    user_email: str = Depends(require_session),
 ) -> Response:
     """Atomic compare-and-swap re-chunk trigger. See
     `.claude/plans/2026-08-01-phase-2-backend-integration.md` Task 7 for the
@@ -111,14 +113,20 @@ async def save_chunks(
         # as given, none re-split, none merged.
         manual_chunks = [chunk.editedContent for chunk in body.chunks]
         await asyncio.to_thread(
-            run_document_pipeline.delay, str(document_id), manual_chunks=manual_chunks
+            run_document_pipeline.delay,
+            str(document_id),
+            manual_chunks=manual_chunks,
+            user_email=user_email,
         )
     else:
         # Request array order IS document order, as sent by the frontend -
         # not re-sorted here.
         source_text = "".join(chunk.editedContent for chunk in body.chunks)
         await asyncio.to_thread(
-            run_document_pipeline.delay, str(document_id), source_text
+            run_document_pipeline.delay,
+            str(document_id),
+            source_text,
+            user_email=user_email,
         )
 
     # Returned as a bare Response (rather than `None`) so the body is

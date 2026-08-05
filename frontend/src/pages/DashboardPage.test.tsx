@@ -51,24 +51,28 @@ const events: DashboardEvent[] = [
     type: 'document.uploaded',
     timestamp: '2026-01-01T00:00:00.000Z',
     detail: 'onboarding-notes.docx was uploaded.',
+    userEmail: 'admin@documind.dev',
   },
   {
     id: 'event-2',
     type: 'document.chunked',
     timestamp: '2026-01-01T00:01:00.000Z',
     detail: 'architecture-guide.pdf was split into 3 chunks.',
+    userEmail: 'admin@documind.dev',
   },
   {
     id: 'event-3',
     type: 'chat.message',
     timestamp: '2026-01-01T00:02:00.000Z',
     detail: 'A user asked how to upload a new document.',
+    userEmail: null,
   },
   {
     id: 'event-4',
     type: 'document.chunking_started',
     timestamp: '2026-01-01T00:03:00.000Z',
     detail: 'release-plan.md chunking started.',
+    userEmail: null,
   },
 ]
 
@@ -233,6 +237,7 @@ describe('DashboardPage', () => {
       type: `document.type_${index + 1}`,
       timestamp: `2026-01-01T00:${String(index).padStart(2, '0')}:00.000Z`,
       detail: `Detail ${index + 1}`,
+      userEmail: null,
     }))
     fetchMock.mockImplementation((url: string) => {
       const body = url.endsWith('/internal/dashboard/chunk-graph')
@@ -280,7 +285,7 @@ describe('DashboardPage', () => {
     const longDetail =
       'document_id=d11f8625-fff1-43de-a2d9-01f50d305490: docs/tasks-test-8e4f5a58-3447-4eb2-b982-9bb94475f018.txt'
     const longEvents: DashboardEvent[] = [
-      { id: 'event-1', type: 'document.chunking_failed', timestamp: '2026-01-01T00:00:00.000Z', detail: longDetail },
+      { id: 'event-1', type: 'document.chunking_failed', timestamp: '2026-01-01T00:00:00.000Z', detail: longDetail, userEmail: null },
     ]
     fetchMock.mockImplementation((url: string) => {
       const body = url.endsWith('/internal/dashboard/chunk-graph')

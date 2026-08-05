@@ -20,6 +20,7 @@ def run_document_pipeline(
     document_id: str,
     source_text: str | None = None,
     manual_chunks: list[str] | None = None,
+    user_email: str | None = None,
 ) -> None:
     """Three entry paths, checked in this order:
 
@@ -55,15 +56,24 @@ def run_document_pipeline(
     extraction succeeds), so going straight 'uploaded' -> 'failed' is the
     more accurate status history, and it avoids a duplicate
     'chunking_started' event being recorded right before run_pipeline
-    would record its own on the same run."""
+    would record its own on the same run.
+
+    `user_email` is the acting user's email, passed through from the
+    originating authenticated request (documents/router.py's
+    upload_document or chunks/router.py's save_chunks, both via
+    `Depends(require_session)`) all the way into every dashboard event
+    this run produces - see documents/pipeline.py's _transition_status
+    docstring."""
     if manual_chunks is not None:
         with SyncSessionLocal() as session:
-            run_pipeline_with_manual_chunks(document_id, manual_chunks, session)
+            run_pipeline_with_manual_chunks(
+                document_id, manual_chunks, session, user_email=user_email
+            )
         return
 
     if source_text is not None:
         with SyncSessionLocal() as session:
-            run_pipeline(document_id, source_text, session)
+            run_pipeline(document_id, source_text, session, user_email=user_email)
         return
 
     with SyncSessionLocal() as session:
@@ -80,7 +90,7 @@ def run_document_pipeline(
             data = deps.get_storage().read(row.storage_key)
             extracted_text = extract_text(row.filename, data)
         except Exception as exc:
-            mark_document_failed(document_id, session, exc)
+            mark_document_failed(document_id, session, exc, user_email=user_email)
             return  # unreachable: mark_document_failed always raises
 
-        run_pipeline(document_id, extracted_text, session)
+        run_pipeline(document_id, extracted_text, session, user_email=user_email)

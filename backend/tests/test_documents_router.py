@@ -90,7 +90,7 @@ def _unique_filename(suffix: str = ".txt") -> str:
     return f"router-test-{uuid.uuid4()}{suffix}"
 
 
-def _cleanup(filename: str, document_id: str | None = None) -> None:
+def _cleanup(filename: str) -> None:
     """Deletes the test's own `documents` row (by filename) AND every
     `dashboard_events` row it created - both the router's own
     document.uploaded/document.deleted events and, now that the pipeline
@@ -98,28 +98,20 @@ def _cleanup(filename: str, document_id: str | None = None) -> None:
     document.chunking_started/succeeded/failed events, all recorded into
     this same shared dev Postgres the live Dashboard reads from (see
     app.documents.router/app.documents.pipeline's record_event_* call
-    sites - every one of them embeds `document_id=<id>` in `detail`).
-
-    `document_id` should be passed explicitly whenever the caller already
-    has it (most tests below do) - required for tests whose own endpoint
-    call already deleted the document row before this runs (the filename
-    lookup below would otherwise find nothing to key the events cleanup
-    off of). Falls back to looking it up by filename otherwise.
-    """
+    sites - every one of them now embeds `filename=<name>` in `detail`,
+    not `document_id=<id>`). Matching on filename (rather than looking the
+    document up by id first) also means this still finds every event for
+    a test whose own endpoint call already hard-deleted the `documents`
+    row before this runs (e.g. the delete-document test below) - filename
+    stays in `detail` even after the source row is gone."""
     with SyncSessionLocal() as session:
-        if document_id is None:
-            document_id = session.execute(
-                text("SELECT id FROM documents WHERE filename = :filename"),
-                {"filename": filename},
-            ).scalar_one_or_none()
-        if document_id is not None:
-            session.execute(
-                text(
-                    "DELETE FROM dashboard_events WHERE detail LIKE "
-                    "'%' || :document_id || '%'"
-                ),
-                {"document_id": str(document_id)},
-            )
+        session.execute(
+            text(
+                "DELETE FROM dashboard_events WHERE detail LIKE "
+                "'%' || :filename || '%'"
+            ),
+            {"filename": filename},
+        )
         session.execute(
             text("DELETE FROM documents WHERE filename = :filename"),
             {"filename": filename},
@@ -138,7 +130,6 @@ def _force_status(filename: str, status: str) -> None:
 
 def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
     filename = _unique_filename()
-    document_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -150,7 +141,6 @@ def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
 
         assert response.status_code == 200
         body = response.json()
-        document_id = body["id"]
         assert body["filename"] == filename
         # The pipeline dispatch fixture above runs it inline, in-process -
         # by the time we get a response, status may already be 'ready'.
@@ -163,14 +153,13 @@ def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
         filenames = [doc["filename"] for doc in list_response.json()]
         assert filename in filenames
     finally:
-        _cleanup(filename, document_id)
+        _cleanup(filename)
 
 
 def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
     client: TestClient,
 ) -> None:
     malicious_filename = "../../../../evil-traversal.txt"
-    document_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -184,7 +173,6 @@ def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
 
         assert response.status_code == 200
         body = response.json()
-        document_id = body["id"]
         # filename is kept verbatim as display/lookup metadata...
         assert body["filename"] == malicious_filename
 
@@ -203,7 +191,7 @@ def test_upload_path_traversal_filename_does_not_escape_storage_base_dir(
         assert resolved.is_relative_to(base_dir)
         assert resolved.is_file()
     finally:
-        _cleanup(malicious_filename, document_id)
+        _cleanup(malicious_filename)
 
 
 def test_upload_over_size_limit_returns_413_and_is_not_listed(
@@ -275,7 +263,7 @@ def test_upload_duplicate_filename_without_overwrite_returns_409(
         assert len(matching) == 1
         assert matching[0]["id"] == original_id
     finally:
-        _cleanup(filename, original_id)
+        _cleanup(filename)
 
 
 def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
@@ -309,14 +297,13 @@ def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
         matching = [doc for doc in list_response.json() if doc["filename"] == filename]
         assert len(matching) == 1
     finally:
-        _cleanup(filename, original_id)
+        _cleanup(filename)
 
 
 def test_upload_overwrite_while_chunking_returns_409_document_processing(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
-    document_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -326,7 +313,6 @@ def test_upload_overwrite_while_chunking_returns_409_document_processing(
                 files={"file": (filename, io.BytesIO(b"Original content."), "text/plain")},
             )
         assert first.status_code == 200
-        document_id = first.json()["id"]
 
         _force_status(filename, "chunking")
 
@@ -341,7 +327,7 @@ def test_upload_overwrite_while_chunking_returns_409_document_processing(
         assert second.status_code == 409
         assert second.json()["detail"] == "document_processing"
     finally:
-        _cleanup(filename, document_id)
+        _cleanup(filename)
 
 
 def test_delete_ready_document_returns_204_and_removes_document_chunks_and_file(
@@ -386,7 +372,7 @@ def test_delete_ready_document_returns_204_and_removes_document_chunks_and_file(
         with pytest.raises(StorageKeyNotFoundError):
             storage.read(storage_key)
     finally:
-        _cleanup(filename, document_id)
+        _cleanup(filename)
 
 
 def test_delete_chunking_document_returns_409_and_leaves_it_and_chunks_intact(
@@ -419,7 +405,7 @@ def test_delete_chunking_document_returns_409_and_leaves_it_and_chunks_intact(
         assert chunks_response.status_code == 200
         assert len(chunks_response.json()) > 0
     finally:
-        _cleanup(filename, document_id)
+        _cleanup(filename)
 
 
 def test_delete_nonexistent_document_returns_404(client: TestClient) -> None:
@@ -445,7 +431,6 @@ def test_concurrent_uploads_of_a_new_filename_never_500(client: TestClient) -> N
     barrier = threading.Barrier(2)
     results: list[int] = []
     results_lock = threading.Lock()
-    document_id = None
 
     def _upload() -> None:
         barrier.wait()
@@ -477,16 +462,86 @@ def test_concurrent_uploads_of_a_new_filename_never_500(client: TestClient) -> N
         list_response = client.get("/internal/documents")
         matching = [doc for doc in list_response.json() if doc["filename"] == filename]
         assert len(matching) == 1
-        document_id = matching[0]["id"]
     finally:
-        _cleanup(filename, document_id)
+        _cleanup(filename)
 
 
-def test_delete_document_records_document_deleted_dashboard_event(
+def test_upload_document_records_document_uploaded_event_with_user_email(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
-    document_id = None
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            upload = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(b"Event check."), "text/plain")},
+            )
+        assert upload.status_code == 200
+
+        me_response = client.get("/internal/auth/me")
+        assert me_response.status_code == 200
+        expected_email = me_response.json()["email"]
+
+        events_response = client.get("/internal/dashboard/events")
+        assert events_response.status_code == 200
+        matching = [
+            event
+            for event in events_response.json()
+            if event["type"] == "document.uploaded" and filename in event["detail"]
+        ]
+        assert len(matching) == 1
+        assert matching[0]["userEmail"] == expected_email
+    finally:
+        _cleanup(filename)
+
+
+def test_upload_document_records_the_uploading_user_on_pipeline_events(
+    client: TestClient,
+) -> None:
+    # The chunking pipeline (document.chunking_started/succeeded) is
+    # dispatched from upload_document with the uploader's own user_email
+    # threaded through run_document_pipeline.delay(...) - see
+    # app.documents.tasks.run_document_pipeline and
+    # app.documents.pipeline._transition_status's docstrings: every
+    # pipeline run traces back 1:1 to the authenticated request that
+    # triggered it, so its dashboard events should carry that same email,
+    # not a null.
+    filename = _unique_filename()
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            upload = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(b"Event check."), "text/plain")},
+            )
+        assert upload.status_code == 200
+
+        me_response = client.get("/internal/auth/me")
+        assert me_response.status_code == 200
+        expected_email = me_response.json()["email"]
+
+        events_response = client.get("/internal/dashboard/events")
+        assert events_response.status_code == 200
+        matching = [
+            event
+            for event in events_response.json()
+            if event["type"]
+            in ("document.chunking_started", "document.chunking_succeeded")
+            and filename in event["detail"]
+        ]
+        assert len(matching) == 2
+        assert all(event["userEmail"] == expected_email for event in matching)
+    finally:
+        _cleanup(filename)
+
+
+def test_delete_document_records_document_deleted_dashboard_event_with_user_email(
+    client: TestClient,
+) -> None:
+    filename = _unique_filename()
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -497,6 +552,10 @@ def test_delete_document_records_document_deleted_dashboard_event(
             )
         assert upload.status_code == 200
         document_id = upload.json()["id"]
+
+        me_response = client.get("/internal/auth/me")
+        assert me_response.status_code == 200
+        expected_email = me_response.json()["email"]
 
         delete_response = client.delete(f"/internal/documents/{document_id}")
         assert delete_response.status_code == 204
@@ -509,13 +568,12 @@ def test_delete_document_records_document_deleted_dashboard_event(
             if event["type"] == "document.deleted" and filename in event["detail"]
         ]
         assert len(matching) == 1
+        assert matching[0]["userEmail"] == expected_email
     finally:
-        # document_id is passed explicitly (not left to _cleanup's own
-        # filename-based fallback lookup) because the document row itself is
-        # already gone by this point (deleted above) - a filename lookup
-        # here would find nothing, and the document.uploaded/chunking_*/
-        # deleted events this test's own requests created would leak.
-        _cleanup(filename, document_id)
+        # No document_id needed for _cleanup - it matches dashboard_events
+        # by filename now, which stays in `detail` even though the document
+        # row itself is already gone by this point (deleted above).
+        _cleanup(filename)
 
 
 def test_list_documents_without_session_cookie_returns_401() -> None:

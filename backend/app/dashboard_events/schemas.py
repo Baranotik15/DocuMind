@@ -6,3 +6,4 @@ class DashboardEventSummary(BaseModel):
     type: str
     timestamp: str
     detail: str
+    userEmail: str | None = None

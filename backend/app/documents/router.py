@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_session
 from app.config import get_settings
 from app.dashboard_events.constants import DashboardEventType
 from app.dashboard_events.recording import record_event_async
@@ -68,6 +69,7 @@ async def upload_document(
     overwrite: bool = Form(False),
     session: AsyncSession = Depends(get_session),
     storage: StorageAdapter = Depends(get_storage),
+    user_email: str = Depends(require_session),
 ) -> DocumentSummary:
     """Validates the filename's extension before touching storage/DB, then
     branches on whether a document with this filename already exists. See
@@ -129,7 +131,10 @@ async def upload_document(
             raise HTTPException(status_code=409, detail="duplicate_filename")
         storage.save(storage_key, data)
         await record_event_async(
-            session, DashboardEventType.DOCUMENT_UPLOADED, f"document_id={row.id}"
+            session,
+            DashboardEventType.DOCUMENT_UPLOADED,
+            f"filename = {filename}",
+            user_email=user_email,
         )
         await session.commit()
     else:
@@ -148,7 +153,10 @@ async def upload_document(
             )
         ).one()
         await record_event_async(
-            session, DashboardEventType.DOCUMENT_UPLOADED, f"document_id={row.id}"
+            session,
+            DashboardEventType.DOCUMENT_UPLOADED,
+            f"filename = {filename}",
+            user_email=user_email,
         )
         await session.commit()
 
@@ -160,7 +168,9 @@ async def upload_document(
     # specifically: asyncio.run() cannot be called from a thread that
     # already has a running loop, which this request-handling coroutine's
     # thread does.
-    await asyncio.to_thread(run_document_pipeline.delay, str(row.id))
+    await asyncio.to_thread(
+        run_document_pipeline.delay, str(row.id), user_email=user_email
+    )
 
     return _document_summary(row)
 
@@ -185,6 +195,7 @@ async def delete_document(
     document_id: UUID,
     session: AsyncSession = Depends(get_session),
     storage: StorageAdapter = Depends(get_storage),
+    user_email: str = Depends(require_session),
 ) -> None:
     """Deletes a document's stored file and its `documents` row. Its
     `chunks` rows are removed automatically by Postgres via the
@@ -231,6 +242,7 @@ async def delete_document(
     await record_event_async(
         session,
         DashboardEventType.DOCUMENT_DELETED,
-        f"document_id={document_id}, filename={row.filename}",
+        f"filename = {row.filename}",
+        user_email=user_email,
     )
     await session.commit()

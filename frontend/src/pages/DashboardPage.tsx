@@ -1193,6 +1193,7 @@ export function DashboardPage(): JSX.Element {
                       </UnstyledButton>
                     </Table.Th>
                     <Table.Th>Type</Table.Th>
+                    <Table.Th>User</Table.Th>
                     <Table.Th>Detail</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
@@ -1206,6 +1207,13 @@ export function DashboardPage(): JSX.Element {
                       <Table.Td ff="monospace">{clampedLogsPageIndex * LOGS_PAGE_SIZE + index + 1}</Table.Td>
                       <Table.Td ff="monospace">{formatDateTime(event.timestamp)}</Table.Td>
                       <Table.Td ff="monospace">{event.type}</Table.Td>
+                      {/* null for worker-triggered events (chunking_started/
+                          succeeded/failed run inside a Celery task, outside any
+                          authenticated session) - shown as a dash rather than a
+                          blank cell so it reads as "no user", not missing data. */}
+                      <Table.Td ff="monospace" c={event.userEmail ? undefined : 'dimmed'}>
+                        {event.userEmail ?? '—'}
+                      </Table.Td>
                       <Table.Td className={classes.detailCell}>{event.detail}</Table.Td>
                     </Table.Tr>
                   ))}

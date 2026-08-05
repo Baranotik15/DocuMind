@@ -125,20 +125,26 @@ def _cleanup(document_id: str) -> None:
     # Also deletes every dashboard_events row this test's own save_chunks
     # call(s) created (document.chunking_started/succeeded/failed - see
     # app.documents.pipeline's record_event_sync call sites, now running
-    # inline in-process via the fixture above) - every one of them embeds
-    # `document_id=<id>` in `detail`, so a LIKE match on this test's own id
-    # is precise. Every test in this file already has document_id in scope
-    # (documents are inserted directly via _insert_document, never through
-    # the upload endpoint), so no fallback lookup is needed here, unlike
-    # test_documents_router.py's own _cleanup.
+    # inline in-process via the fixture above) - every one of them now
+    # embeds `filename=<name>` in `detail`, not `document_id=<id>`, so the
+    # filename is looked up from the still-live `documents` row first
+    # (every test in this file inserts its document directly via
+    # _insert_document and never deletes it before this runs, unlike
+    # test_documents_router.py's own _cleanup, which matches by filename
+    # directly since its document row may already be gone).
     with SyncSessionLocal() as session:
-        session.execute(
-            text(
-                "DELETE FROM dashboard_events WHERE detail LIKE "
-                "'%' || :document_id || '%'"
-            ),
+        filename = session.execute(
+            text("SELECT filename FROM documents WHERE id = :document_id"),
             {"document_id": document_id},
-        )
+        ).scalar_one_or_none()
+        if filename is not None:
+            session.execute(
+                text(
+                    "DELETE FROM dashboard_events WHERE detail LIKE "
+                    "'%' || :filename || '%'"
+                ),
+                {"filename": filename},
+            )
         session.execute(
             text("DELETE FROM documents WHERE id = :document_id"),
             {"document_id": document_id},
@@ -216,6 +222,52 @@ def test_post_chunks_rechunks_document_and_reflects_edited_content(
         reconstructed = "".join(row.edited_content for row in rows)
         assert reconstructed == "".join(new_text_parts)
         assert reconstructed != "stale edited"
+    finally:
+        _cleanup(document_id)
+
+
+def test_post_chunks_records_the_acting_users_email_on_pipeline_events(
+    client: TestClient,
+) -> None:
+    # save_chunks now threads its own Depends(require_session) user_email
+    # through run_document_pipeline.delay(...) - see
+    # app.chunks.router.save_chunks and app.documents.tasks
+    # .run_document_pipeline's docstrings - so a Save/re-chunk's resulting
+    # chunking_started/succeeded events should carry the acting user's
+    # email, same as document.uploaded/document.deleted already do.
+    document_id = _insert_document(status="ready")
+    try:
+        _insert_chunk(document_id, 0, "stale original", "stale edited")
+
+        me_response = client.get("/internal/auth/me")
+        assert me_response.status_code == 200
+        expected_email = me_response.json()["email"]
+
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            response = client.post(
+                f"/internal/documents/{document_id}/chunks",
+                json={"chunks": [{"editedContent": "new content for email check"}]},
+            )
+        assert response.status_code == 202
+
+        with SyncSessionLocal() as session:
+            filename = session.execute(
+                text("SELECT filename FROM documents WHERE id = :document_id"),
+                {"document_id": document_id},
+            ).scalar_one()
+            rows = session.execute(
+                text(
+                    "SELECT type, user_email FROM dashboard_events "
+                    "WHERE type IN "
+                    "('document.chunking_started', 'document.chunking_succeeded') "
+                    "AND detail LIKE '%' || :filename || '%'"
+                ),
+                {"filename": filename},
+            ).all()
+        assert len(rows) == 2
+        assert all(row.user_email == expected_email for row in rows)
     finally:
         _cleanup(document_id)
 

@@ -25,6 +25,8 @@ export interface DashboardEvent {
   type: string
   timestamp: string
   detail: string
+  /** Email of the user who triggered this event, or null for system/worker-triggered events (e.g. chunking_started/succeeded/failed run inside a Celery task with no session). */
+  userEmail: string | null
 }
 
 /** Trailing window the Stats tab's bar charts cover - shared by both the message and dislike charts via one toggle. */

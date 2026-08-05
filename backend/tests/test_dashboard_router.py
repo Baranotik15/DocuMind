@@ -31,7 +31,9 @@ def client(authenticated_client: TestClient) -> TestClient:
     return authenticated_client
 
 
-def _insert_event(event_type: str, detail: str, created_at: str) -> str:
+def _insert_event(
+    event_type: str, detail: str, created_at: str, user_email: str | None = None
+) -> str:
     # Raw SQL (rather than record_event_async/record_event_sync, which both
     # always default created_at to now()) so the two seeded events get
     # explicit, unambiguously-ordered timestamps - making the
@@ -40,10 +42,15 @@ def _insert_event(event_type: str, detail: str, created_at: str) -> str:
     with SyncSessionLocal() as session:
         row = session.execute(
             text(
-                "INSERT INTO dashboard_events (type, detail, created_at) "
-                "VALUES (:type, :detail, :created_at) RETURNING id"
+                "INSERT INTO dashboard_events (type, detail, user_email, created_at) "
+                "VALUES (:type, :detail, :user_email, :created_at) RETURNING id"
             ),
-            {"type": event_type, "detail": detail, "created_at": created_at},
+            {
+                "type": event_type,
+                "detail": detail,
+                "user_email": user_email,
+                "created_at": created_at,
+            },
         ).scalar_one()
         session.commit()
     return str(row)
@@ -88,7 +95,7 @@ def test_get_dashboard_events_returns_newest_first_with_expected_shape(
         assert matching[1]["type"] == "document.uploaded"
 
         for event in matching:
-            assert set(event.keys()) == {"id", "type", "timestamp", "detail"}
+            assert set(event.keys()) == {"id", "type", "timestamp", "detail", "userEmail"}
             assert event["id"] in event_ids
     finally:
         _cleanup_events(event_ids)
@@ -100,6 +107,53 @@ def test_get_dashboard_events_empty_result_is_a_valid_empty_list(
     response = client.get("/internal/dashboard/events")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+
+def test_get_dashboard_events_user_email_reflects_seeded_value_or_is_null(
+    client: TestClient,
+) -> None:
+    # user_email is nullable at the DB/response-shape level (see
+    # dashboard_events/recording.py's docstring) - this seeds one event
+    # with an email and one without directly, rather than driving it
+    # through a real upload/Save, to keep this test scoped to the
+    # response-shaping contract alone (both rows round-trip correctly,
+    # regardless of which real call sites currently do or don't have an
+    # email to pass).
+    with_email_detail = f"with-email-{uuid.uuid4()}"
+    without_email_detail = f"without-email-{uuid.uuid4()}"
+    event_ids: list[str] = []
+    try:
+        event_ids.append(
+            _insert_event(
+                "document.uploaded",
+                with_email_detail,
+                "2020-01-03T00:00:00Z",
+                user_email="dashboard-events-user@example.com",
+            )
+        )
+        event_ids.append(
+            _insert_event(
+                "document.chunking_started",
+                without_email_detail,
+                "2020-01-04T00:00:00Z",
+            )
+        )
+
+        response = client.get("/internal/dashboard/events")
+        assert response.status_code == 200
+
+        body = response.json()
+        by_detail = {
+            e["detail"]: e
+            for e in body
+            if e["detail"] in (with_email_detail, without_email_detail)
+        }
+        assert by_detail[with_email_detail]["userEmail"] == (
+            "dashboard-events-user@example.com"
+        )
+        assert by_detail[without_email_detail]["userEmail"] is None
+    finally:
+        _cleanup_events(event_ids)
 
 
 def _insert_message(

@@ -50,28 +50,42 @@ def _transition_status(
     session: Session,
     status: DocumentStatus,
     event_type: DashboardEventType,
-    detail: str | None = None,
+    error: Exception | None = None,
+    user_email: str | None = None,
 ) -> None:
     """Shared status-transition step used by every place in this module
     that moves a document to a new status: updates `documents.status`
     (via a bound parameter, not string-interpolated - the previous copies
-    of this each embedded the status directly into the SQL text), records
-    the matching dashboard event, then commits. `detail` defaults to the
-    plain `document_id=<id>` form; callers needing more (e.g.
-    mark_document_failed's error detail) pass their own."""
-    session.execute(
-        text("UPDATE documents SET status = :status WHERE id = :document_id"),
+    of this each embedded the status directly into the SQL text) and
+    captures the document's filename via RETURNING - detail strings use
+    `filename=<name>` rather than `document_id=<id>` so a dashboard_events
+    row stays readable even after its source `documents` row is later
+    hard-deleted (see documents/router.py's delete_document). `error`,
+    when given (mark_document_failed's only caller), is appended to the
+    detail as `: <error>`. `user_email` is None only when the caller
+    genuinely has none to give (there currently is no such caller in this
+    app - every pipeline run traces back to an authenticated upload or
+    Save, threaded all the way down from documents/router.py and
+    chunks/router.py through documents/tasks.py - but the parameter stays
+    optional for whichever future caller might not have one). Records the
+    matching dashboard event, then commits."""
+    filename = session.execute(
+        text(
+            "UPDATE documents SET status = :status WHERE id = :document_id "
+            "RETURNING filename"
+        ),
         {"status": str(status), "document_id": document_id},
-    )
-    record_event_sync(
-        session,
-        event_type,
-        detail if detail is not None else f"document_id={document_id}",
-    )
+    ).scalar_one()
+    detail = f"filename = {filename}"
+    if error is not None:
+        detail = f"{detail}: {error}"
+    record_event_sync(session, event_type, detail, user_email=user_email)
     session.commit()
 
 
-def mark_document_failed(document_id: str, session: Session, exc: Exception) -> None:
+def mark_document_failed(
+    document_id: str, session: Session, exc: Exception, user_email: str | None = None
+) -> None:
     """Shared failure boundary: rolls back any partial work on `session`,
     marks the document 'failed', records a 'document.chunking_failed'
     dashboard event carrying `exc`'s detail, commits, then raises
@@ -91,12 +105,13 @@ def mark_document_failed(document_id: str, session: Session, exc: Exception) -> 
         session,
         DocumentStatus.FAILED,
         DashboardEventType.DOCUMENT_CHUNKING_FAILED,
-        detail=f"document_id={document_id}: {exc}",
+        error=exc,
+        user_email=user_email,
     )
     raise DocumentProcessingError(str(exc)) from exc
 
 
-def _start_chunking(document_id: str, session: Session) -> None:
+def _start_chunking(document_id: str, session: Session, user_email: str | None = None) -> None:
     """Shared status-transition prologue for both pipeline entry points
     below: flips the document to 'chunking' and records
     'document.chunking_started', committed immediately (before any
@@ -104,11 +119,20 @@ def _start_chunking(document_id: str, session: Session) -> None:
     progress" for the whole duration of that work, not just once it
     succeeds."""
     _transition_status(
-        document_id, session, DocumentStatus.CHUNKING, DashboardEventType.DOCUMENT_CHUNKING_STARTED
+        document_id,
+        session,
+        DocumentStatus.CHUNKING,
+        DashboardEventType.DOCUMENT_CHUNKING_STARTED,
+        user_email=user_email,
     )
 
 
-def _replace_chunks(document_id: str, chunk_texts: list[str], session: Session) -> None:
+def _replace_chunks(
+    document_id: str,
+    chunk_texts: list[str],
+    session: Session,
+    user_email: str | None = None,
+) -> None:
     """Shared success-path body for both pipeline entry points below: given
     a final, ordered list of chunk texts - already algorithmically split
     (run_pipeline), or provided verbatim by the caller (
@@ -146,11 +170,17 @@ def _replace_chunks(document_id: str, chunk_texts: list[str], session: Session) 
             },
         )
     _transition_status(
-        document_id, session, DocumentStatus.READY, DashboardEventType.DOCUMENT_CHUNKING_SUCCEEDED
+        document_id,
+        session,
+        DocumentStatus.READY,
+        DashboardEventType.DOCUMENT_CHUNKING_SUCCEEDED,
+        user_email=user_email,
     )
 
 
-def run_pipeline(document_id: str, source_text: str, session: Session) -> None:
+def run_pipeline(
+    document_id: str, source_text: str, session: Session, user_email: str | None = None
+) -> None:
     """Core parse-independent pipeline, shared by initial processing and
     Save-triggered re-chunk (automatic-split path - see
     run_pipeline_with_manual_chunks below for the manual-boundaries
@@ -158,8 +188,9 @@ def run_pipeline(document_id: str, source_text: str, session: Session) -> None:
     integration.md` Task 5 for the full contract. Caller is responsible for
     having already confirmed no other pipeline is running for this document
     (Task 4/7's CAS guard for re-chunk; trivially true for a brand-new
-    upload)."""
-    _start_chunking(document_id, session)
+    upload). `user_email` is attributed to every dashboard event this run
+    produces - see _transition_status's docstring."""
+    _start_chunking(document_id, session, user_email=user_email)
 
     try:
         if not source_text.strip():
@@ -170,13 +201,16 @@ def run_pipeline(document_id: str, source_text: str, session: Session) -> None:
             )
 
         chunks = split_into_chunks(source_text)
-        _replace_chunks(document_id, chunks, session)
+        _replace_chunks(document_id, chunks, session, user_email=user_email)
     except Exception as exc:
-        mark_document_failed(document_id, session, exc)
+        mark_document_failed(document_id, session, exc, user_email=user_email)
 
 
 def run_pipeline_with_manual_chunks(
-    document_id: str, chunk_texts: list[str], session: Session
+    document_id: str,
+    chunk_texts: list[str],
+    session: Session,
+    user_email: str | None = None,
 ) -> None:
     """Manual-boundaries entry point (see
     `.claude/specs/manual-chunk-boundaries.md`): the caller (Save, when the
@@ -186,8 +220,10 @@ def run_pipeline_with_manual_chunks(
     never invoked. Otherwise mirrors run_pipeline exactly: same status-
     transition prologue, same shared `_replace_chunks` success path, same
     `mark_document_failed` failure handling on any error (empty/blank
-    input included - see EmptyManualChunkError)."""
-    _start_chunking(document_id, session)
+    input included - see EmptyManualChunkError). `user_email` is
+    attributed to every dashboard event this run produces - see
+    _transition_status's docstring."""
+    _start_chunking(document_id, session, user_email=user_email)
 
     try:
         if not chunk_texts or any(not chunk.strip() for chunk in chunk_texts):
@@ -196,6 +232,6 @@ def run_pipeline_with_manual_chunks(
                 "chunk must contain non-whitespace text"
             )
 
-        _replace_chunks(document_id, chunk_texts, session)
+        _replace_chunks(document_id, chunk_texts, session, user_email=user_email)
     except Exception as exc:
-        mark_document_failed(document_id, session, exc)
+        mark_document_failed(document_id, session, exc, user_email=user_email)

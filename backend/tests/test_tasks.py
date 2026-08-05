@@ -20,7 +20,9 @@ def _celery_eager() -> None:
     celery_app.conf.task_eager_propagates = True
 
 
-def _insert_document_without_stored_file(session, *, status: str = "uploaded") -> str:
+def _insert_document_without_stored_file(
+    session, *, status: str = "uploaded"
+) -> tuple[str, str]:
     # Deliberately never calls storage.save() for this filename/storage_key,
     # so deps.get_storage().read(storage_key) fails with
     # StorageKeyNotFoundError - simulating a document row whose underlying
@@ -35,7 +37,7 @@ def _insert_document_without_stored_file(session, *, status: str = "uploaded") -
         {"filename": filename, "storage_key": f"docs/{filename}", "status": status},
     ).scalar_one()
     session.commit()
-    return str(document_id)
+    return str(document_id), filename
 
 
 def _document_status(session, document_id: str) -> str:
@@ -45,31 +47,32 @@ def _document_status(session, document_id: str) -> str:
     ).scalar_one()
 
 
-def _event_details(session, event_type: str) -> list[str]:
-    return [
-        row.detail
-        for row in session.execute(
-            text("SELECT detail FROM dashboard_events WHERE type = :type"),
-            {"type": event_type},
-        ).all()
-    ]
+def _matching_events(session, event_type: str, filename: str) -> list:
+    """Rows (detail, user_email) of `event_type` events that carry this
+    test's own filename in `detail` - mirrors test_pipeline.py's helper of
+    the same name."""
+    rows = session.execute(
+        text("SELECT detail, user_email FROM dashboard_events WHERE type = :type"),
+        {"type": event_type},
+    ).all()
+    return [row for row in rows if filename in row.detail]
 
 
-def _cleanup(document_id: str) -> None:
+def _cleanup(document_id: str, filename: str) -> None:
     # Also deletes every dashboard_events row this test's own
     # run_document_pipeline call created (document.chunking_failed here -
     # see app.documents.pipeline's mark_document_failed/record_event_sync)
     # so it never lingers in the live-shared dashboard_events table the
     # live Dashboard reads from - every one of those rows embeds
-    # `document_id=<id>` in `detail`, so a LIKE match on this test's own id
-    # is precise and doesn't touch any other test's rows.
+    # `filename=<name>` in `detail`, so a LIKE match on this test's own
+    # filename is precise and doesn't touch any other test's rows.
     with SyncSessionLocal() as session:
         session.execute(
             text(
                 "DELETE FROM dashboard_events WHERE detail LIKE "
-                "'%' || :document_id || '%'"
+                "'%' || :filename || '%'"
             ),
-            {"document_id": document_id},
+            {"filename": filename},
         )
         session.execute(
             text("DELETE FROM documents WHERE id = :document_id"),
@@ -85,7 +88,7 @@ def test_run_document_pipeline_storage_read_failure_marks_document_failed_not_st
     document stuck at 'uploaded' forever with no recorded error. Confirmed
     live before this fix via a real StorageKeyNotFoundError."""
     with SyncSessionLocal() as session:
-        document_id = _insert_document_without_stored_file(session)
+        document_id, filename = _insert_document_without_stored_file(session)
 
     try:
         with pytest.raises(DocumentProcessingError) as exc_info:
@@ -98,9 +101,12 @@ def test_run_document_pipeline_storage_read_failure_marks_document_failed_not_st
         with SyncSessionLocal() as session:
             assert _document_status(session, document_id) == "failed"
 
-            failure_details = _event_details(session, "document.chunking_failed")
-            matching = [detail for detail in failure_details if document_id in detail]
+            matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(detail) > 0 for detail in matching)
+            # This test calls run_document_pipeline directly with no
+            # user_email given (unlike the real router call sites, which
+            # always thread one through - see app.documents.tasks
+            # .run_document_pipeline's docstring), so it lands as None here.
+            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)

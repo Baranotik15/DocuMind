@@ -89,24 +89,31 @@ const dashboardEvents: DashboardEvent[] = [
     type: 'document.uploaded',
     timestamp: '2026-07-28T14:02:00.000Z',
     detail: 'onboarding-notes.docx was uploaded.',
+    userEmail: 'admin@documind.dev',
   },
   {
     id: 'event-2',
     type: 'document.chunked',
     timestamp: '2026-07-20T09:20:00.000Z',
     detail: 'architecture-guide.pdf was split into 3 chunks.',
+    userEmail: 'admin@documind.dev',
   },
   {
     id: 'event-3',
     type: 'chat.message',
     timestamp: '2026-07-29T10:05:00.000Z',
     detail: 'A user asked how to upload a new document.',
+    userEmail: null,
   },
   {
     id: 'event-4',
     type: 'document.chunking_started',
     timestamp: '2026-07-30T11:47:30.000Z',
     detail: 'release-plan.md chunking started.',
+    // Worker-triggered, no authenticated user in that context - mirrors the
+    // real backend, which leaves user_email NULL for chunking_started/
+    // succeeded/failed (only upload/delete happen inside an HTTP session).
+    userEmail: null,
   },
 ]
 

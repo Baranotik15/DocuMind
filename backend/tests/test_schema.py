@@ -34,6 +34,7 @@ EXPECTED_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
         "id": ("uuid", "NO"),
         "type": ("text", "NO"),
         "detail": ("text", "NO"),
+        "user_email": ("text", "YES"),
         "created_at": ("timestamp with time zone", "NO"),
     },
 }

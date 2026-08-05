@@ -25,7 +25,7 @@ def _celery_eager() -> None:
     celery_app.conf.task_eager_propagates = True
 
 
-def _insert_document(session, *, status: str = "uploaded") -> str:
+def _insert_document(session, *, status: str = "uploaded") -> tuple[str, str]:
     filename = f"pipeline-{uuid.uuid4()}.txt"
     document_id = session.execute(
         text(
@@ -35,7 +35,7 @@ def _insert_document(session, *, status: str = "uploaded") -> str:
         {"filename": filename, "storage_key": f"docs/{filename}", "status": status},
     ).scalar_one()
     session.commit()
-    return str(document_id)
+    return str(document_id), filename
 
 
 def _document_status(session, document_id: str) -> str:
@@ -55,31 +55,34 @@ def _chunk_rows(session, document_id: str) -> list:
     ).all()
 
 
-def _event_details(session, event_type: str) -> list[str]:
-    return [
-        row.detail
-        for row in session.execute(
-            text("SELECT detail FROM dashboard_events WHERE type = :type"),
-            {"type": event_type},
-        ).all()
-    ]
+def _matching_events(session, event_type: str, filename: str) -> list:
+    """Rows (detail, user_email) of `event_type` events that carry this
+    test's own filename in `detail` - the type alone isn't unique to a
+    single test on this live-shared table, so every caller filters down
+    to its own document by filename the same way `_cleanup` does."""
+    rows = session.execute(
+        text("SELECT detail, user_email FROM dashboard_events WHERE type = :type"),
+        {"type": event_type},
+    ).all()
+    return [row for row in rows if filename in row.detail]
 
 
-def _cleanup(document_id: str) -> None:
+def _cleanup(document_id: str, filename: str) -> None:
     # Also deletes every dashboard_events row this test's own run_pipeline/
     # run_pipeline_with_manual_chunks call created (document.chunking_
     # started/succeeded/failed - see app.documents.pipeline's
     # record_event_sync call sites) so it never lingers in the live-shared
     # dashboard_events table the live Dashboard reads from - every one of
-    # those rows embeds `document_id=<id>` in `detail`, so a LIKE match on
-    # this test's own id is precise and doesn't touch any other test's rows.
+    # those rows embeds `filename=<name>` in `detail`, so a LIKE match on
+    # this test's own filename is precise and doesn't touch any other
+    # test's rows.
     with SyncSessionLocal() as session:
         session.execute(
             text(
                 "DELETE FROM dashboard_events WHERE detail LIKE "
-                "'%' || :document_id || '%'"
+                "'%' || :filename || '%'"
             ),
-            {"document_id": document_id},
+            {"filename": filename},
         )
         session.execute(
             text("DELETE FROM documents WHERE id = :document_id"),
@@ -96,7 +99,7 @@ def test_run_pipeline_success_leaves_document_ready_with_exact_reconstruction() 
     source_text = "First paragraph of the document.\n\nSecond paragraph, a bit longer.\n\nThird and final paragraph."
 
     with SyncSessionLocal() as session:
-        document_id = _insert_document(session)
+        document_id, filename = _insert_document(session)
 
     try:
         with patch(
@@ -116,16 +119,50 @@ def test_run_pipeline_success_leaves_document_ready_with_exact_reconstruction() 
             for row in rows:
                 assert row.embedding is not None
 
-            assert any(
-                document_id in detail
-                for detail in _event_details(session, "document.chunking_started")
-            )
-            assert any(
-                document_id in detail
-                for detail in _event_details(session, "document.chunking_succeeded")
-            )
+            started = _matching_events(session, "document.chunking_started", filename)
+            succeeded = _matching_events(session, "document.chunking_succeeded", filename)
+            assert started
+            assert succeeded
+            # This test calls run_pipeline directly with no user_email
+            # given, so it lands as None here - not because it structurally
+            # can't be otherwise (see
+            # test_run_pipeline_records_the_given_user_email_on_pipeline_events
+            # below for the case where one is passed through).
+            assert all(row.user_email is None for row in started + succeeded)
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)
+
+
+def test_run_pipeline_records_the_given_user_email_on_pipeline_events() -> None:
+    # Direct plumbing coverage for user_email flowing from run_pipeline's
+    # own parameter down through _start_chunking/_replace_chunks into
+    # _transition_status's record_event_sync call - the end-to-end router
+    # tests (test_documents_router.py, test_chunks_router.py) cover the
+    # same thing via a real authenticated request, but this isolates the
+    # pipeline's own plumbing from the HTTP layer.
+    source_text = "Some source text.\n\nWith two paragraphs."
+    given_email = "pipeline-plumbing-test@example.com"
+
+    with SyncSessionLocal() as session:
+        document_id, filename = _insert_document(session)
+
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            with SyncSessionLocal() as session:
+                run_pipeline(document_id, source_text, session, user_email=given_email)
+
+        with SyncSessionLocal() as session:
+            assert _document_status(session, document_id) == "ready"
+
+            started = _matching_events(session, "document.chunking_started", filename)
+            succeeded = _matching_events(session, "document.chunking_succeeded", filename)
+            assert started
+            assert succeeded
+            assert all(row.user_email == given_email for row in started + succeeded)
+    finally:
+        _cleanup(document_id, filename)
 
 
 def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -> None:
@@ -135,7 +172,7 @@ def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -
     # pipeline failure, not silently chunked/embedded into a useless
     # whitespace-only chunk that lands the document at 'ready'.
     with SyncSessionLocal() as session:
-        document_id = _insert_document(session)
+        document_id, filename = _insert_document(session)
 
     try:
         with patch(
@@ -148,20 +185,19 @@ def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -
         with SyncSessionLocal() as session:
             assert _document_status(session, document_id) == "failed"
 
-            failure_details = _event_details(session, "document.chunking_failed")
-            matching = [detail for detail in failure_details if document_id in detail]
+            matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(detail) > 0 for detail in matching)
+            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
 
             rows = _chunk_rows(session, document_id)
             assert len(rows) == 0
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)
 
 
 def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouched() -> None:
     with SyncSessionLocal() as session:
-        document_id = _insert_document(session, status="ready")
+        document_id, filename = _insert_document(session, status="ready")
         session.execute(
             text(
                 "INSERT INTO chunks "
@@ -186,10 +222,9 @@ def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouc
         with SyncSessionLocal() as session:
             assert _document_status(session, document_id) == "failed"
 
-            failure_details = _event_details(session, "document.chunking_failed")
-            matching = [detail for detail in failure_details if document_id in detail]
+            matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(detail) > 0 for detail in matching)
+            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
 
             rows = _chunk_rows(session, document_id)
             assert len(rows) == 1
@@ -197,7 +232,7 @@ def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouc
                 "pre-existing chunk, untouched by a failed re-chunk"
             )
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)
 
 
 def test_run_pipeline_with_manual_chunks_skips_split_and_embeds_exact_chunks() -> None:
@@ -213,7 +248,7 @@ def test_run_pipeline_with_manual_chunks_skips_split_and_embeds_exact_chunks() -
     ]
 
     with SyncSessionLocal() as session:
-        document_id = _insert_document(session)
+        document_id, filename = _insert_document(session)
 
     try:
         with patch(
@@ -233,21 +268,15 @@ def test_run_pipeline_with_manual_chunks_skips_split_and_embeds_exact_chunks() -
             for row in rows:
                 assert row.embedding is not None
 
-            assert any(
-                document_id in detail
-                for detail in _event_details(session, "document.chunking_started")
-            )
-            assert any(
-                document_id in detail
-                for detail in _event_details(session, "document.chunking_succeeded")
-            )
+            assert _matching_events(session, "document.chunking_started", filename)
+            assert _matching_events(session, "document.chunking_succeeded", filename)
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)
 
 
 def test_run_pipeline_with_manual_chunks_empty_list_marks_document_failed() -> None:
     with SyncSessionLocal() as session:
-        document_id = _insert_document(session, status="ready")
+        document_id, filename = _insert_document(session, status="ready")
         session.execute(
             text(
                 "INSERT INTO chunks "
@@ -273,10 +302,9 @@ def test_run_pipeline_with_manual_chunks_empty_list_marks_document_failed() -> N
         with SyncSessionLocal() as session:
             assert _document_status(session, document_id) == "failed"
 
-            failure_details = _event_details(session, "document.chunking_failed")
-            matching = [detail for detail in failure_details if document_id in detail]
+            matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(detail) > 0 for detail in matching)
+            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
 
             rows = _chunk_rows(session, document_id)
             assert len(rows) == 1
@@ -284,12 +312,12 @@ def test_run_pipeline_with_manual_chunks_empty_list_marks_document_failed() -> N
                 "pre-existing chunk, untouched by an empty manual list"
             )
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)
 
 
 def test_run_pipeline_with_manual_chunks_whitespace_only_chunk_marks_document_failed() -> None:
     with SyncSessionLocal() as session:
-        document_id = _insert_document(session, status="ready")
+        document_id, filename = _insert_document(session, status="ready")
         session.execute(
             text(
                 "INSERT INTO chunks "
@@ -317,10 +345,9 @@ def test_run_pipeline_with_manual_chunks_whitespace_only_chunk_marks_document_fa
         with SyncSessionLocal() as session:
             assert _document_status(session, document_id) == "failed"
 
-            failure_details = _event_details(session, "document.chunking_failed")
-            matching = [detail for detail in failure_details if document_id in detail]
+            matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(detail) > 0 for detail in matching)
+            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
 
             rows = _chunk_rows(session, document_id)
             assert len(rows) == 1
@@ -328,12 +355,12 @@ def test_run_pipeline_with_manual_chunks_whitespace_only_chunk_marks_document_fa
                 "pre-existing chunk, untouched by a blank manual chunk"
             )
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)
 
 
 def test_run_pipeline_with_manual_chunks_failure_marks_document_failed_and_leaves_old_chunks_untouched() -> None:
     with SyncSessionLocal() as session:
-        document_id = _insert_document(session, status="ready")
+        document_id, filename = _insert_document(session, status="ready")
         session.execute(
             text(
                 "INSERT INTO chunks "
@@ -360,10 +387,9 @@ def test_run_pipeline_with_manual_chunks_failure_marks_document_failed_and_leave
         with SyncSessionLocal() as session:
             assert _document_status(session, document_id) == "failed"
 
-            failure_details = _event_details(session, "document.chunking_failed")
-            matching = [detail for detail in failure_details if document_id in detail]
+            matching = _matching_events(session, "document.chunking_failed", filename)
             assert matching
-            assert all(len(detail) > 0 for detail in matching)
+            assert all(len(row.detail) > 0 and row.user_email is None for row in matching)
 
             rows = _chunk_rows(session, document_id)
             assert len(rows) == 1
@@ -371,4 +397,4 @@ def test_run_pipeline_with_manual_chunks_failure_marks_document_failed_and_leave
                 "pre-existing chunk, untouched by a failed manual re-chunk"
             )
     finally:
-        _cleanup(document_id)
+        _cleanup(document_id, filename)
