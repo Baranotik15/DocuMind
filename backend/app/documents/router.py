@@ -105,10 +105,14 @@ async def upload_document(
                 await session.execute(
                     text(
                         "INSERT INTO documents (filename, storage_key, status) "
-                        f"VALUES (:filename, :storage_key, '{DocumentStatus.UPLOADED}') "
+                        "VALUES (:filename, :storage_key, :status) "
                         "RETURNING id, filename, status, uploaded_at"
                     ),
-                    {"filename": filename, "storage_key": storage_key},
+                    {
+                        "filename": filename,
+                        "storage_key": storage_key,
+                        "status": str(DocumentStatus.UPLOADED),
+                    },
                 )
             ).one()
         except IntegrityError:
@@ -133,11 +137,11 @@ async def upload_document(
         row = (
             await session.execute(
                 text(
-                    f"UPDATE documents SET status = '{DocumentStatus.UPLOADED}' "
+                    "UPDATE documents SET status = :status "
                     "WHERE id = :id "
                     "RETURNING id, filename, status, uploaded_at"
                 ),
-                {"id": existing.id},
+                {"status": str(DocumentStatus.UPLOADED), "id": existing.id},
             )
         ).one()
         await record_event_async(
