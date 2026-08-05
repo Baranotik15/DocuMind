@@ -257,6 +257,61 @@ describe('httpApiClient', () => {
     )
   })
 
+  it('getDislikedMessages GETs /internal/chat/dislikes with the range query param and returns the parsed array', async () => {
+    const messages = [
+      {
+        id: 'msg-1',
+        content: 'reply text',
+        questionContent: 'question text',
+        dislikedAt: '2026-08-01T00:00:00.000Z',
+        createdAt: '2026-07-31T23:59:00.000Z',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(messages))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getDislikedMessages('7days')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/chat/dislikes?range=7days',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(messages)
+  })
+
+  it('getNoAnswerMessages GETs /internal/chat/no-answer-messages with the range query param and returns the parsed array', async () => {
+    const messages = [
+      {
+        id: 'msg-2',
+        content: 'reply text',
+        questionContent: 'question text',
+        createdAt: '2026-07-31T23:59:00.000Z',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(messages))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getNoAnswerMessages('day')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/chat/no-answer-messages?range=day',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(messages)
+  })
+
+  it('dismissNoAnswerMessage POSTs to the dismiss-no-answer endpoint and resolves on 204', async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(204))
+
+    const { httpApiClient } = await import('./httpClient')
+    await httpApiClient.dismissNoAnswerMessage('msg-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/chat/messages/msg-1/dismiss-no-answer',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('getTopMatchingChunks POSTs the question and returns the parsed matches', async () => {
     const matches = [
       { chunkId: 'chunk-1', documentId: 'doc-1', filename: 'guide.pdf', content: 'excerpt one', matchPercent: 87.3 },

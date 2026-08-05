@@ -6,7 +6,9 @@ import type {
   DashboardEvent,
   DashboardStatsBucket,
   DashboardStatsRange,
+  DislikedMessage,
   DocumentSummary,
+  NoAnswerMessage,
 } from './types'
 
 // In-memory mock store. This module stands in for the real backend during
@@ -83,6 +85,31 @@ const chatMessages: ChatMessage[] = [
     role: 'assistant',
     content: 'Yes, open the Chunks page, edit any chunk inline, and click Save.',
     disliked: false,
+  },
+]
+
+// Improvements page's own two seeded lists - kept as independent in-memory
+// stores (not derived from `chatMessages` above) since ChatMessage itself
+// carries neither a dislikedAt timestamp nor a no_answer_found flag; range
+// filtering isn't modeled here (same "just enough for local/offline dev"
+// rationale as getDashboardStats's own seed data below), every seeded entry
+// is returned regardless of which range is requested.
+const dislikedMessages: DislikedMessage[] = [
+  {
+    id: 'msg-5',
+    content: 'I\'m not fully certain about that - could you rephrase the question?',
+    questionContent: 'Does the system support real-time collaborative editing?',
+    dislikedAt: '2026-07-30T16:40:00.000Z',
+    createdAt: '2026-07-30T16:39:30.000Z',
+  },
+]
+
+const noAnswerMessages: NoAnswerMessage[] = [
+  {
+    id: 'msg-6',
+    content: 'I\'m sorry, that isn\'t covered in the uploaded documentation.',
+    questionContent: 'What is the refund policy for enterprise customers?',
+    createdAt: '2026-07-29T09:12:00.000Z',
   },
 ]
 
@@ -227,6 +254,24 @@ export const mockApiClient: ApiClient = {
       throw new Error(`dislikeMessage: no chat message found with id "${messageId}"`)
     }
     message.disliked = true
+  },
+
+  // range isn't modeled here - see dislikedMessages' own seed-data comment
+  // above.
+  async getDislikedMessages(_range) {
+    return dislikedMessages.map((message) => ({ ...message }))
+  },
+
+  async getNoAnswerMessages(_range) {
+    return noAnswerMessages.map((message) => ({ ...message }))
+  },
+
+  async dismissNoAnswerMessage(messageId) {
+    const index = noAnswerMessages.findIndex((message) => message.id === messageId)
+    if (index === -1) {
+      throw new Error(`dismissNoAnswerMessage: no message found with id "${messageId}"`)
+    }
+    noAnswerMessages.splice(index, 1)
   },
 
   // No real embedding/similarity search in this mock - just returns up to
