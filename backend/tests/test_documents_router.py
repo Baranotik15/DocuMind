@@ -12,7 +12,22 @@ from app.config import Settings, get_settings
 from app.documents import router as documents_router
 from app.db.sync_session import SyncSessionLocal
 from app.documents.deps import get_storage
+from app.documents.formatting import format_file_size
 from app.documents.storage import StorageKeyNotFoundError
+from app.documents.tasks import run_document_pipeline
+from app.main import app
+
+
+@pytest.fixture
+def client(authenticated_client: TestClient) -> TestClient:
+    # GET /internal/documents and friends now require a session (see
+    # app/main.py's include_router(..., dependencies=[Depends(require_session)])) -
+    # this overrides the plain, unauthenticated `client` fixture from
+    # conftest.py for every test in this module, so none of the test
+    # bodies below had to change. test_list_documents_without_session_cookie_returns_401
+    # further down builds its own bare TestClient directly to prove the
+    # guard is actually wired up, rather than relying on this override.
+    return authenticated_client
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +41,46 @@ def _celery_eager() -> None:
     celery_app.conf.task_eager_propagates = True
 
 
+@pytest.fixture(autouse=True)
+def _pipeline_dispatch_runs_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fixes the real root cause of the live Dashboard's event log getting
+    polluted with test noise every time this suite runs: `run_document_pipeline
+    .delay(...)` on a live, real Celery app (this project's `celery_broker_url`
+    always points at the real, shared Redis broker - there is no separate
+    test broker) publishes a real message, and the separately-running
+    `worker` container (a different OS process entirely) picks it up and
+    executes the pipeline for real - against this same shared dev DB and
+    dev Dashboard.
+
+    Worse, this file's own `patch("app.documents.pipeline.embed_texts", ...)`
+    mocks below only patch THIS test process's own memory - they have zero
+    effect on whatever the separate worker process actually runs. So without
+    this fixture, hitting POST /internal/documents for real isn't just
+    polluting the live event log, it also silently stops testing what it
+    looks like it's testing (the worker's real, unpatched pipeline decides
+    the resulting document/chunk state, asynchronously, well after this
+    test's own assertions already ran).
+
+    Patches `run_document_pipeline.delay` itself - the same Task singleton
+    referenced both here (via app.documents.router) and by
+    app.chunks.router - to call the task's own underlying function directly
+    instead of going through Celery's dispatch machinery at all: synchronous,
+    in-process, no broker round trip, no dependence on the `task_always_eager`
+    config `_celery_eager` above sets (this makes that guarantee
+    unconditional rather than relying on a mutable global Celery singleton
+    staying correctly configured). Every assertion below that treats the
+    pipeline as having already finished by the time the response comes back
+    (e.g. status == "ready") stays true and deterministic under this, exactly
+    as it did when eager mode was doing its job - it just no longer depends
+    on that global config bit.
+    """
+
+    def _run_inline(*args, **kwargs):
+        return run_document_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(run_document_pipeline, "delay", _run_inline)
+
+
 async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
     # External-boundary mock (app.documents.pipeline.embed_texts) so no real OpenAI
     # call happens - same pattern as test_pipeline.py.
@@ -37,7 +92,27 @@ def _unique_filename(suffix: str = ".txt") -> str:
 
 
 def _cleanup(filename: str) -> None:
+    """Deletes the test's own `documents` row (by filename) AND every
+    `dashboard_events` row it created - both the router's own
+    document.uploaded/document.deleted events and, now that the pipeline
+    fixture above runs inline in-process, the pipeline's own
+    document.chunking_started/succeeded/failed events, all recorded into
+    this same shared dev Postgres the live Dashboard reads from (see
+    app.documents.router/app.documents.pipeline's record_event_* call
+    sites - every one of them now embeds `filename=<name>` in `detail`,
+    not `document_id=<id>`). Matching on filename (rather than looking the
+    document up by id first) also means this still finds every event for
+    a test whose own endpoint call already hard-deleted the `documents`
+    row before this runs (e.g. the delete-document test below) - filename
+    stays in `detail` even after the source row is gone."""
     with SyncSessionLocal() as session:
+        session.execute(
+            text(
+                "DELETE FROM dashboard_events WHERE detail LIKE "
+                "'%' || :filename || '%'"
+            ),
+            {"filename": filename},
+        )
         session.execute(
             text("DELETE FROM documents WHERE filename = :filename"),
             {"filename": filename},
@@ -56,28 +131,33 @@ def _force_status(filename: str, status: str) -> None:
 
 def test_upload_txt_document_is_visible_via_list(client: TestClient) -> None:
     filename = _unique_filename()
+    content = b"Hello, router test."
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
         ):
             response = client.post(
                 "/internal/documents",
-                files={"file": (filename, io.BytesIO(b"Hello, router test."), "text/plain")},
+                files={"file": (filename, io.BytesIO(content), "text/plain")},
             )
 
         assert response.status_code == 200
         body = response.json()
         assert body["filename"] == filename
-        # Celery is eager, so the pipeline runs inline during the request -
+        # The pipeline dispatch fixture above runs it inline, in-process -
         # by the time we get a response, status may already be 'ready'.
         assert body["status"] in ("uploaded", "ready")
         assert "id" in body
         assert "uploadedAt" in body
+        assert body["fileSizeBytes"] == len(content)
 
         list_response = client.get("/internal/documents")
         assert list_response.status_code == 200
-        filenames = [doc["filename"] for doc in list_response.json()]
+        listed = list_response.json()
+        filenames = [doc["filename"] for doc in listed]
         assert filename in filenames
+        matching = [doc for doc in listed if doc["filename"] == filename]
+        assert matching[0]["fileSizeBytes"] == len(content)
     finally:
         _cleanup(filename)
 
@@ -164,6 +244,7 @@ def test_upload_duplicate_filename_without_overwrite_returns_409(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    original_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -195,6 +276,7 @@ def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
     client: TestClient,
 ) -> None:
     filename = _unique_filename()
+    original_id = None
     try:
         with patch(
             "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
@@ -220,6 +302,48 @@ def test_upload_duplicate_filename_with_overwrite_reuses_same_id(
         list_response = client.get("/internal/documents")
         matching = [doc for doc in list_response.json() if doc["filename"] == filename]
         assert len(matching) == 1
+    finally:
+        _cleanup(filename)
+
+
+def test_upload_overwrite_updates_file_size_to_new_content_not_original(
+    client: TestClient,
+) -> None:
+    # The overwrite path replaces the file's actual content in place, so
+    # fileSizeBytes must track the new content's length, not stay pinned to
+    # whatever the original upload's size was - easy to get wrong by only
+    # setting file_size_bytes on the INSERT branch and forgetting the
+    # UPDATE branch.
+    filename = _unique_filename()
+    original_content = b"Original content."
+    replacement_content = b"Much longer replacement content than the original."
+    assert len(replacement_content) != len(original_content)
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            first = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(original_content), "text/plain")},
+            )
+            assert first.status_code == 200
+            assert first.json()["fileSizeBytes"] == len(original_content)
+
+            second = client.post(
+                "/internal/documents",
+                files={
+                    "file": (filename, io.BytesIO(replacement_content), "text/plain")
+                },
+                data={"overwrite": "true"},
+            )
+
+        assert second.status_code == 200
+        assert second.json()["fileSizeBytes"] == len(replacement_content)
+
+        list_response = client.get("/internal/documents")
+        matching = [doc for doc in list_response.json() if doc["filename"] == filename]
+        assert len(matching) == 1
+        assert matching[0]["fileSizeBytes"] == len(replacement_content)
     finally:
         _cleanup(filename)
 
@@ -390,9 +514,51 @@ def test_concurrent_uploads_of_a_new_filename_never_500(client: TestClient) -> N
         _cleanup(filename)
 
 
-def test_delete_document_records_document_deleted_dashboard_event(
+def test_upload_document_records_document_uploaded_event_with_user_email(
     client: TestClient,
 ) -> None:
+    filename = _unique_filename()
+    content = b"Event check."
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            upload = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(content), "text/plain")},
+            )
+        assert upload.status_code == 200
+
+        me_response = client.get("/internal/auth/me")
+        assert me_response.status_code == 200
+        expected_email = me_response.json()["email"]
+
+        events_response = client.get("/internal/dashboard/events")
+        assert events_response.status_code == 200
+        matching = [
+            event
+            for event in events_response.json()
+            if event["type"] == "document.uploaded" and filename in event["detail"]
+        ]
+        assert len(matching) == 1
+        assert matching[0]["userEmail"] == expected_email
+        assert f"filename = {filename}" in matching[0]["detail"]
+        assert f"filesize = {format_file_size(len(content))}" in matching[0]["detail"]
+    finally:
+        _cleanup(filename)
+
+
+def test_upload_document_records_the_uploading_user_on_pipeline_events(
+    client: TestClient,
+) -> None:
+    # The chunking pipeline (document.chunking_started/succeeded) is
+    # dispatched from upload_document with the uploader's own user_email
+    # threaded through run_document_pipeline.delay(...) - see
+    # app.documents.tasks.run_document_pipeline and
+    # app.documents.pipeline._transition_status's docstrings: every
+    # pipeline run traces back 1:1 to the authenticated request that
+    # triggered it, so its dashboard events should carry that same email,
+    # not a null.
     filename = _unique_filename()
     try:
         with patch(
@@ -403,7 +569,45 @@ def test_delete_document_records_document_deleted_dashboard_event(
                 files={"file": (filename, io.BytesIO(b"Event check."), "text/plain")},
             )
         assert upload.status_code == 200
+
+        me_response = client.get("/internal/auth/me")
+        assert me_response.status_code == 200
+        expected_email = me_response.json()["email"]
+
+        events_response = client.get("/internal/dashboard/events")
+        assert events_response.status_code == 200
+        matching = [
+            event
+            for event in events_response.json()
+            if event["type"]
+            in ("document.chunking_started", "document.chunking_succeeded")
+            and filename in event["detail"]
+        ]
+        assert len(matching) == 2
+        assert all(event["userEmail"] == expected_email for event in matching)
+    finally:
+        _cleanup(filename)
+
+
+def test_delete_document_records_document_deleted_dashboard_event_with_user_email(
+    client: TestClient,
+) -> None:
+    filename = _unique_filename()
+    content = b"Event check."
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            upload = client.post(
+                "/internal/documents",
+                files={"file": (filename, io.BytesIO(content), "text/plain")},
+            )
+        assert upload.status_code == 200
         document_id = upload.json()["id"]
+
+        me_response = client.get("/internal/auth/me")
+        assert me_response.status_code == 200
+        expected_email = me_response.json()["email"]
 
         delete_response = client.delete(f"/internal/documents/{document_id}")
         assert delete_response.status_code == 204
@@ -416,5 +620,25 @@ def test_delete_document_records_document_deleted_dashboard_event(
             if event["type"] == "document.deleted" and filename in event["detail"]
         ]
         assert len(matching) == 1
+        assert matching[0]["userEmail"] == expected_email
+        assert f"filename = {filename}" in matching[0]["detail"]
+        assert f"filesize = {format_file_size(len(content))}" in matching[0]["detail"]
     finally:
+        # No document_id needed for _cleanup - it matches dashboard_events
+        # by filename now, which stays in `detail` even though the document
+        # row itself is already gone by this point (deleted above).
         _cleanup(filename)
+
+
+def test_list_documents_without_session_cookie_returns_401() -> None:
+    # A bare TestClient built directly (not via this module's `client`
+    # fixture override, which is always pre-authenticated) so this request
+    # genuinely carries no `session` cookie - proving require_session is
+    # actually wired up on documents_router's include_router(...) call,
+    # not just incidentally satisfied by every other test using the
+    # authenticated fixture.
+    with TestClient(app) as bare_client:
+        response = bare_client.get("/internal/documents")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "not_authenticated"}

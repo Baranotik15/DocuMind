@@ -20,18 +20,21 @@ const documents: DocumentSummary[] = [
     filename: 'architecture-guide.pdf',
     status: 'ready',
     uploadedAt: '2026-07-20T09:15:00.000Z',
+    fileSizeBytes: 428_112,
   },
   {
     id: 'doc-2',
     filename: 'onboarding-notes.docx',
     status: 'uploaded',
     uploadedAt: '2026-07-28T14:02:00.000Z',
+    fileSizeBytes: 51_200,
   },
   {
     id: 'doc-3',
     filename: 'release-plan.md',
     status: 'chunking',
     uploadedAt: '2026-07-30T11:47:00.000Z',
+    fileSizeBytes: 8_940,
   },
 ]
 
@@ -89,24 +92,31 @@ const dashboardEvents: DashboardEvent[] = [
     type: 'document.uploaded',
     timestamp: '2026-07-28T14:02:00.000Z',
     detail: 'onboarding-notes.docx was uploaded.',
+    userEmail: 'admin@documind.dev',
   },
   {
     id: 'event-2',
     type: 'document.chunked',
     timestamp: '2026-07-20T09:20:00.000Z',
     detail: 'architecture-guide.pdf was split into 3 chunks.',
+    userEmail: 'admin@documind.dev',
   },
   {
     id: 'event-3',
     type: 'chat.message',
     timestamp: '2026-07-29T10:05:00.000Z',
     detail: 'A user asked how to upload a new document.',
+    userEmail: null,
   },
   {
     id: 'event-4',
     type: 'document.chunking_started',
     timestamp: '2026-07-30T11:47:30.000Z',
     detail: 'release-plan.md chunking started.',
+    // Worker-triggered, no authenticated user in that context - mirrors the
+    // real backend, which leaves user_email NULL for chunking_started/
+    // succeeded/failed (only upload/delete happen inside an HTTP session).
+    userEmail: null,
   },
 ]
 
@@ -137,6 +147,27 @@ function buildStatsBuckets(range: DashboardStatsRange, seedCounts: number[]): Da
 }
 
 export const mockApiClient: ApiClient = {
+  // No real session/auth modeled in this mock - it backs local/offline dev
+  // only, and the real login flow (LoginPage.tsx) always talks to
+  // httpApiClient directly, never this client. Resolves unconditionally so
+  // the ApiClient contract stays satisfied.
+  async login(email, _password) {
+    return { email }
+  },
+
+  // Same "no real session modeled" rationale as login above - resolves
+  // unconditionally so the ApiClient contract stays satisfied.
+  async logout() {},
+
+  // Same "no real session modeled" rationale as login/logout above - this
+  // mock is never actually reached by RequireAuth.tsx (apiClient is always
+  // bound to httpApiClient, see client.ts), so there's no real "current
+  // user" to look up; resolves unconditionally so the ApiClient contract
+  // stays satisfied.
+  async getCurrentUser() {
+    return { email: 'admin@documind.dev' }
+  },
+
   async listDocuments() {
     return documents.map((document) => ({ ...document }))
   },
@@ -147,6 +178,7 @@ export const mockApiClient: ApiClient = {
       filename: file.name,
       status: 'uploaded',
       uploadedAt: new Date().toISOString(),
+      fileSizeBytes: file.size,
     }
     documents.push(document)
     return { ...document }

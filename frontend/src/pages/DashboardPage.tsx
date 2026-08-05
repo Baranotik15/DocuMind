@@ -422,6 +422,26 @@ const LOGS_PAGE_SIZE = 20
 // `events` list below - this restriction is Logs-only.
 const LOG_EVENT_TYPE_PREFIX = 'document.'
 
+// Human-readable Type-column labels for the raw `document.*` event types
+// (see LOG_EVENT_TYPE_PREFIX above for the full set the backend records) -
+// the started/succeeded/failed phases of one chunking run share a common
+// "Rechunk Document" base label (per explicit request) with a phase suffix,
+// so adjacent rows for the same run stay distinguishable instead of reading
+// as duplicates. Falls back to the raw `type` string for anything not in
+// this map (see formatEventType below) rather than hiding an unrecognized
+// event type entirely.
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  'document.uploaded': 'Upload Document',
+  'document.chunking_started': 'Rechunk Document — Started',
+  'document.chunking_succeeded': 'Rechunk Document — Succeeded',
+  'document.chunking_failed': 'Rechunk Document — Failed',
+  'document.deleted': 'Delete Document',
+}
+
+function formatEventType(type: string): string {
+  return EVENT_TYPE_LABELS[type] ?? type
+}
+
 /** Up/down arrow, same stroke/viewBox convention as ChunkPreviewPage's UndoIcon/RedoIcon - no icon library in this app (see design-principles.md). Only rendered inline in the Timestamp header when a sort direction is actually active - see cycleLogsSortDirection below. */
 function SortDirectionIcon({ direction }: { direction: 'asc' | 'desc' }): JSX.Element {
   return direction === 'asc' ? (
@@ -1193,6 +1213,7 @@ export function DashboardPage(): JSX.Element {
                       </UnstyledButton>
                     </Table.Th>
                     <Table.Th>Type</Table.Th>
+                    <Table.Th>User</Table.Th>
                     <Table.Th>Detail</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
@@ -1205,7 +1226,14 @@ export function DashboardPage(): JSX.Element {
                           rather than resetting to 1 on every page. */}
                       <Table.Td ff="monospace">{clampedLogsPageIndex * LOGS_PAGE_SIZE + index + 1}</Table.Td>
                       <Table.Td ff="monospace">{formatDateTime(event.timestamp)}</Table.Td>
-                      <Table.Td ff="monospace">{event.type}</Table.Td>
+                      <Table.Td ff="monospace">{formatEventType(event.type)}</Table.Td>
+                      {/* null for worker-triggered events (chunking_started/
+                          succeeded/failed run inside a Celery task, outside any
+                          authenticated session) - shown as a dash rather than a
+                          blank cell so it reads as "no user", not missing data. */}
+                      <Table.Td ff="monospace" c={event.userEmail ? undefined : 'dimmed'}>
+                        {event.userEmail ?? '—'}
+                      </Table.Td>
                       <Table.Td className={classes.detailCell}>{event.detail}</Table.Td>
                     </Table.Tr>
                   ))}

@@ -15,18 +15,18 @@ import { renderWithProviders, screen } from '../test-utils'
 // mockClient.ts's seeded in-memory data.
 
 const seededDocuments: DocumentSummary[] = [
-  { id: 'doc-1', filename: 'architecture-guide.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z' },
-  { id: 'doc-2', filename: 'onboarding-notes.docx', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z' },
-  { id: 'doc-3', filename: 'release-plan.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
+  { id: 'doc-1', filename: 'architecture-guide.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z', fileSizeBytes: 428_112 },
+  { id: 'doc-2', filename: 'onboarding-notes.docx', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z', fileSizeBytes: 51_200 },
+  { id: 'doc-3', filename: 'release-plan.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z', fileSizeBytes: 8_940 },
 ]
 
 // Deliberately not already sorted by any column, so clicking a header
 // visibly changes row order (unlike `seededDocuments`, whose filenames
 // happen to already be alphabetical).
 const sortTestDocuments: DocumentSummary[] = [
-  { id: 'doc-1', filename: 'zeta.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z' },
-  { id: 'doc-2', filename: 'alpha.docx', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z' },
-  { id: 'doc-3', filename: 'mid.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
+  { id: 'doc-1', filename: 'zeta.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z', fileSizeBytes: 300_000 },
+  { id: 'doc-2', filename: 'alpha.docx', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z', fileSizeBytes: 1_000 },
+  { id: 'doc-3', filename: 'mid.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z', fileSizeBytes: 50_000 },
 ]
 
 // For the multi-column sort test: two documents share a status ('ready') so
@@ -34,9 +34,9 @@ const sortTestDocuments: DocumentSummary[] = [
 // plus a third document in a different status group so the primary
 // "Status" grouping is visibly distinct from pure chronological order.
 const multiSortDocuments: DocumentSummary[] = [
-  { id: 'doc-1', filename: 'ready-late.pdf', status: 'ready', uploadedAt: '2026-07-25T10:00:00.000Z' },
-  { id: 'doc-2', filename: 'ready-early.pdf', status: 'ready', uploadedAt: '2026-07-20T10:00:00.000Z' },
-  { id: 'doc-3', filename: 'uploaded-mid.pdf', status: 'uploaded', uploadedAt: '2026-07-22T10:00:00.000Z' },
+  { id: 'doc-1', filename: 'ready-late.pdf', status: 'ready', uploadedAt: '2026-07-25T10:00:00.000Z', fileSizeBytes: 100_000 },
+  { id: 'doc-2', filename: 'ready-early.pdf', status: 'ready', uploadedAt: '2026-07-20T10:00:00.000Z', fileSizeBytes: 200_000 },
+  { id: 'doc-3', filename: 'uploaded-mid.pdf', status: 'uploaded', uploadedAt: '2026-07-22T10:00:00.000Z', fileSizeBytes: 300_000 },
 ]
 
 /** The table's filename column, in row order - reads the DOM directly since assertions here care about row *order*, not just presence. */
@@ -396,6 +396,33 @@ describe('UploadPage', () => {
     expect(getFilenameOrder(container)).toEqual(['mid.md', 'alpha.docx', 'zeta.pdf'])
   })
 
+  it('shows each document\'s file size formatted in the Size column', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(seededDocuments)) // GET on mount
+
+    renderWithProviders(<UploadPage />)
+    await screen.findByText('architecture-guide.pdf')
+
+    // seededDocuments: 428_112 B -> "418.1 KB", 51_200 B -> "50.0 KB", 8_940 B -> "8.7 KB".
+    expect(screen.getByText('418.1 KB')).toBeInTheDocument()
+    expect(screen.getByText('50.0 KB')).toBeInTheDocument()
+    expect(screen.getByText('8.7 KB')).toBeInTheDocument()
+  })
+
+  it('sorts by file size when the Size header is clicked, toggling direction on a repeat click', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
+
+    const { container } = renderWithProviders(<UploadPage />)
+    expect(await screen.findByText('zeta.pdf')).toBeInTheDocument()
+
+    const sizeHeader = screen.getByRole('button', { name: 'Size' })
+    fireEvent.click(sizeHeader)
+    // alpha (1_000 B, smallest) -> mid (50_000 B) -> zeta (300_000 B, largest)
+    expect(getFilenameOrder(container)).toEqual(['alpha.docx', 'mid.md', 'zeta.pdf'])
+
+    fireEvent.click(sizeHeader)
+    expect(getFilenameOrder(container)).toEqual(['zeta.pdf', 'mid.md', 'alpha.docx'])
+  })
+
   it('shows a colored ascending/descending sort indicator on the active column and a neutral one elsewhere', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(sortTestDocuments)) // GET on mount
 
@@ -424,10 +451,10 @@ describe('UploadPage', () => {
 
   it('shows an in-progress indicator for uploaded/chunking documents but not for ready/failed', async () => {
     const documents: DocumentSummary[] = [
-      { id: 'doc-1', filename: 'ready-doc.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z' },
-      { id: 'doc-2', filename: 'uploaded-doc.pdf', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z' },
-      { id: 'doc-3', filename: 'chunking-doc.pdf', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
-      { id: 'doc-4', filename: 'failed-doc.pdf', status: 'failed', uploadedAt: '2026-07-31T08:00:00.000Z' },
+      { id: 'doc-1', filename: 'ready-doc.pdf', status: 'ready', uploadedAt: '2026-07-20T09:15:00.000Z', fileSizeBytes: 100_000 },
+      { id: 'doc-2', filename: 'uploaded-doc.pdf', status: 'uploaded', uploadedAt: '2026-07-28T14:02:00.000Z', fileSizeBytes: 100_000 },
+      { id: 'doc-3', filename: 'chunking-doc.pdf', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z', fileSizeBytes: 100_000 },
+      { id: 'doc-4', filename: 'failed-doc.pdf', status: 'failed', uploadedAt: '2026-07-31T08:00:00.000Z', fileSizeBytes: 100_000 },
     ]
     fetchMock.mockResolvedValueOnce(jsonResponse(documents)) // GET on mount
     // Polling is active (doc-2/doc-3 are unsettled) - keep it satisfied with
@@ -451,7 +478,7 @@ describe('UploadPage', () => {
     vi.useFakeTimers()
     try {
       const unsettled: DocumentSummary[] = [
-        { id: 'doc-1', filename: 'release-plan.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z' },
+        { id: 'doc-1', filename: 'release-plan.md', status: 'chunking', uploadedAt: '2026-07-30T11:47:00.000Z', fileSizeBytes: 8_940 },
       ]
       const settled: DocumentSummary[] = [{ ...unsettled[0], status: 'ready' }]
 

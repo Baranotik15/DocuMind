@@ -32,7 +32,7 @@ const chunks: Chunk[] = [
 ]
 
 function documentWithStatus(status: DocumentSummary['status']): DocumentSummary[] {
-  return [{ id: documentId, filename, status, uploadedAt: '2026-07-20T09:15:00.000Z' }]
+  return [{ id: documentId, filename, status, uploadedAt: '2026-07-20T09:15:00.000Z', fileSizeBytes: 12_345 }]
 }
 
 // ChunkPreviewPage reads :documentId via useParams, so, unlike the other page

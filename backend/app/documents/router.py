@@ -7,25 +7,30 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_session
 from app.config import get_settings
 from app.dashboard_events.constants import DashboardEventType
 from app.dashboard_events.recording import record_event_async
 from app.db.session import get_session
-from app.documents.constants import DocumentStatus, SUPPORTED_DOCUMENT_EXTENSIONS
+from app.documents.constants import (
+    DOCUMENT_NOT_FOUND_ERROR,
+    DOCUMENT_PROCESSING_ERROR,
+    DocumentStatus,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+)
 from app.documents.deps import get_storage
+from app.documents.formatting import build_document_event_detail
 from app.documents.schemas import DocumentSummary
 from app.documents.storage import StorageAdapter, StorageKeyNotFoundError
 from app.documents.tasks import run_document_pipeline
 
 router = APIRouter()
 
-# Detail codes shared across more than one endpoint below - kept as
-# constants so all raise sites for the same condition stay in sync (see
-# app/documents/constants.py for the DocumentStatus registry, and
-# app/dashboard_events/constants.py for DashboardEventType, these
-# endpoints also use).
-_DOCUMENT_PROCESSING_ERROR = "document_processing"
-_DOCUMENT_NOT_FOUND_ERROR = "document_not_found"
+# Detail code unique to this router (DOCUMENT_PROCESSING_ERROR and
+# DOCUMENT_NOT_FOUND_ERROR - shared with chunks/router.py's sibling
+# endpoints - now live in app/documents/constants.py instead of being
+# copy-pasted per file; see also app/dashboard_events/constants.py for
+# DashboardEventType, which this router also uses).
 _FILE_TOO_LARGE_ERROR = "file_too_large"
 
 # Read in bounded chunks rather than a single file.read() - the client's
@@ -55,6 +60,7 @@ def _document_summary(row) -> DocumentSummary:
         id=str(row.id),
         filename=row.filename,
         status=row.status,
+        fileSizeBytes=row.file_size_bytes,
         uploadedAt=row.uploaded_at.isoformat(),
     )
 
@@ -65,6 +71,7 @@ async def upload_document(
     overwrite: bool = Form(False),
     session: AsyncSession = Depends(get_session),
     storage: StorageAdapter = Depends(get_storage),
+    user_email: str = Depends(require_session),
 ) -> DocumentSummary:
     """Validates the filename's extension before touching storage/DB, then
     branches on whether a document with this filename already exists. See
@@ -76,6 +83,7 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="unsupported_file_type")
 
     data = await _read_upload_within_limit(file, get_settings().max_upload_size_bytes)
+    file_size = len(data)
 
     existing = (
         await session.execute(
@@ -88,7 +96,7 @@ async def upload_document(
     ).one_or_none()
 
     if existing is not None and existing.status == DocumentStatus.CHUNKING:
-        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
+        raise HTTPException(status_code=409, detail=DOCUMENT_PROCESSING_ERROR)
 
     if existing is not None and not overwrite:
         raise HTTPException(status_code=409, detail="duplicate_filename")
@@ -104,11 +112,16 @@ async def upload_document(
             row = (
                 await session.execute(
                     text(
-                        "INSERT INTO documents (filename, storage_key, status) "
-                        f"VALUES (:filename, :storage_key, '{DocumentStatus.UPLOADED}') "
-                        "RETURNING id, filename, status, uploaded_at"
+                        "INSERT INTO documents (filename, storage_key, status, file_size_bytes) "
+                        "VALUES (:filename, :storage_key, :status, :file_size_bytes) "
+                        "RETURNING id, filename, status, uploaded_at, file_size_bytes"
                     ),
-                    {"filename": filename, "storage_key": storage_key},
+                    {
+                        "filename": filename,
+                        "storage_key": storage_key,
+                        "status": str(DocumentStatus.UPLOADED),
+                        "file_size_bytes": file_size,
+                    },
                 )
             ).one()
         except IntegrityError:
@@ -121,10 +134,6 @@ async def upload_document(
             await session.rollback()
             raise HTTPException(status_code=409, detail="duplicate_filename")
         storage.save(storage_key, data)
-        await record_event_async(
-            session, DashboardEventType.DOCUMENT_UPLOADED, f"document_id={row.id}"
-        )
-        await session.commit()
     else:
         # Reuse the existing row's own storage_key so an overwrite replaces
         # the same on-disk file in place, rather than minting a new key and
@@ -133,17 +142,28 @@ async def upload_document(
         row = (
             await session.execute(
                 text(
-                    f"UPDATE documents SET status = '{DocumentStatus.UPLOADED}' "
+                    "UPDATE documents SET status = :status, file_size_bytes = :file_size_bytes "
                     "WHERE id = :id "
-                    "RETURNING id, filename, status, uploaded_at"
+                    "RETURNING id, filename, status, uploaded_at, file_size_bytes"
                 ),
-                {"id": existing.id},
+                {
+                    "status": str(DocumentStatus.UPLOADED),
+                    "file_size_bytes": file_size,
+                    "id": existing.id,
+                },
             )
         ).one()
-        await record_event_async(
-            session, DashboardEventType.DOCUMENT_UPLOADED, f"document_id={row.id}"
-        )
-        await session.commit()
+
+    # Both branches above reach here with the same row shape - one shared
+    # event/commit instead of a copy in each branch (the previous shape of
+    # this function duplicated this exact call site by branch).
+    await record_event_async(
+        session,
+        DashboardEventType.DOCUMENT_UPLOADED,
+        build_document_event_detail(filename, file_size),
+        user_email=user_email,
+    )
+    await session.commit()
 
     # .delay() is a plain synchronous call (it blocks on a broker round trip
     # even outside of eager mode, and - under the test suite's eager mode -
@@ -153,7 +173,9 @@ async def upload_document(
     # specifically: asyncio.run() cannot be called from a thread that
     # already has a running loop, which this request-handling coroutine's
     # thread does.
-    await asyncio.to_thread(run_document_pipeline.delay, str(row.id))
+    await asyncio.to_thread(
+        run_document_pipeline.delay, str(row.id), user_email=user_email
+    )
 
     return _document_summary(row)
 
@@ -165,7 +187,7 @@ async def list_documents(session: AsyncSession = Depends(get_session)) -> list[D
     rows = (
         await session.execute(
             text(
-                "SELECT id, filename, status, uploaded_at FROM documents "
+                "SELECT id, filename, status, uploaded_at, file_size_bytes FROM documents "
                 "ORDER BY uploaded_at"
             )
         )
@@ -178,6 +200,7 @@ async def delete_document(
     document_id: UUID,
     session: AsyncSession = Depends(get_session),
     storage: StorageAdapter = Depends(get_storage),
+    user_email: str = Depends(require_session),
 ) -> None:
     """Deletes a document's stored file and its `documents` row. Its
     `chunks` rows are removed automatically by Postgres via the
@@ -196,7 +219,7 @@ async def delete_document(
     row = (
         await session.execute(
             text(
-                "SELECT filename, storage_key, status FROM documents "
+                "SELECT filename, storage_key, status, file_size_bytes FROM documents "
                 "WHERE id = :document_id"
             ),
             {"document_id": str(document_id)},
@@ -204,10 +227,10 @@ async def delete_document(
     ).one_or_none()
 
     if row is None:
-        raise HTTPException(status_code=404, detail=_DOCUMENT_NOT_FOUND_ERROR)
+        raise HTTPException(status_code=404, detail=DOCUMENT_NOT_FOUND_ERROR)
 
     if row.status == DocumentStatus.CHUNKING:
-        raise HTTPException(status_code=409, detail=_DOCUMENT_PROCESSING_ERROR)
+        raise HTTPException(status_code=409, detail=DOCUMENT_PROCESSING_ERROR)
 
     try:
         storage.delete(row.storage_key)
@@ -224,6 +247,7 @@ async def delete_document(
     await record_event_async(
         session,
         DashboardEventType.DOCUMENT_DELETED,
-        f"document_id={document_id}, filename={row.filename}",
+        build_document_event_detail(row.filename, row.file_size_bytes),
+        user_email=user_email,
     )
     await session.commit()

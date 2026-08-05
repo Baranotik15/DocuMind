@@ -48,10 +48,8 @@ async def send_message(
     # 1. Insert + commit the user message immediately, so it's persisted
     # even if everything below fails.
     await session.execute(
-        text(
-            f"INSERT INTO chat_messages (role, content) VALUES ('{ChatRole.USER}', :content)"
-        ),
-        {"content": body.content},
+        text("INSERT INTO chat_messages (role, content) VALUES (:role, :content)"),
+        {"role": str(ChatRole.USER), "content": body.content},
     )
     await session.commit()
 
@@ -86,10 +84,10 @@ async def send_message(
         await session.execute(
             text(
                 "INSERT INTO chat_messages (role, content) "
-                f"VALUES ('{ChatRole.ASSISTANT}', :content) "
+                "VALUES (:role, :content) "
                 "RETURNING id, role, content, disliked"
             ),
-            {"content": reply},
+            {"role": str(ChatRole.ASSISTANT), "content": reply},
         )
     ).one()
     await session.commit()

@@ -40,6 +40,7 @@ embeddings.
   <a href="#-preview">Preview</a> ·
   <a href="#-tech-stack">Tech stack</a> ·
   <a href="#-architecture">Architecture</a> ·
+  <a href="#-authentication">Authentication</a> ·
   <a href="#-api-endpoints">API endpoints</a> ·
   <a href="#-project-structure">Project structure</a> ·
   <a href="#-getting-started">Getting started</a>
@@ -51,13 +52,17 @@ embeddings.
 
 ## 🖼️ Preview
 
-| Upload | Chunk review |
+| Login | Upload |
 |---|---|
-| ![Upload page](docs/images/upload.png) | ![Chunk review page](docs/images/chunks.png) |
+| ![Login page](docs/images/login.png) | ![Upload page](docs/images/upload.png) |
 
-| Chat | Dashboard |
+| Chunk review | Chat |
 |---|---|
-| ![Chat page](docs/images/chat.png) | ![Dashboard](docs/images/dashboard.png) |
+| ![Chunk review page](docs/images/chunks.png) | ![Chat page](docs/images/chat.png) |
+
+| Dashboard | Logs |
+|---|---|
+| ![Dashboard](docs/images/dashboard.png) | ![Logs page](docs/images/logs.png) |
 
 ---
 
@@ -72,6 +77,7 @@ embeddings.
 - Celery + Redis (broker only, no result backend — task outcomes are written straight to Postgres)
 - OpenAI API — embeddings and chat completions (models configurable, see `.env.example`)
 - pypdf / python-docx for text extraction, numpy + umap-learn for the 3D embedding projection
+- bcrypt for password hashing
 - Alembic for schema migrations
 - pytest + pytest-cov for testing
 
@@ -131,8 +137,42 @@ A `getTopMatchingChunks`/`top-chunks` endpoint exposes the same retrieval
 step directly (a "Relevance Preview" page) for inspecting semantic search
 results without going through the LLM.
 
-> **Note:** there is no authentication layer yet — the app is intended for
-> local/internal use as-is.
+> **Note:** the admin panel requires logging in — see
+> [Authentication](#-authentication) below. Session-based, not
+> token-based; accounts are provisioned only via a CLI script, never a
+> public sign-up path.
+
+---
+
+<a id="-authentication"></a>
+
+## 🔐 Authentication
+
+Logging in uses email + password and issues a server-side session: an
+opaque, `httpOnly` cookie the browser handles automatically (never a
+JWT/token the frontend reads or stores itself). Sessions have a fixed
+24-hour lifetime from creation — no sliding renewal on activity — and
+logging out invalidates one immediately rather than waiting for that TTL.
+Every `/internal/*` endpoint outside of `/auth/*` requires a valid
+session (see the Auth table below for `login`/`logout`/`me`'s own,
+individually-appropriate rules); `/health` stays open as the standard
+unauthenticated liveness check.
+
+There's no self-registration and no in-app "create user" screen —
+accounts are created and revoked only by running a script inside the
+backend container:
+
+```bash
+# Creates an admin account - prompts for email, then a password (masked
+# with * as you type, confirmed by re-entering it; rejected if under 8
+# characters or missing a letter/digit). Run from the repository root
+# (where docker-compose.yml lives), with -it so the password prompt works.
+docker compose exec -it backend python -m app.auth.cli create-user
+
+# Revokes an account - deactivates it and immediately invalidates any of
+# its active sessions, rather than waiting for the 24h TTL to expire.
+docker compose exec backend python -m app.auth.cli revoke-user --email you@example.com
+```
 
 ---
 
@@ -145,6 +185,13 @@ Interactive docs (Swagger UI) are on by default at
 `/openapi.json`) - the full, always-current source of truth. Summary
 below, grouped by module; all paths are prefixed with `/internal` except
 `/health`.
+
+**Auth**
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/auth/login` | Log in with email + password; sets the session cookie |
+| `POST` | `/auth/logout` | Log out; invalidates the session immediately |
+| `GET` | `/auth/me` | Whether the caller is logged in, plus their email |
 
 **Documents**
 | Method | Path | Description |
@@ -197,6 +244,8 @@ layer - see each module below.
 DocuMind/
 ├── backend/
 │   ├── app/
+│   │   ├── auth/          login/logout/me, CLI-only user create/revoke,
+│   │   │                  password hashing, session cookies
 │   │   ├── documents/     upload/list/delete, extraction, storage,
 │   │   │                  the parse->chunk->embed pipeline, its Celery task
 │   │   ├── chunks/        chunk router, splitting, embedding, vectors,
@@ -236,7 +285,13 @@ cd DocuMind
 cp .env.example .env        # fill in OPENAI_API_KEY (and OPENAI_ADMIN_API_KEY, optional)
 docker compose up -d --build
 docker compose exec backend alembic upgrade head   # first run only
+docker compose exec -it backend python -m app.auth.cli create-user   # first run only - creates your admin login
 ```
+
+All `docker compose exec` commands must be run from the repository root
+(where `docker-compose.yml` lives) — including the `create-user`/
+`revoke-user` commands later, any time you run them, not just on first
+setup. See [Authentication](#-authentication) for details.
 
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:8000 (health check: `GET /health`)

@@ -3,6 +3,8 @@ export interface DocumentSummary {
   filename: string
   status: 'uploaded' | 'chunking' | 'ready' | 'failed'
   uploadedAt: string
+  /** Uploaded file's exact byte size. null only for a pre-existing row from before this field existed. */
+  fileSizeBytes: number | null
 }
 
 export interface Chunk {
@@ -25,6 +27,8 @@ export interface DashboardEvent {
   type: string
   timestamp: string
   detail: string
+  /** Email of the user who triggered this event, or null for system/worker-triggered events (e.g. chunking_started/succeeded/failed run inside a Celery task with no session). */
+  userEmail: string | null
 }
 
 /** Trailing window the Stats tab's bar charts cover - shared by both the message and dislike charts via one toggle. */
