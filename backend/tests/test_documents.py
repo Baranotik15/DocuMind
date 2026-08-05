@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 from docx import Document as DocxDocument
 
+from app.chunks.headings import HeadingMarker
 from app.chunks.splitting import split_into_chunks
-from app.documents.extraction import UnsupportedFileTypeError, extract_text
+from app.documents.extraction import UnsupportedFileTypeError, extract_document
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -14,22 +15,26 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 PDF_FIXTURE_KNOWN_TEXT = "DocuMind sample PDF fixture for extraction tests."
 
 
-def _build_docx_bytes(paragraphs: list[str]) -> bytes:
+def _build_docx_bytes(paragraphs: list[str], styles: list[str | None] | None = None) -> bytes:
     document = DocxDocument()
-    for paragraph in paragraphs:
-        document.add_paragraph(paragraph)
+    for index, paragraph in enumerate(paragraphs):
+        style = styles[index] if styles else None
+        if style:
+            document.add_paragraph(paragraph, style=style)
+        else:
+            document.add_paragraph(paragraph)
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
 
 
-# --- extract_text ---------------------------------------------------------
+# --- extract_document: text -------------------------------------------------
 
 
 def test_extract_text_txt_returns_exact_content() -> None:
     content = "Hello, world!\nSecond line.\n"
 
-    result = extract_text("notes.txt", content.encode("utf-8"))
+    result = extract_document("notes.txt", content.encode("utf-8")).text
 
     assert result == content
 
@@ -37,7 +42,7 @@ def test_extract_text_txt_returns_exact_content() -> None:
 def test_extract_text_md_returns_exact_content() -> None:
     content = "# Heading\n\nBody text with **emphasis**.\n"
 
-    result = extract_text("README.md", content.encode("utf-8"))
+    result = extract_document("README.md", content.encode("utf-8")).text
 
     assert result == content
 
@@ -45,7 +50,7 @@ def test_extract_text_md_returns_exact_content() -> None:
 def test_extract_text_is_case_insensitive_on_extension() -> None:
     content = "Uppercase extension still works."
 
-    result = extract_text("NOTES.TXT", content.encode("utf-8"))
+    result = extract_document("NOTES.TXT", content.encode("utf-8")).text
 
     assert result == content
 
@@ -53,7 +58,7 @@ def test_extract_text_is_case_insensitive_on_extension() -> None:
 def test_extract_text_pdf_returns_known_text() -> None:
     data = (FIXTURES_DIR / "sample.pdf").read_bytes()
 
-    result = extract_text("sample.pdf", data)
+    result = extract_document("sample.pdf", data).text
 
     assert PDF_FIXTURE_KNOWN_TEXT in result
 
@@ -61,7 +66,7 @@ def test_extract_text_pdf_returns_known_text() -> None:
 def test_extract_text_docx_returns_paragraph_text() -> None:
     data = _build_docx_bytes(["First paragraph.", "Second paragraph."])
 
-    result = extract_text("notes.docx", data)
+    result = extract_document("notes.docx", data).text
 
     assert "First paragraph." in result
     assert "Second paragraph." in result
@@ -69,12 +74,46 @@ def test_extract_text_docx_returns_paragraph_text() -> None:
 
 def test_extract_text_raises_for_unsupported_extension() -> None:
     with pytest.raises(UnsupportedFileTypeError):
-        extract_text("virus.exe", b"whatever bytes")
+        extract_document("virus.exe", b"whatever bytes")
 
 
 def test_extract_text_raises_for_extensionless_filename() -> None:
     with pytest.raises(UnsupportedFileTypeError):
-        extract_text("no_extension_at_all", b"whatever bytes")
+        extract_document("no_extension_at_all", b"whatever bytes")
+
+
+# --- extract_document: DOCX heading styles (tier 2) -------------------------
+
+
+def test_extract_document_docx_no_heading_styles_returns_no_headings() -> None:
+    data = _build_docx_bytes(["First paragraph.", "Second paragraph."])
+
+    result = extract_document("notes.docx", data)
+
+    assert result.headings == []
+
+
+def test_extract_document_docx_all_normal_style_returns_no_headings() -> None:
+    paragraphs = ["Overview", "Body one.", "Details", "Body two."]
+    data = _build_docx_bytes(paragraphs, styles=[None, None, None, None])
+
+    result = extract_document("notes.docx", data)
+
+    assert result.headings == []
+
+
+def test_extract_document_docx_heading_styles_produce_markers() -> None:
+    paragraphs = ["Overview", "Body one.", "Details", "Body two."]
+    data = _build_docx_bytes(paragraphs, styles=["Heading 1", None, "Heading 2", None])
+
+    result = extract_document("notes.docx", data)
+
+    overview_offset = result.text.index("Overview")
+    details_offset = result.text.index("Details")
+    assert result.headings == [
+        HeadingMarker(offset=overview_offset, level=1),
+        HeadingMarker(offset=details_offset, level=2),
+    ]
 
 
 # --- split_into_chunks -----------------------------------------------------
