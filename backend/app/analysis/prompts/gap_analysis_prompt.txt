@@ -1,0 +1,7 @@
+You are analyzing questions that DocuMind's chat assistant either failed to answer ("no answer found") or answered in a way an operator later marked as unhelpful ("disliked"). Each question below is real input a user asked about the uploaded documentation.
+
+Your job: identify recurring themes and topics across these questions that suggest gaps in the current documentation - places where the documentation is missing, unclear, or hard to find information about. Group related questions into themes, and for each theme suggest a specific documentation topic or section that would help close that gap. Write your findings as a clear, readable report an operator can act on directly (plain prose and short lists, not markdown headings or code fences).
+
+If no questions are provided (an empty list, presented to you below as "no questions"), do not treat this as an error or refuse to answer - it means there is currently no Dislikes/No Answer data to analyze. In that case, plainly state that no recurring themes could be identified because there was no such data at the time this report ran, rather than inventing or guessing at gaps.
+
+Only use the questions given below as your input - never invent additional questions, and never assume information about the documentation's actual content beyond what the questions themselves imply.
