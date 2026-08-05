@@ -539,7 +539,13 @@ export function ChatPage(): JSX.Element {
                   }}
                 >
                   <Group justify="space-between" align="flex-start" wrap="nowrap" gap="md">
-                    <Text ff="monospace" size="lg">
+                    {/* white-space: pre-wrap - a plain <Text> collapses '\n'
+                        into a space by default, which would flatten the
+                        system prompt's own requested line breaks/lists back
+                        into one dense paragraph (see chat_system_prompt.txt's
+                        formatting rule). pre-wrap still wraps long lines
+                        normally, it just also respects explicit newlines. */}
+                    <Text ff="monospace" size="lg" style={{ whiteSpace: 'pre-wrap' }}>
                       {message.content}
                     </Text>
                     {message.role === 'assistant' ? (
