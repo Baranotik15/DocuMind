@@ -1,0 +1,13 @@
+/* Per-entry card in the Dislikes/No Answer lists (see ImprovementsPage.tsx's
+   ImprovementsListPanel) - a subtle lift on hover, matching the soft-shadow
+   "elevated surface" treatment used elsewhere in this app (StatCard,
+   SpendBlock, ChatPage's message bubbles), not a hard color swap. */
+.entryCard {
+  transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.entryCard:hover {
+  border-color: var(--mantine-color-signalBlue-6);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px -16px rgba(0, 0, 0, 0.6);
+}

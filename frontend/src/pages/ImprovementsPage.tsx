@@ -2,11 +2,12 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { ActionIcon, Box, Button, Group, Paper, Stack, Table, Text, Title } from '@mantine/core'
+import { ActionIcon, Box, Button, Group, Paper, Stack, Text, Title } from '@mantine/core'
 
 import { apiClient } from '../api/client'
 import type { DislikedMessage, ImprovementsRange, NoAnswerMessage } from '../api/types'
 import { SegmentedToggle } from '../components/SegmentedToggle'
+import classes from './ImprovementsPage.module.css'
 import { formatDateTime } from '../utils/formatDateTime'
 
 type ImprovementsTab = 'lists' | 'analysis'
@@ -75,6 +76,14 @@ interface ImprovementsListPanelProps<T extends ImprovementsEntry> {
   timestampLabel: string
   emptyMessage: string
   removeAriaLabel: string
+  /** A left-edge accent stripe + question-label color, per panel - reuses this
+      app's existing brand associations rather than inventing new ones:
+      alertMagenta is already the dislike button's own color everywhere else
+      (ChatPage, DashboardPage's Dislikes chart); signalBlue is already this
+      app's "informational" accent (Edit action icon, Messages sent chart,
+      timezone chip). Purely a visual identity cue distinguishing the two
+      panels' cards from each other at a glance. */
+  accentColor: 'alertMagenta' | 'signalBlue'
 }
 
 /**
@@ -94,6 +103,7 @@ function ImprovementsListPanel<T extends ImprovementsEntry>({
   timestampLabel,
   emptyMessage,
   removeAriaLabel,
+  accentColor,
 }: ImprovementsListPanelProps<T>): JSX.Element {
   const [range, setRange] = useState<ImprovementsRange>('all')
   const [items, setItems] = useState<T[]>([])
@@ -150,22 +160,45 @@ function ImprovementsListPanel<T extends ImprovementsEntry>({
               </Text>
             </Box>
           ) : (
-            <Table fz="md" verticalSpacing="sm">
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Question</Table.Th>
-                  <Table.Th>Reply</Table.Th>
-                  <Table.Th>{timestampLabel}</Table.Th>
-                  <Table.Th>Actions</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {items.map((item) => (
-                  <Table.Tr key={item.id}>
-                    <Table.Td c={item.questionContent ? undefined : 'dimmed'}>{item.questionContent ?? '—'}</Table.Td>
-                    <Table.Td>{item.content}</Table.Td>
-                    <Table.Td ff="monospace">{formatDateTime(getTimestamp(item))}</Table.Td>
-                    <Table.Td>
+            // A card per entry (not a grid table) - the question/reply pair
+            // reads as a small conversation snippet, echoing ChatPage's own
+            // message-bubble language (see its Paper[radius="xl"] bubbles)
+            // rather than a bureaucratic data table. The left accent stripe
+            // (accentColor) gives each panel its own visual identity at a
+            // glance when both sit side by side.
+            <Stack gap="sm">
+              {items.map((item) => (
+                <Paper
+                  key={item.id}
+                  radius="lg"
+                  p="md"
+                  bg="var(--doc-bg)"
+                  className={classes.entryCard}
+                  style={{
+                    border: '1px solid var(--doc-hairline)',
+                    borderLeft: `3px solid var(--mantine-color-${accentColor}-6)`,
+                  }}
+                >
+                  <Group justify="space-between" align="flex-start" wrap="nowrap" gap="md">
+                    <Stack gap={6} style={{ flex: 1, minWidth: 0 }}>
+                      <Text
+                        size="xs"
+                        fw={700}
+                        tt="uppercase"
+                        c={accentColor}
+                        style={{ letterSpacing: '0.04em' }}
+                      >
+                        Question
+                      </Text>
+                      <Text fw={600} c={item.questionContent ? undefined : 'dimmed'} style={{ whiteSpace: 'pre-wrap' }}>
+                        {item.questionContent ?? 'Unknown question'}
+                      </Text>
+                      <Box aria-hidden="true" style={{ height: 1, backgroundColor: 'var(--doc-hairline)' }} />
+                      <Text size="sm" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+                        {item.content}
+                      </Text>
+                    </Stack>
+                    <Stack gap="xs" align="flex-end" style={{ flexShrink: 0 }}>
                       <ActionIcon
                         size="lg"
                         aria-label={removeAriaLabel}
@@ -175,11 +208,16 @@ function ImprovementsListPanel<T extends ImprovementsEntry>({
                       >
                         <RemoveIcon />
                       </ActionIcon>
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
+                      <Text size="xs" c="dimmed" ff="monospace" ta="right" style={{ whiteSpace: 'nowrap' }}>
+                        {timestampLabel}
+                        <br />
+                        {formatDateTime(getTimestamp(item))}
+                      </Text>
+                    </Stack>
+                  </Group>
+                </Paper>
+              ))}
+            </Stack>
           )}
         </Box>
       </Stack>
@@ -255,6 +293,7 @@ export function ImprovementsPage(): JSX.Element {
               timestampLabel="Disliked At"
               emptyMessage="There are no dislikes yet."
               removeAriaLabel="Remove from Dislikes"
+              accentColor="alertMagenta"
             />
           </Box>
           <Box style={{ flex: 1, minWidth: 420, height: '100%' }}>
@@ -266,6 +305,7 @@ export function ImprovementsPage(): JSX.Element {
               timestampLabel="No Answer At"
               emptyMessage="There are no messages the bot couldn't answer yet."
               removeAriaLabel="Remove from No Answer"
+              accentColor="signalBlue"
             />
           </Box>
         </Group>

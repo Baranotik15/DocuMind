@@ -155,9 +155,9 @@ describe('ImprovementsPage', () => {
 
     expect(await screen.findByText('How do I reset my password?')).toBeInTheDocument()
     expect(await screen.findByText(/no messages the bot couldn't answer/i)).toBeInTheDocument()
-    // Only the Dislikes panel's table renders - the No Answer panel shows
-    // its empty-state message instead of an empty table.
-    expect(screen.getAllByRole('table')).toHaveLength(1)
+    // Dislikes panel has an entry, so it must NOT also show its own
+    // empty-state message alongside it.
+    expect(screen.queryByText(/no dislikes yet/i)).not.toBeInTheDocument()
   })
 
   it('switching to the Analysis sub-tab shows an inert placeholder button that fires no request when clicked', async () => {
