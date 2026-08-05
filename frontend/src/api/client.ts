@@ -1,4 +1,17 @@
-import type { ChatMessage, Chunk, ChunkGraph, DashboardEvent, DashboardStats, DashboardStatsRange, DocumentSummary, OpenAiSpend, RelevantChunkMatch } from './types'
+import type {
+  ChatMessage,
+  Chunk,
+  ChunkGraph,
+  DashboardEvent,
+  DashboardStats,
+  DashboardStatsRange,
+  DislikedMessage,
+  DocumentSummary,
+  ImprovementsRange,
+  NoAnswerMessage,
+  OpenAiSpend,
+  RelevantChunkMatch,
+} from './types'
 
 import { httpApiClient } from './httpClient'
 
@@ -15,6 +28,12 @@ export interface ApiClient {
   listChatMessages(): Promise<ChatMessage[]>
   sendChatMessage(content: string): Promise<ChatMessage>
   dislikeMessage(messageId: string): Promise<void>
+  /** GET /internal/chat/dislikes?range=... - every message currently disliked, newest disliked_at first. Removing an entry from the Improvements page's Dislikes list reuses `dislikeMessage` above (toggles it back off) rather than a separate method. */
+  getDislikedMessages(range: ImprovementsRange): Promise<DislikedMessage[]>
+  /** GET /internal/chat/no-answer-messages?range=... - every message where the assistant said the answer wasn't in the documentation, newest created_at first. */
+  getNoAnswerMessages(range: ImprovementsRange): Promise<NoAnswerMessage[]>
+  /** POST /internal/chat/messages/{messageId}/dismiss-no-answer - one-way, clears the flag (not a toggle, unlike dislikeMessage). */
+  dismissNoAnswerMessage(messageId: string): Promise<void>
   getTopMatchingChunks(content: string): Promise<RelevantChunkMatch[]>
   getDashboardEvents(): Promise<DashboardEvent[]>
   /** `tz` is an IANA zone name (e.g. "Europe/Kyiv") sent to the backend as the `tz` query param - only affects the "day" range's bucket alignment (see GET /internal/dashboard/stats's contract); "7days"/"month"/"year" ignore it entirely. */

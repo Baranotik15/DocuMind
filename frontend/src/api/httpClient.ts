@@ -181,6 +181,23 @@ export const httpApiClient: ApiClient = {
     return requestVoid(`/internal/chat/messages/${messageId}/dislike`, { method: 'POST' })
   },
 
+  getDislikedMessages(range) {
+    // range is URL-encoded for the same reason getDashboardStats's tz param
+    // is below - a plain ImprovementsRange value never actually contains a
+    // character that needs escaping, but encoding it unconditionally keeps
+    // this call site consistent with that existing idiom rather than
+    // special-casing "this one's safe, skip it".
+    return requestJson(`/internal/chat/dislikes?range=${encodeURIComponent(range)}`, { method: 'GET' })
+  },
+
+  getNoAnswerMessages(range) {
+    return requestJson(`/internal/chat/no-answer-messages?range=${encodeURIComponent(range)}`, { method: 'GET' })
+  },
+
+  dismissNoAnswerMessage(messageId) {
+    return requestVoid(`/internal/chat/messages/${messageId}/dismiss-no-answer`, { method: 'POST' })
+  },
+
   getTopMatchingChunks(content) {
     return requestJson('/internal/chat/top-chunks', {
       method: 'POST',

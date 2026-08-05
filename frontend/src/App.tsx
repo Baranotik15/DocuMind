@@ -11,6 +11,7 @@ import { RequireAuth } from './layout/RequireAuth'
 import { ChatPage } from './pages/ChatPage'
 import { ChunkPreviewPage } from './pages/ChunkPreviewPage'
 import { DashboardPage } from './pages/DashboardPage'
+import { ImprovementsPage } from './pages/ImprovementsPage'
 import { LoginPage } from './pages/LoginPage'
 import { RelevancePage } from './pages/RelevancePage'
 import { UploadPage } from './pages/UploadPage'
@@ -45,6 +46,7 @@ export function App() {
                     <Route path="/chat" element={<ChatPage />} />
                     <Route path="/relevance" element={<RelevancePage />} />
                     <Route path="/dashboard" element={<DashboardPage />} />
+                    <Route path="/improvements" element={<ImprovementsPage />} />
                   </Routes>
                 </AppLayout>
               </RequireAuth>

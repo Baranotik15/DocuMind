@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.chat.completion import generate_reply
+from app.chat.completion import NO_ANSWER_MARKER, GeneratedReply, _parse_reply, generate_reply
 from app.chunks import embedding
 from app.chunks.embedding import LLMError, embed_texts
 from app.config import Settings
@@ -74,7 +74,9 @@ def test_generate_reply_returns_completion_text_content() -> None:
         generate_reply("what is x?", ["chunk one", "chunk two"], client=client)
     )
 
-    assert result == "the answer"
+    assert isinstance(result, GeneratedReply)
+    assert result.content == "the answer"
+    assert result.no_answer_found is False
 
 
 def test_generate_reply_request_includes_context_chunks_and_message() -> None:
@@ -101,7 +103,8 @@ def test_generate_reply_allows_empty_context_chunks() -> None:
 
     result = asyncio.run(generate_reply("hello", [], client=client))
 
-    assert result == "fallback answer"
+    assert result.content == "fallback answer"
+    assert result.no_answer_found is False
     client.chat.completions.create.assert_awaited_once()
 
 
@@ -132,6 +135,34 @@ def test_generate_reply_raises_llm_error_on_empty_choices() -> None:
 
     with pytest.raises(LLMError):
         asyncio.run(generate_reply("hi", [], client=client))
+
+
+def test_generate_reply_detects_no_answer_marker_and_strips_it() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response(
+            f"{NO_ANSWER_MARKER} I'm sorry, I don't have an answer to that."
+        )
+    )
+
+    result = asyncio.run(generate_reply("what is x?", ["chunk"], client=client))
+
+    assert isinstance(result, GeneratedReply)
+    assert result.no_answer_found is True
+    assert result.content == "I'm sorry, I don't have an answer to that."
+    assert NO_ANSWER_MARKER not in result.content
+
+
+def test_generate_reply_without_marker_reports_no_answer_found_false() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_make_chat_response("an ordinary reply")
+    )
+
+    result = asyncio.run(generate_reply("what is x?", ["chunk"], client=client))
+
+    assert result.no_answer_found is False
+    assert result.content == "an ordinary reply"
 
 
 def test_embed_texts_raises_llm_error_when_api_key_missing(
@@ -184,6 +215,7 @@ def test_generate_reply_system_prompt_includes_house_rules_with_context() -> Non
         "I'm sorry, I don't have an answer to that based on the available documents."
         in system_content
     )
+    assert NO_ANSWER_MARKER in system_content
     assert "chunk one" in system_content
     assert "chunk two" in system_content
 
@@ -204,3 +236,30 @@ def test_generate_reply_system_prompt_includes_house_rules_with_empty_context() 
         "I'm sorry, I don't have an answer to that based on the available documents."
         in system_content
     )
+    assert NO_ANSWER_MARKER in system_content
+
+
+def test_parse_reply_strips_marker_and_following_space() -> None:
+    result = _parse_reply(f"{NO_ANSWER_MARKER} I'm sorry, no answer.")
+
+    assert result == GeneratedReply(content="I'm sorry, no answer.", no_answer_found=True)
+
+
+def test_parse_reply_strips_marker_and_following_newline() -> None:
+    result = _parse_reply(f"{NO_ANSWER_MARKER}\nI'm sorry, no answer.")
+
+    assert result == GeneratedReply(content="I'm sorry, no answer.", no_answer_found=True)
+
+
+def test_parse_reply_without_marker_passes_content_through_unchanged() -> None:
+    result = _parse_reply("just a normal reply")
+
+    assert result == GeneratedReply(content="just a normal reply", no_answer_found=False)
+
+
+def test_parse_reply_marker_mentioned_mid_reply_is_not_treated_as_prefix() -> None:
+    content = f"this reply mentions {NO_ANSWER_MARKER} in the middle, not at the start"
+
+    result = _parse_reply(content)
+
+    assert result == GeneratedReply(content=content, no_answer_found=False)

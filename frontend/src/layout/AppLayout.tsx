@@ -21,6 +21,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/chat', label: 'Chat' },
   { to: '/relevance', label: 'Relevance Preview' },
   { to: '/dashboard', label: 'Logs & Stats' },
+  { to: '/improvements', label: 'Improvements' },
 ]
 
 /**

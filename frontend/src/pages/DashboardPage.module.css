@@ -1,34 +1,8 @@
-/* Stats/Logs toggle buttons (DashboardPage.tsx): on hover, Mantine's own
-   Button.css sets `background-color: var(--button-hover, ...)` inline via
-   its vars resolver - fighting that custom property directly can't win
-   (Mantine sets it as an inline style on the same element, which always
-   outranks an external stylesheet rule for the same property/element,
-   `!important` aside). Targeting the real `background-color` property
-   instead, pinned back to `var(--button-bg)` (also set inline by Mantine,
-   just not overridden by its own hover rule), sidesteps that fight
-   entirely - and self-references whichever resting color already applies
-   (transparent when idle, filled sparkOrange when active), so one rule
-   covers both states without a bespoke value per variant. This rule's own
-   specificity (class + two pseudo-classes) already outranks Mantine's own
-   hover rule (one class + :hover, :where(...) contributes zero) - see
-   `.toolbarButton.historyButton` in ChunkPreviewPage.module.css for the
-   same "outrank by specificity, not injection order" reasoning applied to a
-   different Mantine override. No background change on hover; a small
-   scale-up reads as the button (and its text) growing instead - the same
-   idiom as `.toolbarButton:hover` there. */
-.tabButton {
-  transition: transform 150ms ease;
-}
-
-@media (hover: hover) {
-  .tabButton:hover:not(:disabled) {
-    background-color: var(--button-bg);
-    transform: scale(1.06);
-  }
-}
-
 /* Logs tab pagination (Previous/Next) - same scale-on-hover idiom as
-   ChunkPreviewPage.module.css's own .paginationButton. */
+   ChunkPreviewPage.module.css's own .paginationButton (and, since this
+   session, SegmentedToggle.module.css's own .tabButton - the toggle button
+   styling itself moved there when SegmentedToggle was extracted out of this
+   file). */
 .paginationButton {
   transition: transform 150ms ease;
 }
