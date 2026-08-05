@@ -52,13 +52,17 @@
 
 ## 🖼️ Превью
 
-| Загрузка | Просмотр чанков |
+| Вход | Загрузка |
 |---|---|
-| ![Страница загрузки](docs/images/upload.png) | ![Просмотр чанков](docs/images/chunks.png) |
+| ![Страница входа](docs/images/login.png) | ![Страница загрузки](docs/images/upload.png) |
 
-| Чат | Дашборд |
+| Просмотр чанков | Чат |
 |---|---|
-| ![Страница чата](docs/images/chat.png) | ![Дашборд](docs/images/dashboard.png) |
+| ![Просмотр чанков](docs/images/chunks.png) | ![Страница чата](docs/images/chat.png) |
+
+| Дашборд | Логи |
+|---|---|
+| ![Дашборд](docs/images/dashboard.png) | ![Страница логов](docs/images/logs.png) |
 
 ---
 

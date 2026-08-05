@@ -52,13 +52,17 @@ embeddings.
 
 ## 🖼️ Preview
 
-| Upload | Chunk review |
+| Login | Upload |
 |---|---|
-| ![Upload page](docs/images/upload.png) | ![Chunk review page](docs/images/chunks.png) |
+| ![Login page](docs/images/login.png) | ![Upload page](docs/images/upload.png) |
 
-| Chat | Dashboard |
+| Chunk review | Chat |
 |---|---|
-| ![Chat page](docs/images/chat.png) | ![Dashboard](docs/images/dashboard.png) |
+| ![Chunk review page](docs/images/chunks.png) | ![Chat page](docs/images/chat.png) |
+
+| Dashboard | Logs |
+|---|---|
+| ![Dashboard](docs/images/dashboard.png) | ![Logs page](docs/images/logs.png) |
 
 ---
 
