@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import text
 
+from app.chunks.headings import HeadingMarker
 from app.db.sync_session import SyncSessionLocal
 from app.documents.pipeline import (
     DocumentProcessingError,
@@ -96,6 +97,11 @@ async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
 
 
 def test_run_pipeline_success_leaves_document_ready_with_exact_reconstruction() -> None:
+    # No headings given (the Save-triggered automatic re-chunk path, and any
+    # caller with no format-native structure) - split_document's own
+    # tier 1/3 text-pattern detectors find nothing in this plain prose, so
+    # it falls all the way back to today's paragraph/token-limited
+    # behavior, unchanged from before this feature.
     source_text = "First paragraph of the document.\n\nSecond paragraph, a bit longer.\n\nThird and final paragraph."
 
     with SyncSessionLocal() as session:
@@ -129,6 +135,57 @@ def test_run_pipeline_success_leaves_document_ready_with_exact_reconstruction() 
             # test_run_pipeline_records_the_given_user_email_on_pipeline_events
             # below for the case where one is passed through).
             assert all(row.user_email is None for row in started + succeeded)
+    finally:
+        _cleanup(document_id, filename)
+
+
+def test_run_pipeline_with_headings_splits_at_heading_boundaries_not_paragraphs() -> None:
+    # Deliberately no blank-line paragraph breaks anywhere in this text, and
+    # both sections are well under DEFAULT_MAX_TOKENS - so the tier 5/6/7
+    # paragraph/token-limited fallback alone (headings=None) would leave
+    # this as a single chunk. Passing explicit headings must still split it
+    # at exactly those offsets, proving split_document's given-headings
+    # path (not its own tier 1/3 fallback, and not paragraph slicing) wins.
+    first_title = "Introduction"
+    second_title = "Refund Policy"
+    source_text = (
+        f"{first_title}\n"
+        "This is the introduction body, with no blank line separating it "
+        "from the heading above or the next section below.\n"
+        f"{second_title}\n"
+        "This is the second section's body text, also with no blank-line "
+        "paragraph break anywhere nearby."
+    )
+    second_offset = source_text.index(second_title)
+    headings = [
+        HeadingMarker(offset=0, level=1),
+        HeadingMarker(offset=second_offset, level=1),
+    ]
+
+    with SyncSessionLocal() as session:
+        document_id, filename = _insert_document(session)
+
+    try:
+        with patch(
+            "app.documents.pipeline.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)
+        ):
+            with SyncSessionLocal() as session:
+                run_pipeline(document_id, source_text, session, headings=headings)
+
+        with SyncSessionLocal() as session:
+            assert _document_status(session, document_id) == "ready"
+
+            rows = _chunk_rows(session, document_id)
+            assert "".join(row.edited_content for row in rows) == source_text
+            assert "".join(row.original_content for row in rows) == source_text
+            assert [row.position for row in rows] == list(range(len(rows)))
+
+            # Exactly one chunk per given heading, split at each heading's
+            # own offset - not wherever paragraph/token limits alone would
+            # have landed (which would have been a single chunk here).
+            assert len(rows) == 2
+            assert rows[0].original_content == source_text[:second_offset]
+            assert rows[1].original_content == source_text[second_offset:]
     finally:
         _cleanup(document_id, filename)
 

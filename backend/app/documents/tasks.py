@@ -2,7 +2,7 @@ from sqlalchemy import text
 
 from app.db.sync_session import SyncSessionLocal
 from app.documents import deps
-from app.documents.extraction import extract_text
+from app.documents.extraction import extract_document
 from app.documents.pipeline import (
     mark_document_failed,
     run_pipeline,
@@ -40,7 +40,7 @@ def run_document_pipeline(
        filename/storage_key, reads the file via deps.get_storage(),
        extracts its text, then runs run_pipeline over that.
 
-    The storage-read + extract_text step (initial-processing path only)
+    The storage-read + extract_document step (initial-processing path only)
     happens before run_pipeline ever runs, so it can't rely on
     run_pipeline's own try/except to catch a bad file. It gets its own
     try/except here, funneled through pipeline.mark_document_failed - the
@@ -88,9 +88,15 @@ def run_document_pipeline(
 
         try:
             data = deps.get_storage().read(row.storage_key)
-            extracted_text = extract_text(row.filename, data)
+            extracted = extract_document(row.filename, data)
         except Exception as exc:
             mark_document_failed(document_id, session, exc, user_email=user_email)
             return  # unreachable: mark_document_failed always raises
 
-        run_pipeline(document_id, extracted_text, session, user_email=user_email)
+        run_pipeline(
+            document_id,
+            extracted.text,
+            session,
+            headings=extracted.headings,
+            user_email=user_email,
+        )
