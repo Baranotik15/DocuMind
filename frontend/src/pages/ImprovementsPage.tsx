@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { ActionIcon, Box, Button, Group, Paper, Stack, Text, Title } from '@mantine/core'
+import { ActionIcon, Badge, Box, Button, Group, Paper, Stack, Text, Title } from '@mantine/core'
 
 import { apiClient } from '../api/client'
 import type { DislikedMessage, ImprovementsRange, NoAnswerMessage } from '../api/types'
@@ -141,7 +141,15 @@ function ImprovementsListPanel<T extends ImprovementsEntry>({
     >
       <Stack gap="md" style={{ height: '100%', minHeight: 0 }}>
         <Group justify="space-between" align="center" wrap="wrap">
-          <Title order={3}>{title}</Title>
+          <Group gap="xs" align="center" wrap="nowrap">
+            <Title order={3}>{title}</Title>
+            {/* "Total" (not "quantity"/"count") - short enough to sit next
+                to the title without crowding the range toggle beside it on
+                a narrower panel width. */}
+            <Badge color={accentColor} variant="light" radius="sm" size="lg">
+              Total: {items.length}
+            </Badge>
+          </Group>
           <SegmentedToggle options={RANGE_OPTIONS} value={range} onChange={setRange} />
         </Group>
 
