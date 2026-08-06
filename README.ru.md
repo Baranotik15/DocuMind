@@ -363,3 +363,31 @@ cd frontend && npm ci && npm test -- --coverage
 
 CI прогоняет оба набора тестов на каждый pull request и push в `main`, и
 блокирует сборку, если покрытие падает ниже 75%.
+
+### 🔗 Как открыть локальный backend наружу для тестирования вебхуков (ngrok)
+
+Если хотите протестировать работу ботов (например, Slack-бота как
+фронтенда) локально, не разворачивая инфраструктуру в облаке —
+воспользуйтесь [ngrok](https://ngrok.com/), чтобы получить публичный
+HTTPS-адрес, указывающий на ваш локальный backend:
+
+```bash
+# 1. Установить ngrok (любой вариант)
+winget install ngrok.ngrok        # Windows
+choco install ngrok               # Windows, через Chocolatey
+brew install ngrok/ngrok/ngrok    # macOS
+
+# 2. Зарегистрироваться на https://dashboard.ngrok.com/signup (хватит бесплатного тарифа),
+#    затем скопировать authtoken отсюда: https://dashboard.ngrok.com/get-started/your-authtoken
+ngrok config add-authtoken <ваш-authtoken>
+
+# 3. При уже запущенном backend (docker compose up -d) поднять туннель к нему
+ngrok http 8000
+```
+
+ngrok выведет адрес вида `https://xxxx.ngrok-free.app -> http://localhost:8000`.
+Этот HTTPS-адрес и указывается как callback/Request URL при настройке
+внешнего сервиса (например, Event Subscriptions в Slack). На бесплатном
+тарифе адрес меняется при каждом перезапуске `ngrok http`, так что держите
+туннель запущенным на всё время теста и обновляйте callback-адрес заново,
+если перезапустили туннель.

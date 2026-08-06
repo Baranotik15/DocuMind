@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # that setup. Flip this to True once the app runs behind real HTTPS.
     session_cookie_secure: bool = False
 
+    # Slack bot integration (see app/slack/) - SLACK_SIGNING_SECRET verifies
+    # incoming webhook requests are really from Slack (app/slack/signature.py),
+    # SLACK_BOT_TOKEN authenticates the outbound chat.postMessage reply call
+    # (app/slack/service.py). Both come from api.slack.com/apps - see
+    # .env.example. Empty defaults mean an unconfigured deployment simply
+    # fails signature verification (401) rather than crashing at import time.
+    slack_bot_token: str = ""
+    slack_signing_secret: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

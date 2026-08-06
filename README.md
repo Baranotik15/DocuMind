@@ -363,3 +363,31 @@ cd frontend && npm ci && npm test -- --coverage
 
 CI runs both suites on every pull request and push to `main`, and fails the
 build if coverage drops below 75%.
+
+### 🔗 Exposing your local backend for webhook testing (ngrok)
+
+If you want to test bot integrations (e.g. a Slack bot front-end) locally
+without deploying any infrastructure to the cloud, use
+[ngrok](https://ngrok.com/) to get a public HTTPS URL pointed at your
+local backend:
+
+```bash
+# 1. Install ngrok (pick one)
+winget install ngrok.ngrok        # Windows
+choco install ngrok               # Windows, via Chocolatey
+brew install ngrok/ngrok/ngrok    # macOS
+
+# 2. Sign up at https://dashboard.ngrok.com/signup (free tier is enough),
+#    then grab your authtoken from https://dashboard.ngrok.com/get-started/your-authtoken
+ngrok config add-authtoken <your-authtoken>
+
+# 3. With the backend already running (docker compose up -d), start a tunnel to it
+ngrok http 8000
+```
+
+ngrok prints a forwarding URL like `https://xxxx.ngrok-free.app -> http://localhost:8000`.
+Use that HTTPS URL as the callback/Request URL when configuring the
+external service (e.g. Slack's Event Subscriptions). On the free tier the
+URL changes every time you restart `ngrok http`, so keep the tunnel
+running for the duration of your test and update the callback URL again
+if you restart it.
