@@ -410,20 +410,42 @@ interface ParsedDetailLine {
   value: string
 }
 
+// Every real "key = value" detail line this backend actually builds uses a
+// short, plain-word key - "filename", "filesize", "tokens spend", etc. (see
+// documents/formatting.py's build_document_event_detail and
+// analysis/service.py's _build_analysis_run_detail). Bug found live: a
+// FAILED analysis event's own detail is the raw SQLAlchemy/asyncpg
+// exception text, which routinely contains " = " itself (SQL JOIN/WHERE
+// equality, e.g. "d1.id = c1.document_id") - naively splitting on the
+// FIRST " = " in the line (as this used to) treated the ENTIRE
+// multi-hundred-character SQL dump as one giant "key", which then got
+// rendered as a single DetailChip pill (rounded, non-wrapping label) -
+// visually a huge distorted arc, not a small tag. This pattern is the
+// guard: only a short, letters/spaces-only key is treated as real
+// key/value shape; anything else (long, or containing digits/punctuation
+// a real key never has) falls through to plain wrapped text instead.
+const DETAIL_KEY_PATTERN = /^[a-z][a-z ]{0,30}$/i
+
 /**
  * Parses one line of `DashboardEvent.detail` (see DashboardPage.module.css's
  * own `.detailLine` comment for the exact shape the backend sends, e.g.
  * "filename = x.txt") into its key/value halves - returns null for a line
  * that doesn't match that shape (e.g. a full sentence like "x.txt was
- * uploaded."), so the caller (EventDetail below) can fall back to rendering
- * it as plain text rather than guessing at a split or silently dropping it.
+ * uploaded.", or a raw exception/SQL dump that merely happens to contain
+ * " = " somewhere - see DETAIL_KEY_PATTERN above), so the caller
+ * (EventDetail below) can fall back to rendering it as plain text rather
+ * than guessing at a split or silently dropping it.
  */
 function parseDetailLine(line: string): ParsedDetailLine | null {
   const separatorIndex = line.indexOf(' = ')
   if (separatorIndex === -1) {
     return null
   }
-  return { key: line.slice(0, separatorIndex), value: line.slice(separatorIndex + ' = '.length) }
+  const key = line.slice(0, separatorIndex)
+  if (!DETAIL_KEY_PATTERN.test(key)) {
+    return null
+  }
+  return { key, value: line.slice(separatorIndex + ' = '.length) }
 }
 
 /**

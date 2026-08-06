@@ -311,6 +311,35 @@ describe('DashboardPage', () => {
     expect(await screen.findByText(longDetail)).toBeInTheDocument()
   })
 
+  it('renders a raw SQL/exception detail line as plain text, not a mis-parsed key/value chip', async () => {
+    // Regression test for a live bug: a FAILED analysis event's own detail
+    // is the raw SQLAlchemy/asyncpg exception text, which routinely
+    // contains " = " itself (SQL JOIN/WHERE equality) - naively splitting
+    // on the first " = " in the line treated the entire multi-hundred-
+    // character SQL dump as one giant chip "key", rendering as a hugely
+    // distorted pill instead of small tags/plain text.
+    const sqlDetail =
+      '[SQL: SELECT c1.id FROM chunks AS c1 JOIN documents AS d1 ON d1.id = c1.document_id WHERE d1.status = $1]'
+    const sqlEvents: DashboardEvent[] = [
+      { id: 'event-1', type: 'analysis.run_failed', timestamp: '2026-01-01T00:00:00.000Z', detail: sqlDetail, userEmail: null },
+    ]
+    fetchMock.mockImplementation((url: string) => {
+      const body = url.endsWith('/internal/dashboard/chunk-graph')
+        ? { nodes: [] }
+        : url.endsWith('/internal/dashboard/events')
+          ? sqlEvents
+          : documents
+      return Promise.resolve({ ok: true, status: 200, json: async () => body } as Response)
+    })
+
+    renderWithProviders(<DashboardPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
+
+    // Renders as one plain text node, not split into a "key" (everything up
+    // to the first " = ") and a separate "value" chip.
+    expect(await screen.findByText(sqlDetail)).toBeInTheDocument()
+  })
+
   it('filters the Logs table by text match in Detail, only once Search is clicked', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
