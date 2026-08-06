@@ -99,6 +99,17 @@ async def _answer_and_post(channel: str, question_text: str, slack_user_id: str)
     Never raises: an LLMError from either OpenAI call is caught and a short
     fallback message is both posted to Slack and persisted as the
     assistant row, instead of leaving the mention or DM unanswered.
+
+    After that first session is closed and the reply is posted to Slack
+    via _post_reply, a short second session/transaction records which
+    Slack message the just-inserted assistant row *is* (chat.postMessage's
+    own returned channel/ts - see _post_reply) against that row's
+    slack_channel_id/slack_message_ts columns, so a later reaction_added/
+    reaction_removed webhook event can be matched back to it (see
+    handle_reaction below). Only written when the post actually succeeded
+    and returned a ts - a failed post just leaves both columns NULL, which
+    only means that particular reply can't be dislike-tracked via a
+    reaction; it's still not a fatal condition for message delivery.
     """
     async with async_session_factory() as session:
         user_row = (
@@ -138,31 +149,130 @@ async def _answer_and_post(channel: str, question_text: str, slack_user_id: str)
             # false, which would hide a real gap.
             no_answer_found = True
 
+        assistant_row = (
+            await session.execute(
+                text(
+                    "INSERT INTO chat_messages "
+                    "(role, content, question_id, no_answer_found, channel, external_identity) "
+                    "VALUES (:role, :content, :question_id, :no_answer_found, :channel, :external_identity) "
+                    "RETURNING id"
+                ),
+                {
+                    "role": str(ChatRole.ASSISTANT),
+                    "content": reply_text,
+                    "question_id": str(user_row.id),
+                    "no_answer_found": no_answer_found,
+                    "channel": str(ChatChannel.SLACK),
+                    "external_identity": slack_user_id,
+                },
+            )
+        ).one()
+        await session.commit()
+
+    post_response = await _post_reply(channel, reply_text)
+
+    posted_ts = post_response.get("ts") if post_response is not None else None
+    if posted_ts:
+        async with async_session_factory() as session:
+            await session.execute(
+                text(
+                    "UPDATE chat_messages SET "
+                    "slack_channel_id = :slack_channel_id, slack_message_ts = :slack_message_ts "
+                    "WHERE id = :id"
+                ),
+                {
+                    "slack_channel_id": post_response.get("channel"),
+                    "slack_message_ts": posted_ts,
+                    "id": str(assistant_row.id),
+                },
+            )
+            await session.commit()
+
+
+async def _post_reply(channel: str, text: str) -> dict | None:
+    """POSTs `text` as a plain message into Slack `channel` via
+    chat.postMessage. Returns the parsed JSON response body on success -
+    Slack's own documented shape is at least {"ok": true, "channel": "...",
+    "ts": "..."}, where `ts` is Slack's own identifier for this specific
+    posted message (used by _answer_and_post above to later match a
+    reaction_added/reaction_removed event back to the chat_messages row
+    this reply is) - or None on any failure: a network-level error, a
+    non-2xx HTTP response, or a 200 response whose body itself carries
+    "ok": false (Slack's chat.postMessage always answers with HTTP 200
+    even for an API-level failure like an invalid channel, so the body's
+    own "ok" field has to be checked too, not just the status code).
+
+    Never raises: a failure here must not prevent message delivery from
+    otherwise completing - the reply has still been (attempted to be)
+    posted by the time this returns, so the caller treats a None return as
+    "this reply just can't be dislike-tracked via a Slack reaction",
+    nothing more severe.
+    """
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                _SLACK_POST_MESSAGE_URL,
+                headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+                json={"channel": channel, "text": text},
+            )
+        if response.status_code != 200:
+            return None
+        body = response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    if not body.get("ok"):
+        return None
+    return body
+
+
+async def handle_reaction(event: dict) -> None:
+    """Answers a Slack `reaction_added`/`reaction_removed` webhook event
+    for a thumbsdown (or its legacy "-1" alias) reaction - the only
+    reaction app/slack/router.py ever schedules this for (any other
+    reaction, or a reaction on a non-message item, is filtered out before
+    this is even called - see that module's docstring).
+
+    Sets chat_messages.disliked (and pairs it with disliked_at, populated
+    iff disliked=true - same convention app.chat.router.dislike_message
+    already established for the admin Chat page's own dislike button) for
+    whichever row's slack_channel_id/slack_message_ts matches
+    event["item"]["channel"]/event["item"]["ts"]. Unlike dislike_message's
+    single toggle button, this is a direct (not toggled) set:
+    reaction_added/reaction_removed already carry unambiguous
+    directionality from Slack itself, so `event["type"]` alone determines
+    the target state.
+
+    A 0-row match is expected and harmless whenever the reacted-to message
+    isn't a tracked bot reply - e.g. someone reacting to their own message,
+    to an admin-channel message never posted through _post_reply, or to a
+    bot reply whose slack_channel_id/slack_message_ts wasn't captured
+    because its own post failed (see _answer_and_post). Never raises or
+    logs that case as an error - scoped by `channel = 'slack'` too, purely
+    for defense in depth (slack_channel_id/slack_message_ts are only ever
+    populated on 'slack'-channel rows in the first place, so this can't
+    actually change which rows match, but it keeps the WHERE clause
+    self-documenting about which rows it's meant to touch).
+    """
+    is_disliked = event["type"] == "reaction_added"
+    item = event.get("item", {})
+
+    async with async_session_factory() as session:
         await session.execute(
             text(
-                "INSERT INTO chat_messages "
-                "(role, content, question_id, no_answer_found, channel, external_identity) "
-                "VALUES (:role, :content, :question_id, :no_answer_found, :channel, :external_identity)"
+                "UPDATE chat_messages SET "
+                "disliked = :is_disliked, "
+                "disliked_at = CASE WHEN :is_disliked THEN now() ELSE NULL END "
+                "WHERE channel = :channel "
+                "AND slack_channel_id = :slack_channel_id "
+                "AND slack_message_ts = :slack_message_ts"
             ),
             {
-                "role": str(ChatRole.ASSISTANT),
-                "content": reply_text,
-                "question_id": str(user_row.id),
-                "no_answer_found": no_answer_found,
+                "is_disliked": is_disliked,
                 "channel": str(ChatChannel.SLACK),
-                "external_identity": slack_user_id,
+                "slack_channel_id": item.get("channel"),
+                "slack_message_ts": item.get("ts"),
             },
         )
         await session.commit()
-
-    await _post_reply(channel, reply_text)
-
-
-async def _post_reply(channel: str, text: str) -> None:
-    settings = get_settings()
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            _SLACK_POST_MESSAGE_URL,
-            headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
-            json={"channel": channel, "text": text},
-        )

@@ -75,6 +75,26 @@ def _dm_message_payload(text: str = "what's the refund policy?", **event_overrid
     return {"type": "event_callback", "event": event}
 
 
+def _reaction_payload(
+    event_type: str = "reaction_added",
+    reaction: str = "thumbsdown",
+    item_type: str = "message",
+    **event_overrides: object,
+) -> dict:
+    # Matches Slack's documented reaction_added/reaction_removed event
+    # shape (https://api.slack.com/events/reaction_added) - notably no
+    # bot_id field, unlike message/app_mention events.
+    event = {
+        "type": event_type,
+        "user": "U024BE7LH",
+        "reaction": reaction,
+        "item": {"type": item_type, "channel": "C0G9QF9GW", "ts": "1360782804.083113"},
+        "event_ts": "1360782804.083113",
+    }
+    event.update(event_overrides)
+    return {"type": "event_callback", "event": event}
+
+
 def test_url_verification_echoes_challenge(client: TestClient) -> None:
     body = json.dumps({"type": "url_verification", "challenge": "abc123"}).encode()
 
@@ -310,6 +330,97 @@ def test_channel_message_event_does_not_schedule_dm_or_mention_handling(
     assert response.json() == {}
     mock_handle_dm.assert_not_awaited()
     mock_handle_mention.assert_not_awaited()
+
+
+def test_thumbsdown_reaction_added_schedules_handle_reaction(client: TestClient) -> None:
+    body = json.dumps(_reaction_payload()).encode()
+
+    with patch("app.slack.router.handle_reaction", new=AsyncMock()) as mock_handle:
+        response = client.post(
+            "/internal/slack/events", content=body, headers=_signed_headers(body)
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    mock_handle.assert_awaited_once()
+    args, _ = mock_handle.call_args
+    assert args[0]["type"] == "reaction_added"
+    assert args[0]["item"]["channel"] == "C0G9QF9GW"
+    assert args[0]["item"]["ts"] == "1360782804.083113"
+
+
+def test_thumbsdown_reaction_removed_schedules_handle_reaction(client: TestClient) -> None:
+    body = json.dumps(_reaction_payload(event_type="reaction_removed")).encode()
+
+    with patch("app.slack.router.handle_reaction", new=AsyncMock()) as mock_handle:
+        response = client.post(
+            "/internal/slack/events", content=body, headers=_signed_headers(body)
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    mock_handle.assert_awaited_once()
+    args, _ = mock_handle.call_args
+    assert args[0]["type"] == "reaction_removed"
+
+
+def test_legacy_minus_one_reaction_alias_schedules_handle_reaction(client: TestClient) -> None:
+    # "-1" is Slack's legacy alias for the same thumbsdown emoji some
+    # older/third-party clients still send.
+    body = json.dumps(_reaction_payload(reaction="-1")).encode()
+
+    with patch("app.slack.router.handle_reaction", new=AsyncMock()) as mock_handle:
+        response = client.post(
+            "/internal/slack/events", content=body, headers=_signed_headers(body)
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    mock_handle.assert_awaited_once()
+
+
+def test_non_thumbsdown_reaction_does_not_schedule_handle_reaction(client: TestClient) -> None:
+    body = json.dumps(_reaction_payload(reaction="eyes")).encode()
+
+    with patch("app.slack.router.handle_reaction", new=AsyncMock()) as mock_handle:
+        response = client.post(
+            "/internal/slack/events", content=body, headers=_signed_headers(body)
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    mock_handle.assert_not_awaited()
+
+
+def test_reaction_on_non_message_item_does_not_schedule_handle_reaction(
+    client: TestClient,
+) -> None:
+    # e.g. a reaction on a file, not a message - out of scope, no-op.
+    body = json.dumps(_reaction_payload(item_type="file")).encode()
+
+    with patch("app.slack.router.handle_reaction", new=AsyncMock()) as mock_handle:
+        response = client.post(
+            "/internal/slack/events", content=body, headers=_signed_headers(body)
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    mock_handle.assert_not_awaited()
+
+
+def test_thumbsdown_reaction_with_retry_header_does_not_schedule_handle_reaction(
+    client: TestClient,
+) -> None:
+    body = json.dumps(_reaction_payload()).encode()
+    headers = _signed_headers(body)
+    headers["X-Slack-Retry-Num"] = "1"
+
+    with patch("app.slack.router.handle_reaction", new=AsyncMock()) as mock_handle:
+        response = client.post("/internal/slack/events", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {}
+    mock_handle.assert_not_awaited()
 
 
 def test_slack_events_reachable_without_session_cookie(client: TestClient) -> None:

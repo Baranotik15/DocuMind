@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from app.config import get_settings
-from app.slack.service import handle_app_mention, handle_direct_message
+from app.slack.service import handle_app_mention, handle_direct_message, handle_reaction
 from app.slack.signature import verify_slack_signature
 
 router = APIRouter()
@@ -17,6 +17,11 @@ _TIMESTAMP_HEADER = "X-Slack-Request-Timestamp"
 _RETRY_NUM_HEADER = "X-Slack-Retry-Num"
 
 _INVALID_SIGNATURE_ERROR = "invalid_slack_signature"
+
+# Slack's canonical reaction name is "thumbsdown"; "-1" is the legacy alias
+# some older/third-party clients still send for the same emoji - both are
+# treated as the same dislike signal (see app.slack.service.handle_reaction).
+_DISLIKE_REACTIONS = ("thumbsdown", "-1")
 
 
 @router.post("/slack/events")
@@ -60,9 +65,25 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks) -> d
       The same bot_id guard is applied to the app_mention path too, for
       consistency, even though Slack only ever fires app_mention for human
       mentions in practice.
-    - Both of the above are skipped entirely (no background work
-      scheduled, but still 200) when X-Slack-Retry-Num is present, since
-      that means Slack already sent this same event once before.
+    - "event_callback" with event.type in ("reaction_added",
+      "reaction_removed"), event.item.type == "message", and
+      event.reaction in _DISLIKE_REACTIONS: a human added/removed a
+      thumbsdown (or its legacy "-1" alias) on some Slack message - deferred
+      to app.slack.service.handle_reaction, same BackgroundTasks pattern as
+      above, to flip that message's chat_messages.disliked flag if (and
+      only if) it's a tracked bot reply (see handle_reaction's own
+      docstring for the no-op-if-untracked case). The bot_id guard is
+      deliberately NOT applied here: per Slack's documented event shape
+      (https://api.slack.com/events/reaction_added), a reaction_added/
+      reaction_removed event never carries a bot_id field at all (unlike
+      message/app_mention events) - there's nothing to guard against, since
+      this bot never calls reactions.add/remove on anything itself. Any
+      other reaction (not thumbsdown/-1) or a reaction on a non-message
+      item (e.g. a file) is a no-op, same as the general fallthrough below -
+      deliberately not a general-purpose reaction-tracking system.
+    - All of the above are skipped entirely (no background work scheduled,
+      but still 200) when X-Slack-Retry-Num is present, since that means
+      Slack already sent this same event once before.
     - anything else (event_callback for any other event.type/channel_type
       combination, or any other top-level `type`): acked with an empty 200,
       no-op.
@@ -100,5 +121,16 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks) -> d
                 and not event.get("subtype")
             ):
                 background_tasks.add_task(handle_direct_message, event)
+
+        # Reaction events (see docstring above) have no bot_id field at all
+        # per Slack's documented event shape, so this branch deliberately
+        # only checks is_retry, not is_bot_authored.
+        if (
+            not is_retry
+            and event.get("type") in ("reaction_added", "reaction_removed")
+            and event.get("item", {}).get("type") == "message"
+            and event.get("reaction") in _DISLIKE_REACTIONS
+        ):
+            background_tasks.add_task(handle_reaction, event)
 
     return {}
