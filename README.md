@@ -169,6 +169,34 @@ a plain-language **documentation gap analysis**, and separately runs a
 two different documents) to flag ones whose content actually contradicts
 each other.
 
+**Slack bot (a second front-end to the same chat pipeline):**
+```
+Slack -> POST /internal/slack/events (HMAC-SHA256 request-signature
+verified, NOT session auth - see Authentication below) -> ack 200
+immediately, RAG lookup deferred to a BackgroundTasks callback (Slack
+requires a response within 3s, well under an LLM round trip)
+                                                          |
+                                                          v
+app_mention (channel, only when @-mentioned) or message.im (DM, every
+message) -> same embed -> retrieve -> generate pipeline as
+POST /chat/messages -> reply posted back via chat.postMessage AND
+persisted into chat_messages, tagged channel='slack',
+external_identity=<Slack user id>
+                                                          |
+                                                          v
+reaction_added/reaction_removed (thumbsdown) on a bot reply -> matched
+back to its chat_messages row via a stored slack_channel_id/
+slack_message_ts -> toggles disliked, same as the Chat page's own
+dislike button
+```
+Slack-channel rows count toward Dashboard stats and the Improvements
+page's dislike/no-answer lists (surfacing real Slack-sourced gaps is the
+point), but are filtered OUT of `GET /chat/messages` - the admin Chat
+page's own transcript only ever shows `channel='admin'` rows, so
+conversations from Slack users don't interleave into that single-threaded
+view. See [Setting up a Slack bot](#-setting-up-a-slack-bot) for how to
+configure one.
+
 > **Note:** the admin panel requires logging in — see
 > [Authentication](#-authentication) below. Session-based, not
 > token-based; accounts are provisioned only via a CLI script, never a
@@ -187,7 +215,13 @@ JWT/token the frontend reads or stores itself). Sessions have a fixed
 logging out invalidates one immediately rather than waiting for that TTL.
 Every `/internal/*` endpoint outside of `/auth/*` requires a valid
 session (see the Auth table below for `login`/`logout`/`me`'s own,
-individually-appropriate rules); `/health` stays open as the standard
+individually-appropriate rules), with one further exception:
+`/internal/slack/events` - Slack itself calls this one directly, with no
+session cookie of its own, so it authenticates the request a different
+way entirely: an HMAC-SHA256 signature over the raw request body, keyed
+by `SLACK_SIGNING_SECRET` (plus a 5-minute replay window) - see
+`app/slack/signature.py` and [Setting up a Slack
+bot](#-setting-up-a-slack-bot). `/health` stays open as the standard
 unauthenticated liveness check.
 
 There's no self-registration and no in-app "create user" screen —
@@ -265,6 +299,11 @@ below, grouped by module; all paths are prefixed with `/internal` except
 | `GET` | `/dashboard/chunk-graph` | 3D UMAP projection of all chunk embeddings |
 | `GET` | `/dashboard/openai-spend` | OpenAI organization spend/token usage |
 
+**Slack** (signature-verified, not session-authenticated - see [Authentication](#-authentication))
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/internal/slack/events` | Slack Events API webhook - `url_verification` challenge, `app_mention`/`message.im` (answered via the RAG pipeline), `reaction_added`/`reaction_removed` (thumbsdown toggles dislike) |
+
 **Other**
 | Method | Path | Description |
 |---|---|---|
@@ -297,6 +336,9 @@ DocuMind/
 │   │   │                  top-chunks, reply generation
 │   │   ├── analysis/      AI documentation gap analysis + cross-document
 │   │   │                  conflict detection, its Celery task
+│   │   ├── slack/         Slack Events API webhook - signature
+│   │   │                  verification, app_mention/message.im/
+│   │   │                  reaction_added/removed handling
 │   │   ├── dashboard_events/  dashboard_events table CRUD
 │   │   ├── dashboard/     stats/chunk-graph/openai-spend (no single
 │   │   │                  owning table - kept separate from the above)
@@ -363,6 +405,85 @@ cd frontend && npm ci && npm test -- --coverage
 
 CI runs both suites on every pull request and push to `main`, and fails the
 build if coverage drops below 75%.
+
+<a id="-setting-up-a-slack-bot"></a>
+
+### 🤖 Setting up a Slack bot
+
+DocuMind can sit behind a Slack bot as a second front-end to the same RAG
+chat pipeline the in-app Chat page uses - users @-mention it in a channel
+or message it directly, and a 👎 reaction on any of its replies feeds the
+same dislike-tracking the Improvements page already reads. None of this
+needs a public server up front; it can be wired up entirely against a
+local `docker compose` stack via the ngrok tunnel described in the next
+section.
+
+**1. Create the app** - [api.slack.com/apps](https://api.slack.com/apps)
+-> **Create New App** -> **Blank app** (labeled "From scratch" in older
+Slack UI versions) -> name it, pick your workspace. Not **AI agent**
+(Slack's own hosted-agent framework, unrelated) or **Starter app**
+(scaffolds slash commands/features this integration doesn't use).
+
+**2. Bot Token Scopes** - **OAuth & Permissions** -> **Bot Token Scopes**
+-> **Add an OAuth Scope**, one at a time:
+
+| Scope | Why |
+|---|---|
+| `app_mentions:read` | Receive an `app_mention` event when someone @-mentions the bot in a channel |
+| `chat:write` | Post replies back (`chat.postMessage`) |
+| `im:history` | Receive `message.im` events - required for DM support |
+| `reactions:read` | Receive `reaction_added`/`reaction_removed` events - required for the 👎-to-dislike integration |
+
+**3. Event Subscriptions** - **Event Subscriptions** -> **Enable
+Events**:
+- **Request URL**: your public endpoint + `/internal/slack/events` (the
+  ngrok URL from the next section, or a real public URL in production).
+  The backend must already be reachable at that URL *before* you enter
+  it here - Slack sends a one-time `url_verification` challenge the
+  moment you save the field, and the endpoint has to answer it live.
+- ⚠️ **Socket Mode must stay OFF** (**Settings** -> **Socket Mode** in the
+  left menu). If it's enabled, Slack silently delivers events over a
+  WebSocket connection instead of this Request URL - the Request URL
+  still shows "Verified", but no real event ever arrives, and nothing
+  in the app logs tells you why. This integration only implements the
+  HTTP Request URL path, not Socket Mode.
+- **Subscribe to bot events** -> **Add Bot User Event**, one at a time:
+  `app_mention`, `message.im`, `reaction_added`, `reaction_removed`.
+- **Save Changes**.
+
+**4. App Home** (DM support only) - **App Home** -> **Show Tabs** ->
+**Messages Tab** -> check **Allow users to send Slash commands and
+messages from the messages tab**. Without this, Slack blocks anyone from
+DMing the bot at all ("Sending messages to this app has been turned
+off"), even though `message.im` is subscribed.
+
+**5. Install and collect credentials** - **Install App** -> **Install to
+Workspace** -> **Allow**. Copy the **Bot User OAuth Token** (`xoxb-...`)
+into `SLACK_BOT_TOKEN`, and (**Basic Information** -> **App
+Credentials**) the **Signing Secret** into `SLACK_SIGNING_SECRET` - both
+in `.env` (see `.env.example`). The signing secret is what
+`/internal/slack/events` uses to verify a request genuinely came from
+Slack (see [Authentication](#-authentication)); the bot token is what
+lets it post replies back. **Any time a scope or event subscription
+changes afterward, Slack requires reinstalling the app** for the change
+to take effect - a banner prompts for this, easy to miss if you're not
+watching for it.
+
+**6. Invite the bot** - in a channel: `/invite @YourBotName`, or channel
+name -> **Integrations** -> **Add an App**. DMs need no invite - once
+step 4 is done, any workspace member can message the bot directly, so
+who can *see*/install the app in your workspace is the actual access
+boundary here (there's no separate per-user allowlist inside this
+integration).
+
+**Behavior recap once configured:** in a channel, only an explicit
+`@mention` triggers a reply (plain channel chatter is ignored); in a DM,
+every message triggers one (no @ needed); a 👎 on a bot reply toggles
+its dislike flag, a 👎 on anything else (a human's own message, an
+admin-Chat-page message) is a harmless no-op. An app-authored message
+(the bot's own reply landing back in a DM as a new `message.im` event)
+is always ignored too - otherwise it would answer its own answers in a
+loop.
 
 ### 🔗 Exposing your local backend for webhook testing (ngrok)
 
