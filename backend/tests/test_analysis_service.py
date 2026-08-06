@@ -476,7 +476,7 @@ def test_run_full_analysis_completes_and_records_one_completed_event() -> None:
         events = _events_for(user_email, DashboardEventType.ANALYSIS_RUN_COMPLETED)
         assert len(events) == 1
         assert events[0].user_email == user_email
-        assert f"tokens = {row.total_tokens}" in events[0].detail
+        assert f"tokens spend = {row.total_tokens}" in events[0].detail
 
         no_failed_events = _events_for(user_email, DashboardEventType.ANALYSIS_RUN_FAILED)
         assert no_failed_events == []

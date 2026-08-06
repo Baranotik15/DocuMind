@@ -427,16 +427,51 @@ function parseDetailLine(line: string): ParsedDetailLine | null {
 }
 
 /**
+ * One pill-shaped label/value tag - the shared building block for both
+ * EventDetail's own parsed "key = value" chips and the User chip merged
+ * into that same row below. Border/label colored by the card's own
+ * accent (getEventTypeColor) rather than a flat hairline/dimmed gray, so
+ * every chip in a row visibly ties back to that row's own color-coded
+ * left border and timestamp chip, not just the section headings.
+ */
+function DetailChip({ label, value, color, dimmedValue }: { label: string; value: string; color: string; dimmedValue?: boolean }): JSX.Element {
+  return (
+    <Box
+      bg="var(--doc-surface)"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'baseline',
+        gap: 6,
+        maxWidth: '100%',
+        border: `1px solid var(--mantine-color-${color}-6)`,
+        borderRadius: 999,
+        padding: '4px 12px',
+      }}
+    >
+      <Text size="10px" fw={700} tt="uppercase" c={color} style={{ letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+        {label}
+      </Text>
+      <Text size="xs" fw={600} c={dimmedValue ? 'dimmed' : undefined} className={classes.detailLine}>
+        {value}
+      </Text>
+    </Box>
+  )
+}
+
+/**
  * One event card's own Detail area - each `\n`-separated line of
  * `event.detail` that matches the "key = value" shape renders as its own
- * small tag (a tiny dimmed uppercase label plus the value, per explicit
- * request "instead of one dense wrapped text blob"), wrapping onto several
- * lines as needed. A line that doesn't match that shape falls back to plain
- * wrapped text (same wrapping rules as the old table's own `.detailCell`),
- * so an unexpected detail string still renders in full rather than crashing
- * or silently vanishing.
+ * DetailChip pill, PLUS one more DetailChip for the event's own User at
+ * the end - all in the same wrapping Group, so the whole row (filename,
+ * filesize, tokens, user, whatever a given event type has) reads as one
+ * consistent block-styled line instead of detail chips on one line and
+ * "User: ..." awkwardly stranded on a line of its own below (per explicit
+ * request - it used to be a separate Group). A detail line that doesn't
+ * match the "key = value" shape falls back to plain wrapped text, so an
+ * unexpected detail string still renders in full rather than crashing or
+ * silently vanishing.
  */
-function EventDetail({ detail }: { detail: string }): JSX.Element {
+function EventDetail({ detail, userEmail, color }: { detail: string; userEmail: string | null; color: string }): JSX.Element {
   return (
     <Group gap={6} wrap="wrap">
       {detail.split('\n').map((line, index) => {
@@ -448,29 +483,9 @@ function EventDetail({ detail }: { detail: string }): JSX.Element {
             </Text>
           )
         }
-        return (
-          <Box
-            key={index}
-            bg="var(--doc-surface)"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'baseline',
-              gap: 4,
-              maxWidth: '100%',
-              border: '1px solid var(--doc-hairline)',
-              borderRadius: 'var(--mantine-radius-sm)',
-              padding: '2px 8px',
-            }}
-          >
-            <Text size="9px" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
-              {parsed.key}
-            </Text>
-            <Text size="xs" className={classes.detailLine}>
-              {parsed.value}
-            </Text>
-          </Box>
-        )
+        return <DetailChip key={index} label={parsed.key} value={parsed.value} color={color} />
       })}
+      <DetailChip label="User" value={userEmail ?? '—'} color={color} dimmedValue={!userEmail} />
     </Group>
   )
 }
@@ -1293,20 +1308,12 @@ export function DashboardPage(): JSX.Element {
                               {formatEventType(event.type)}
                             </Text>
                           </Group>
-                          <EventDetail detail={event.detail} />
-                          {/* null for worker-triggered events (chunking_started/
-                              succeeded/failed run inside a Celery task, outside
-                              any authenticated session) - shown as a dash
-                              rather than blank so it reads as "no user", not
-                              missing data. */}
-                          <Group gap={6} align="baseline" wrap="nowrap">
-                            <Text size="10px" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
-                              User
-                            </Text>
-                            <Text size="xs" ff="monospace" c={event.userEmail ? undefined : 'dimmed'}>
-                              {event.userEmail ?? '—'}
-                            </Text>
-                          </Group>
+                          {/* userEmail is null for worker-triggered events
+                              (chunking_started/succeeded/failed run inside a
+                              Celery task, outside any authenticated session)
+                              - EventDetail shows a dash rather than blank so
+                              it reads as "no user", not missing data. */}
+                          <EventDetail detail={event.detail} userEmail={event.userEmail} color={color} />
                         </Stack>
                         {/* Solid-fill chip (not a translucent tint), colored by
                             this row's own accent (getEventTypeColor) rather
