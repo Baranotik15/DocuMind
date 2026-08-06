@@ -6,6 +6,7 @@ import { ActionIcon, Alert, Box, Group, Paper, Stack, Text, TextInput, Title } f
 
 import { apiClient } from '../api/client'
 import type { RelevantChunkMatch } from '../api/types'
+import classes from './RelevancePage.module.css'
 
 const SEARCH_ERROR_MESSAGE = "Couldn't retrieve matching chunks - try again."
 
@@ -82,21 +83,38 @@ export function RelevancePage(): JSX.Element {
   }
 
   return (
-    // Fixed to the viewport height below the AppShell header (same
-    // `calc(100dvh - ...)` device as ChatPage's own outer Stack) so only
-    // the results list below scrolls internally - previously this whole
-    // page had no scroll container of its own and just scrolled the
-    // document/body, putting the scrollbar at the far edge of the browser
-    // window instead of against this page's own (centered, maw={900})
-    // content column, per explicit request to move it there.
-    <Stack
-      gap="lg"
-      w="100%"
-      maw={900}
-      mx="auto"
-      style={{ height: 'calc(100dvh - var(--app-shell-header-height, 68px) - 2 * var(--mantine-spacing-lg))' }}
-    >
-      <Title order={2}>Relevance Preview</Title>
+    // position: relative on this outer wrapper - purely so the bot mascot
+    // below can be positioned absolute against IT (anchored to this page's
+    // own right edge) rather than the whole viewport, without disturbing
+    // the centered maw={900} column's own layout at all.
+    <Box style={{ position: 'relative', height: '100%' }}>
+      {/* Decorative only (aria-hidden) - fills the otherwise-empty space to
+          the right of the centered results column on wide viewports,
+          pointing in toward the results per explicit request. display:
+          none below CHAT_COLUMN-ish widths (see the media query) rather
+          than just letting it get clipped, since there's no room for it
+          once the page itself is narrower than maw={900} + this image. */}
+      <img
+        src="/bot-relevance-pointer.png"
+        alt=""
+        draggable={false}
+        className={classes.relevancePointerBot}
+      />
+      {/* Fixed to the viewport height below the AppShell header (same
+          `calc(100dvh - ...)` device as ChatPage's own outer Stack) so only
+          the results list below scrolls internally - previously this whole
+          page had no scroll container of its own and just scrolled the
+          document/body, putting the scrollbar at the far edge of the browser
+          window instead of against this page's own (centered, maw={900})
+          content column, per explicit request to move it there. */}
+      <Stack
+        gap="lg"
+        w="100%"
+        maw={900}
+        mx="auto"
+        style={{ height: 'calc(100dvh - var(--app-shell-header-height, 68px) - 2 * var(--mantine-spacing-lg))' }}
+      >
+        <Title order={2}>Relevance Preview</Title>
       <Text size="sm" c="dimmed">
         See which chunks would be retrieved for a question, and how closely each one matches, before it ever
         reaches the chat.
@@ -151,20 +169,60 @@ export function RelevancePage(): JSX.Element {
           from the message bubbles. */}
       <Stack gap="md" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }} pr="md">
         {results.map((match, index) => (
-          <Paper key={match.chunkId} radius="lg" p="lg" bg="var(--doc-surface)" withBorder>
+          <Paper
+            key={match.chunkId}
+            radius="lg"
+            p="lg"
+            bg="var(--doc-surface)"
+            withBorder
+            className={classes.resultCard}
+            style={{ borderLeft: '3px solid var(--mantine-color-signalBlue-6)' }}
+          >
             <Stack gap="sm">
               <Group justify="space-between" align="center" wrap="nowrap" gap="md">
-                <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                  <Text fw={700} c="dimmed" style={{ flexShrink: 0 }}>
-                    #{index + 1}
-                  </Text>
+                <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+                  {/* Rank badge - same numbered-circle device as
+                      ImprovementsPage.tsx's GapAnalysisBlock, rather than
+                      plain dimmed "#N" text. */}
+                  <Box
+                    aria-hidden="true"
+                    style={{
+                      flexShrink: 0,
+                      width: 24,
+                      height: 24,
+                      borderRadius: '50%',
+                      backgroundColor: 'var(--mantine-color-signalBlue-6)',
+                      color: '#101B36',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {index + 1}
+                  </Box>
                   <Text fw={700} truncate>
                     {match.filename}
                   </Text>
                 </Group>
-                <Text fw={700} size="lg" style={{ flexShrink: 0 }}>
-                  {match.matchPercent}%
-                </Text>
+                {/* Solid-fill chip (not plain bold text) - same "solid
+                    accent background + dark navy text" device as
+                    ImprovementsPage.tsx/DashboardPage.tsx's own chips, for
+                    a consistent look across the app rather than a bare
+                    number. */}
+                <Box
+                  style={{
+                    flexShrink: 0,
+                    backgroundColor: 'var(--mantine-color-signalBlue-6)',
+                    borderRadius: 'var(--mantine-radius-md)',
+                    padding: '4px 12px',
+                  }}
+                >
+                  <Text fw={700} size="sm" c="#101B36" style={{ whiteSpace: 'nowrap' }}>
+                    {match.matchPercent}%
+                  </Text>
+                </Box>
               </Group>
               {/* Single-hue sequential bar (magnitude, not a category) - same
                   track+glow-fill device as DashboardPage's "events by type"
@@ -190,7 +248,8 @@ export function RelevancePage(): JSX.Element {
             </Stack>
           </Paper>
         ))}
+        </Stack>
       </Stack>
-    </Stack>
+    </Box>
   )
 }
