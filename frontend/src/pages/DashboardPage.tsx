@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { Box, Button, Group, Loader, Paper, Select, SimpleGrid, Stack, Table, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
+import { Box, Button, Group, Loader, Paper, Select, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
 import { DateInput, TimePicker } from '@mantine/dates'
 
 import { ChunkGraphPanel } from './ChunkGraphPanel'
@@ -378,6 +378,101 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 
 function formatEventType(type: string): string {
   return EVENT_TYPE_LABELS[type] ?? type
+}
+
+// Per-event-type accent color for the Logs tab's own cards (left border +
+// timestamp chip, see the card list below) - reuses this app's existing
+// brand associations rather than inventing new ones: teal for a clean
+// success/completion, signalBlue for "actively in progress", alertMagenta
+// for the same failure/destructive tone the dislike button and Dislikes
+// chart already use everywhere else. Falls back to signalBlue (this app's
+// general "informational" accent) for any event type not listed here -
+// same fallback shape as formatEventType's own EVENT_TYPE_LABELS lookup,
+// just a color instead of a label.
+const EVENT_TYPE_COLORS: Record<string, string> = {
+  'document.uploaded': 'teal',
+  'document.chunking_started': 'signalBlue',
+  'document.chunking_succeeded': 'teal',
+  'document.chunking_failed': 'alertMagenta',
+  'document.deleted': 'alertMagenta',
+  'analysis.run_completed': 'teal',
+  'analysis.run_failed': 'alertMagenta',
+  'analysis.run_deleted': 'alertMagenta',
+}
+
+function getEventTypeColor(type: string): string {
+  return EVENT_TYPE_COLORS[type] ?? 'signalBlue'
+}
+
+/** One line of an event's `\n`-joined `detail` string, once it's matched the "key = value" shape (see parseDetailLine below) - `key`/`value` are the two halves split on the first ` = `. */
+interface ParsedDetailLine {
+  key: string
+  value: string
+}
+
+/**
+ * Parses one line of `DashboardEvent.detail` (see DashboardPage.module.css's
+ * own `.detailLine` comment for the exact shape the backend sends, e.g.
+ * "filename = x.txt") into its key/value halves - returns null for a line
+ * that doesn't match that shape (e.g. a full sentence like "x.txt was
+ * uploaded."), so the caller (EventDetail below) can fall back to rendering
+ * it as plain text rather than guessing at a split or silently dropping it.
+ */
+function parseDetailLine(line: string): ParsedDetailLine | null {
+  const separatorIndex = line.indexOf(' = ')
+  if (separatorIndex === -1) {
+    return null
+  }
+  return { key: line.slice(0, separatorIndex), value: line.slice(separatorIndex + ' = '.length) }
+}
+
+/**
+ * One event card's own Detail area - each `\n`-separated line of
+ * `event.detail` that matches the "key = value" shape renders as its own
+ * small tag (a tiny dimmed uppercase label plus the value, per explicit
+ * request "instead of one dense wrapped text blob"), wrapping onto several
+ * lines as needed. A line that doesn't match that shape falls back to plain
+ * wrapped text (same wrapping rules as the old table's own `.detailCell`),
+ * so an unexpected detail string still renders in full rather than crashing
+ * or silently vanishing.
+ */
+function EventDetail({ detail }: { detail: string }): JSX.Element {
+  return (
+    <Group gap={6} wrap="wrap">
+      {detail.split('\n').map((line, index) => {
+        const parsed = parseDetailLine(line)
+        if (!parsed) {
+          return (
+            <Text key={index} size="sm" c="dimmed" className={classes.detailLine}>
+              {line}
+            </Text>
+          )
+        }
+        return (
+          <Box
+            key={index}
+            bg="var(--doc-surface)"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'baseline',
+              gap: 4,
+              maxWidth: '100%',
+              border: '1px solid var(--doc-hairline)',
+              borderRadius: 'var(--mantine-radius-sm)',
+              padding: '2px 8px',
+            }}
+          >
+            <Text size="9px" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+              {parsed.key}
+            </Text>
+            <Text size="xs" className={classes.detailLine}>
+              {parsed.value}
+            </Text>
+          </Box>
+        )
+      })}
+    </Group>
+  )
 }
 
 /** Up/down arrow, same stroke/viewBox convention as ChunkPreviewPage's UndoIcon/RedoIcon - no icon library in this app (see design-principles.md). Only rendered inline in the Timestamp header when a sort direction is actually active - see cycleLogsSortDirection below. */
@@ -1081,16 +1176,15 @@ export function DashboardPage(): JSX.Element {
         </>
       ) : (
         // Fixed at 80% of the viewport height (not a pixel value) so the
-        // table reads as filling the same share of the page's bottom
-        // portion at any browser zoom level - zoom scales the viewport
-        // together with everything in it, so a vh-based size stays
-        // proportionally correct instead of drifting like a fixed px height
-        // would. Up to LOGS_PAGE_SIZE=20 full-text rows almost always
-        // overflows that frame, so `overflowY: auto` (its scrollbar styled
-        // by the app-wide rule in global.css, applied automatically) on the
-        // inner table wrapper is the primary mechanism here, not a
-        // fallback: it keeps the scrollbar local to this panel instead of
-        // the whole page.
+        // list reads as filling the same share of the page's bottom portion
+        // at any browser zoom level - zoom scales the viewport together
+        // with everything in it, so a vh-based size stays proportionally
+        // correct instead of drifting like a fixed px height would. Up to
+        // LOGS_PAGE_SIZE=20 cards almost always overflows that frame, so
+        // `overflowY: auto` (its scrollbar styled by the app-wide rule in
+        // global.css, applied automatically) on the inner list wrapper is
+        // the primary mechanism here, not a fallback: it keeps the
+        // scrollbar local to this panel instead of the whole page.
         <Box style={{ height: '80vh', display: 'flex', flexDirection: 'column', gap: 'var(--mantine-spacing-md)' }}>
           <Group gap="sm" wrap="wrap" align="flex-end">
             <TextInput
@@ -1105,6 +1199,32 @@ export function DashboardPage(): JSX.Element {
               }}
               style={{ width: 520 }}
             />
+            {/* Sort direction is live (not staged into the Search-button
+                batch below, unlike appliedLogsFilters) - one click cycles
+                unsorted -> newest-first -> oldest-first -> unsorted, same
+                3-state cycle (cycleLogsSortDirection/logsSortDirection) the
+                old Timestamp column header used to drive by click. There's
+                no header row to click anymore now that each event is its
+                own card, so this stands in as a small, explicit control near
+                the rest of the filter bar instead. SortDirectionIcon (its
+                arrow aria-hidden) only renders once a sort is actually
+                active; the button's own accessible name always spells out
+                the current state too, not just the icon. */}
+            <Button
+              variant={logsSortDirection !== null ? 'filled' : 'default'}
+              color="signalBlue"
+              onClick={cycleLogsSortDirection}
+              leftSection={logsSortDirection !== null ? <SortDirectionIcon direction={logsSortDirection} /> : undefined}
+              aria-label={
+                logsSortDirection === 'desc'
+                  ? 'Sort by time (currently newest first)'
+                  : logsSortDirection === 'asc'
+                    ? 'Sort by time (currently oldest first)'
+                    : 'Sort by time (currently unsorted)'
+              }
+            >
+              Sort by time
+            </Button>
             {/* Date and time as two separate typable-or-pickable fields
                 (DateInput's own text + calendar dropdown; TimePicker's own
                 hour/minute segments + dropdown) sharing one card background
@@ -1133,50 +1253,88 @@ export function DashboardPage(): JSX.Element {
                 </Text>
               </Box>
             ) : (
-              <Table fz="md" verticalSpacing="sm">
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th>ID</Table.Th>
-                    {/* Sortable by click (not a separate arrow button) - cycles
-                        unsorted -> newest-first -> oldest-first -> unsorted
-                        (cycleLogsSortDirection). `aria-sort` on the `<th>` is
-                        the standard ARIA table-sorting convention; the actual
-                        interactive element is the plain button inside it (a
-                        `<th>` itself isn't natively clickable/focusable). The
-                        direction arrow only renders once a sort is active. */}
-                    <Table.Th aria-sort={logsSortDirection === 'asc' ? 'ascending' : logsSortDirection === 'desc' ? 'descending' : 'none'}>
-                      <UnstyledButton onClick={cycleLogsSortDirection} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700 }}>
-                        Timestamp
-                        {logsSortDirection !== null ? <SortDirectionIcon direction={logsSortDirection} /> : null}
-                      </UnstyledButton>
-                    </Table.Th>
-                    <Table.Th>Type</Table.Th>
-                    <Table.Th>User</Table.Th>
-                    <Table.Th>Detail</Table.Th>
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {pageEvents.map((event, index) => (
-                    <Table.Tr key={event.id}>
-                      {/* A plain running number (1, 2, 3, ...) across the whole
-                          list, not the event's real UUID - continues across
-                          pages (offset by clampedLogsPageIndex * LOGS_PAGE_SIZE)
-                          rather than resetting to 1 on every page. */}
-                      <Table.Td ff="monospace">{clampedLogsPageIndex * LOGS_PAGE_SIZE + index + 1}</Table.Td>
-                      <Table.Td ff="monospace">{formatDateTime(event.timestamp)}</Table.Td>
-                      <Table.Td ff="monospace">{formatEventType(event.type)}</Table.Td>
-                      {/* null for worker-triggered events (chunking_started/
-                          succeeded/failed run inside a Celery task, outside any
-                          authenticated session) - shown as a dash rather than a
-                          blank cell so it reads as "no user", not missing data. */}
-                      <Table.Td ff="monospace" c={event.userEmail ? undefined : 'dimmed'}>
-                        {event.userEmail ?? '—'}
-                      </Table.Td>
-                      <Table.Td className={classes.detailCell}>{event.detail}</Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
+              // A card per event (not a grid table) - same left-accent-stripe
+              // card + solid-color chip language as ImprovementsPage.tsx's
+              // own ImprovementsListPanel entries (see EVENT_TYPE_COLORS/
+              // getEventTypeColor above), rather than a bureaucratic data
+              // table. Each card's own accent color ties its left border to
+              // its own timestamp chip, so both read as one color-coded unit
+              // per event type.
+              <Stack gap="sm" data-testid="logs-event-list">
+                {pageEvents.map((event, index) => {
+                  const color = getEventTypeColor(event.type)
+                  return (
+                    <Paper
+                      key={event.id}
+                      data-testid="log-event-card"
+                      radius="lg"
+                      p="md"
+                      bg="var(--doc-bg)"
+                      className={classes.entryCard}
+                      style={{
+                        border: '1px solid var(--doc-hairline)',
+                        borderLeft: `3px solid var(--mantine-color-${color}-6)`,
+                      }}
+                    >
+                      <Group justify="space-between" align="flex-start" wrap="nowrap" gap="md">
+                        <Stack gap={6} style={{ flex: 1, minWidth: 0 }}>
+                          <Group gap="xs" align="center" wrap="wrap">
+                            {/* A plain running number (1, 2, 3, ...) across the
+                                whole list, not the event's real UUID -
+                                continues across pages (offset by
+                                clampedLogsPageIndex * LOGS_PAGE_SIZE) rather
+                                than resetting to 1 on every page.
+                                De-emphasized (small/dimmed/mono) - it's just
+                                a position counter, not a meaningful id. */}
+                            <Text size="xs" c="dimmed" ff="monospace">
+                              #{clampedLogsPageIndex * LOGS_PAGE_SIZE + index + 1}
+                            </Text>
+                            <Text fw={700} tt="uppercase" c={color} style={{ letterSpacing: '0.04em' }}>
+                              {formatEventType(event.type)}
+                            </Text>
+                          </Group>
+                          <EventDetail detail={event.detail} />
+                          {/* null for worker-triggered events (chunking_started/
+                              succeeded/failed run inside a Celery task, outside
+                              any authenticated session) - shown as a dash
+                              rather than blank so it reads as "no user", not
+                              missing data. */}
+                          <Group gap={6} align="baseline" wrap="nowrap">
+                            <Text size="10px" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.04em' }}>
+                              User
+                            </Text>
+                            <Text size="xs" ff="monospace" c={event.userEmail ? undefined : 'dimmed'}>
+                              {event.userEmail ?? '—'}
+                            </Text>
+                          </Group>
+                        </Stack>
+                        {/* Solid-fill chip (not a translucent tint), colored by
+                            this row's own accent (getEventTypeColor) rather
+                            than a fixed color - same "solid accent background +
+                            dark navy text" device as ImprovementsListPanel's
+                            own timestamp chip, for guaranteed contrast
+                            regardless of which color a given event type maps
+                            to. */}
+                        <Box
+                          style={{
+                            backgroundColor: `var(--mantine-color-${color}-6)`,
+                            borderRadius: 'var(--mantine-radius-md)',
+                            padding: '4px 10px',
+                            flexShrink: 0,
+                          }}
+                        >
+                          <Text size="10px" fw={700} tt="uppercase" c="#101B36" ta="right" style={{ letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                            Timestamp
+                          </Text>
+                          <Text size="sm" fw={700} ff="monospace" c="#101B36" ta="right" style={{ whiteSpace: 'nowrap' }}>
+                            {formatDateTime(event.timestamp)}
+                          </Text>
+                        </Box>
+                      </Group>
+                    </Paper>
+                  )
+                })}
+              </Stack>
             )}
           </Box>
 

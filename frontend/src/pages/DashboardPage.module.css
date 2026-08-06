@@ -13,20 +13,29 @@
   }
 }
 
-/* Caps the Detail cell's width so a long, unbroken detail string wraps onto
-   several lines instead of stretching the column arbitrarily wide - the
-   full text still renders (nothing is truncated with an ellipsis),
-   `word-break` covers detail strings with no natural break points (e.g. a
-   long path or UUID) that wrapping alone wouldn't wrap. `pre-wrap` (not
-   `normal`) - some `detail` values now carry a literal '\n' (e.g.
-   "filename = x.txt\nfilesize = 5.1 KB", see
-   app/documents/formatting.py's build_document_event_detail on the
-   backend) that must render as an actual line break, not collapse into a
-   space the way `white-space: normal` treats any whitespace run;
-   `pre-wrap` still wraps long lines exactly like `normal` did, it just
-   additionally respects explicit newlines. */
-.detailCell {
-  max-width: 32rem;
+/* Per-event card in the Logs tab's own list (see DashboardPage.tsx's Logs
+   branch) - same subtle hover lift as ImprovementsPage.module.css's own
+   .entryCard (Dislikes/No Answer entries), duplicated here rather than
+   imported cross-module, matching this app's existing per-page CSS-module
+   convention (see .paginationButton's own comment above for the same
+   duplicate-rather-than-share idiom). */
+.entryCard {
+  transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.entryCard:hover {
+  border-color: var(--mantine-color-signalBlue-6);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px -16px rgba(0, 0, 0, 0.6);
+}
+
+/* One line of a Logs event card's own Detail area (see DashboardPage.tsx's
+   EventDetail) - covers both the "key = value" chip's own value text and the
+   plain-text fallback for a line that doesn't match that shape. Wraps a
+   long, unbroken line (e.g. a long path or UUID) onto several lines instead
+   of overflowing its card - nothing is truncated with an ellipsis, the full
+   text always renders. */
+.detailLine {
   white-space: pre-wrap;
   word-break: break-word;
 }
