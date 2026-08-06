@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat.completion import generate_reply
-from app.chat.constants import ChatRole
+from app.chat.constants import ChatChannel, ChatRole
 from app.chat.schemas import (
     ChatMessageSummary,
     DislikedMessageSummary,
@@ -140,13 +140,25 @@ async def send_message(
 
 @router.get("/chat/messages")
 async def list_messages(session: AsyncSession = Depends(get_session)) -> list[ChatMessageSummary]:
-    """Returns all chat_messages ordered by created_at ascending."""
+    """Returns chat_messages ordered by created_at ascending, scoped to
+    channel = 'admin' (the in-app Chat page's own single-threaded
+    transcript) - Slack-sourced rows (channel='slack', potentially from
+    several unrelated external Slack users) are deliberately excluded
+    here, since this admin Chat page UI has no notion of multiple
+    simultaneous conversations to interleave them into.
+
+    This is the ONLY chat_messages query scoped by channel - every other
+    reader of this table (dashboard stats, the Improvements page's
+    dislikes/no-answer lists) deliberately keeps counting/showing across
+    ALL channels, since surfacing real Slack-sourced documentation gaps is
+    the whole point of the Improvements feature."""
     rows = (
         await session.execute(
             text(
                 "SELECT id, role, content, disliked FROM chat_messages "
-                "ORDER BY created_at"
-            )
+                "WHERE channel = :channel ORDER BY created_at"
+            ),
+            {"channel": str(ChatChannel.ADMIN)},
         )
     ).all()
     return [_message_summary(row) for row in rows]

@@ -98,19 +98,25 @@ def _insert_message(
     disliked_at: datetime | None = None,
     no_answer_found: bool = False,
     question_id: str | None = None,
+    channel: str = "admin",
+    external_identity: str | None = None,
 ) -> str:
     # Direct-SQL backdating idiom (see test_documents_router.py's/
     # test_chunks_router.py's own _force_status) - lets range-filter tests
     # seed rows with an explicit created_at/disliked_at rather than relying
     # on now()-at-insert-time, which every real send_message/dislike call
-    # uses instead.
+    # uses instead. `channel` defaults to "admin" (the column's own default)
+    # so every existing caller keeps seeding admin-channel rows unchanged;
+    # tests exercising the Slack-exclusion behavior pass channel="slack"
+    # explicitly.
     with SyncSessionLocal() as session:
         message_id = session.execute(
             text(
                 "INSERT INTO chat_messages "
-                "(role, content, created_at, disliked, disliked_at, no_answer_found, question_id) "
+                "(role, content, created_at, disliked, disliked_at, no_answer_found, "
+                "question_id, channel, external_identity) "
                 "VALUES (:role, :content, COALESCE(:created_at, now()), :disliked, "
-                ":disliked_at, :no_answer_found, :question_id) "
+                ":disliked_at, :no_answer_found, :question_id, :channel, :external_identity) "
                 "RETURNING id"
             ),
             {
@@ -121,6 +127,8 @@ def _insert_message(
                 "disliked_at": disliked_at,
                 "no_answer_found": no_answer_found,
                 "question_id": question_id,
+                "channel": channel,
+                "external_identity": external_identity,
             },
         ).scalar_one()
         session.commit()
@@ -339,6 +347,36 @@ def test_dislike_malformed_message_id_returns_422_not_500(client: TestClient) ->
     response = client.post("/internal/chat/messages/not-a-uuid/dislike")
 
     assert response.status_code == 422
+
+
+def test_list_messages_excludes_slack_channel_messages(client: TestClient) -> None:
+    # GET /chat/messages powers the single-threaded admin Chat page - a
+    # channel='slack' row (potentially from an unrelated external Slack
+    # user) must never show up interleaved in it, even though every other
+    # chat_messages reader (dashboard stats, Improvements page) keeps
+    # counting/showing across all channels.
+    message_ids: list[str] = []
+    admin_content = f"admin channel message {uuid.uuid4()}"
+    slack_content = f"slack channel message {uuid.uuid4()}"
+    try:
+        admin_id = _insert_message(role="user", content=admin_content, channel="admin")
+        message_ids.append(admin_id)
+        slack_id = _insert_message(
+            role="user",
+            content=slack_content,
+            channel="slack",
+            external_identity="U999",
+        )
+        message_ids.append(slack_id)
+
+        response = client.get("/internal/chat/messages")
+        assert response.status_code == 200
+        body = response.json()
+        ids = {item["id"] for item in body}
+        assert admin_id in ids
+        assert slack_id not in ids
+    finally:
+        _cleanup_messages(message_ids)
 
 
 async def _fake_embed_axis0(texts: list[str]) -> list[list[float]]:
