@@ -86,16 +86,23 @@ edited, or contextually relevant - identical placement rules to before:
 ### Network/Graph Texture
 
 DocuMind is fundamentally a graph of connected documents and chunks feeding a
-RAG pipeline - this pass leans into that visual metaphor in two small,
-decorative places (never in working/data-dense surfaces, where it would be
+RAG pipeline - this pass leans into that visual metaphor in one small,
+decorative place (never in working/data-dense surfaces, where it would be
 clutter):
 
-- **`AppLayout.tsx`'s navbar** has a very low-opacity dot-grid background
-  (`radial-gradient` in `AppLayout.module.css`'s `.navbar` rule) - an ambient
-  texture behind the nav links, not a focal element.
 - **The brand wordmark** is preceded by a small inline SVG of three connected
   nodes in the two brand accents (`BrandMark` in `AppLayout.tsx`) - a literal,
   tiny illustration of "documents/chunks as a connected graph."
+
+`AppLayout.tsx`'s navbar previously had a very low-opacity dot-grid
+background (`radial-gradient` in `AppLayout.module.css`'s `.navbar` rule) as
+an ambient texture behind the nav links - this was tried and explicitly
+**rejected**: live use showed it read as visual noise rather than ambient
+texture, not a net improvement. The navbar is now a flat `surface`
+background (see the Navbar subsection under Component Guidelines below) with
+no repeating pattern. **Do not reintroduce a dot-grid or any other repeating
+background texture on the navbar** - this has already been tried once and
+explicitly walked back.
 
 Resist adding this pattern to tables, forms, or any other data-bearing
 surface - it's a header/nav-level flourish, not a global background texture.
@@ -293,10 +300,12 @@ Mantine's default spacing tokens (`xs`/`sm`/`md`/`lg`/`xl`), used via the
   Includes the brand wordmark + the decorative connected-node `BrandMark` SVG,
   and a static decorative "system ok" status indicator (no real health-check
   wiring yet).
-- **Navbar**: 240px fixed width, `void` background (blends with the page) with
-  a low-opacity dot-grid texture and a `hairline` right border, hidden below
-  the `sm` breakpoint. Nav items get the sparkOrange mark (border + glow)
-  when active (`AppLayout.module.css` + inline style in `AppLayout.tsx`).
+- **Navbar**: 240px fixed width, `surface` background (a flat fill, no
+  decorative texture - see Network/Graph Texture above) with a `hairline`
+  right border, hidden below the `sm` breakpoint. Nav items get the
+  sparkOrange mark (border + glow) when active (`AppLayout.module.css` +
+  inline style in `AppLayout.tsx`) - see the Navbar subsection below for the
+  full current treatment (icons, section label, hover state).
 - **Content max-width**: Chunks and Chat are editing/reading surfaces and
   use `maw={900}` on their outer `Stack` for a comfortable line length.
   Dashboard and Upload are tables that benefit from the extra width and stay
@@ -387,6 +396,77 @@ Reference implementation (from `ChunksPage.tsx`):
 
 Always reserve the 3px of space with a `transparent` border (and no shadow)
 when inactive, so toggling the state doesn't shift layout.
+
+### Navbar: Icons + Section Label
+
+Each of the 5 items in `AppLayout.tsx`'s `NAV_ITEMS` now carries a small
+hand-rolled leading icon (`NavUploadIcon`/`NavChatIcon`/`NavRelevanceIcon`/
+`NavLogsIcon`/`NavImprovementsIcon`, `frontend/src/layout/NavIcons.tsx` - a
+dedicated file rather than inlining five more components directly in
+`AppLayout.tsx`, which already owns `BrandMark`): an arrow-into-a-tray for
+Upload, a speech bubble for Chat, a crosshair/target for Relevance Preview
+(deliberately not a magnifying glass - that glyph is already `SearchIcon`'s
+in `UploadPage.tsx`, and "targeting" the relevant chunk reads more precisely
+for what this page actually does), bar-chart bars for Logs & Stats, and a
+trending-up arrow for Improvements. Same no-icon-library convention as every
+other icon in the app (see Icons below): `viewBox="0 0 24 24"`, ~20x20,
+`aria-hidden="true"` + `focusable="false"`.
+
+**Unlike every other icon in the app, these five are stroked with their own
+fixed color, not `currentColor`** - by explicit request, the nav icons read
+as colorful regardless of the parent `NavLink`'s active/inactive/hover
+state, rather than inheriting that state's muted/bright text color the way a
+`currentColor` icon normally would here (see the Icons section's general
+convention below, which these five are the one deliberate exception to).
+Each fixed color is an existing theme token, never a new hardcoded hex:
+
+| Icon | Token | Rationale |
+|------|-------|-----------|
+| `NavUploadIcon` | `var(--mantine-color-sparkOrange-5)` | Same exact token the dropzone's own `UploadIcon` (`UploadPage.tsx`) already uses - "upload" keeps one consistent color association app-wide. |
+| `NavChatIcon` | `var(--mantine-color-signalBlue-5)` | The app's primary/default interactive accent, a fitting match for the chat pipeline. |
+| `NavRelevanceIcon` | `var(--mantine-color-grape-5)` | Mantine's stock `grape` - a hue none of the app's three branded ramps use, so this page gets a genuinely distinct accent rather than reusing blue/gold/pink. |
+| `NavLogsIcon` | `var(--mantine-color-cyan-5)` | Mantine's stock `cyan` - a cool, instrumentation-reading hue distinct from Improvements' warmer/greener teal directly below it. |
+| `NavImprovementsIcon` | `var(--mantine-color-teal-5)` | Mantine's stock `teal` - the same generic "positive/ok" tone the header's decorative "system ok" status dot already uses, a natural fit for a trending-up glyph. Deliberately not `alertMagenta`, which is reserved for errors/destructive actions and would send the wrong signal on a positive glyph. |
+
+Only the label text and the sparkOrange active-mark (border + glow, applied
+on the `NavLink` itself) still respond to active state - an icon sitting at
+its own fixed color while the item happens to be active or hovered is
+ordinary palette use, not a conflict with "the mark" (see design-principles
+.md's Color & Theming rules on that distinction: the mark is specifically
+the border+glow combination, never a factor of what color anything else on
+the element happens to be). The icon markup itself is unchanged from a
+structural standpoint - a leading `<svg>` + a `<span>` wrapping the label
+text inside the `NavLink`, nothing else, so it still doesn't interfere with
+the mark's border/box-shadow/background logic. **The accessible name of each
+link is still exactly its visible text label** (e.g.
+`getByRole('link', { name: 'Improvements' })` in `AppLayout.test.tsx`) - the
+icon is `aria-hidden`, so it contributes nothing to the accessible name
+computation regardless of its color.
+
+`.navLink` in `AppLayout.module.css` switched from `display: block` to
+`display: flex; align-items: center; gap: 12px` to lay the icon and label
+out side by side, vertically centered - a pure layout change that doesn't
+touch the mark's border/box-shadow/background logic, which is still applied
+via the same inline style object as before. The hover background also
+switched from a flat neutral tint (`rgba(232, 237, 250, 0.08)`) to a
+translucent `signalBlue` tint (`rgba(61, 107, 255, 0.08)` - the same
+color/opacity `ChunkPreviewPage.module.css`'s boundary-handle hover already
+uses), reading closer to this pass's "energy over restraint" brief than a
+neutral gray; the existing hover `border-color` shift to `sparkOrange-7` is
+unchanged.
+
+A small uppercase "Workspace" label sits above the nav list
+(`size="xs" fw={600} tt="uppercase" c="dimmed"`, `letterSpacing: '0.04em'` -
+the exact same treatment `DashboardPage.tsx`'s `StatCard` labels use,
+reused here as this app's general "section label" convention rather than a
+one-off). It's plain text content (not a heading element, not `aria-hidden`)
+since it's genuinely informative wayfinding copy, not decoration - it does
+not affect the navbar's accessible name, which stays pinned to the
+`aria-label="Main navigation"` on `AppShell.Navbar`.
+
+No repeating background texture was added to the navbar as part of this -
+see the Network/Graph Texture section above for why that's specifically off
+the table (a dot-grid attempt was already tried and rejected).
 
 ### Upload: the Dropzone
 
@@ -718,12 +798,27 @@ that's a deliberate future decision, not a default.
 
 ### Icons
 
-- No icon library is currently installed - the two icons in the app (the
-  dropzone's upload glyph, the header's `BrandMark`) are small hand-rolled
-  inline SVGs rather than a new dependency, consistent with this project's
-  YAGNI stance on adding libraries for a handful of static shapes. If broader
-  icon needs come up later, prefer `@tabler/icons-react` and update this
-  section.
+- No icon library is currently installed - every icon in the app (the
+  dropzone's `UploadIcon`, `PencilIcon`/`TrashIcon`/`SearchIcon`/`ClearIcon`/
+  `SortIcon` in `UploadPage.tsx`, the header's `BrandMark` and the sidebar's
+  `NavUploadIcon`/`NavChatIcon`/`NavRelevanceIcon`/`NavLogsIcon`/
+  `NavImprovementsIcon` in `AppLayout.tsx`/`NavIcons.tsx` - see the Navbar
+  subsection above) is a small hand-rolled inline SVG rather than a new
+  dependency, consistent with this project's YAGNI stance on adding
+  libraries for a handful of static shapes. The structural convention is
+  consistent across all of them: `viewBox="0 0 24 24"`, `strokeLinecap=
+  "round"`, `strokeLinejoin="round"`, `aria-hidden="true"` + `focusable=
+  "false"` (purely decorative, sits alongside real text rather than
+  replacing it), sized roughly 20x20 for inline/button-adjacent icons
+  (larger for the dropzone's own centerpiece glyph). Color is normally
+  `stroke="currentColor"` (the icon inherits whatever's already governing
+  the parent element's text/icon color, rather than needing its own color
+  logic) - the sidebar's five `NavIcons.tsx` glyphs are the one deliberate
+  exception, each stroked with its own fixed theme-token color instead so
+  they read as colorful independent of the parent `NavLink`'s active state
+  (see the Navbar subsection above for the exact tokens and rationale). If
+  broader icon needs come up later, prefer `@tabler/icons-react` and update
+  this section.
 
 ---
 
@@ -745,9 +840,10 @@ that's a deliberate future decision, not a default.
   dislike pill in `ChatPage.tsx` toggles its `aria-label`/`aria-pressed`
   between "Dislike message" and "Message disliked").
 - **Decorative content**: the header's status dot + "system ok" text, the
-  `BrandMark` SVG, the navbar's dot-grid texture, and the dropzone's upload
-  icon are all `aria-hidden="true"` (or, for the SVGs, `aria-hidden` +
-  `focusable="false"`) since they convey no real information.
+  `BrandMark` SVG, the sidebar's per-item `NavIcons.tsx` glyphs, and the
+  dropzone's upload icon are all `aria-hidden="true"` (or, for the SVGs,
+  `aria-hidden` + `focusable="false"`) since they convey no real information
+  beyond the visible text label they sit alongside.
 
 ---
 
@@ -854,8 +950,9 @@ Use this before finalizing any UI implementation:
       backgrounds - filled buttons/badges get this for free via
       `autoContrast`, but check any new **text** usage yourself
 - [ ] Icon-only/emoji-only buttons have `aria-label`
-- [ ] Purely decorative elements (dot-grid texture, `BrandMark`, dropzone
-      icon) are `aria-hidden`
+- [ ] Purely decorative elements (`BrandMark`, nav-item icons, dropzone icon)
+      are `aria-hidden`, and never the only content conveying a link/button's
+      accessible name
 
 ### Polish
 - [ ] Hover states on interactive elements (~150ms transitions)

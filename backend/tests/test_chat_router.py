@@ -1,13 +1,16 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.chat.completion import GeneratedReply
 from app.chunks.embedding import LLMError
 from app.chunks.vectors import format_vector
 from app.db.sync_session import SyncSessionLocal
+from app.main import app
 
 ZERO_VECTOR_1536 = "[" + ",".join(["0"] * 1536) + "]"
 
@@ -86,6 +89,44 @@ def _cleanup_messages(message_ids: list[str]) -> None:
         session.commit()
 
 
+def _insert_message(
+    *,
+    role: str,
+    content: str,
+    created_at: datetime | None = None,
+    disliked: bool = False,
+    disliked_at: datetime | None = None,
+    no_answer_found: bool = False,
+    question_id: str | None = None,
+) -> str:
+    # Direct-SQL backdating idiom (see test_documents_router.py's/
+    # test_chunks_router.py's own _force_status) - lets range-filter tests
+    # seed rows with an explicit created_at/disliked_at rather than relying
+    # on now()-at-insert-time, which every real send_message/dislike call
+    # uses instead.
+    with SyncSessionLocal() as session:
+        message_id = session.execute(
+            text(
+                "INSERT INTO chat_messages "
+                "(role, content, created_at, disliked, disliked_at, no_answer_found, question_id) "
+                "VALUES (:role, :content, COALESCE(:created_at, now()), :disliked, "
+                ":disliked_at, :no_answer_found, :question_id) "
+                "RETURNING id"
+            ),
+            {
+                "role": role,
+                "content": content,
+                "created_at": created_at,
+                "disliked": disliked,
+                "disliked_at": disliked_at,
+                "no_answer_found": no_answer_found,
+                "question_id": question_id,
+            },
+        ).scalar_one()
+        session.commit()
+    return str(message_id)
+
+
 def test_send_message_with_ready_document_returns_mocked_reply_and_appears_in_list(
     client: TestClient,
 ) -> None:
@@ -101,7 +142,9 @@ def test_send_message_with_ready_document_returns_mocked_reply_and_appears_in_li
             ),
             patch(
                 "app.chat.router.generate_reply",
-                new=AsyncMock(return_value="mocked reply"),
+                new=AsyncMock(
+                    return_value=GeneratedReply(content="mocked reply", no_answer_found=False)
+                ),
             ) as mock_generate_reply,
         ):
             response = client.post(
@@ -145,7 +188,9 @@ def test_send_message_with_zero_ready_documents_calls_generate_reply_with_empty_
         patch("app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
         patch(
             "app.chat.router.generate_reply",
-            new=AsyncMock(return_value="fallback reply"),
+            new=AsyncMock(
+                return_value=GeneratedReply(content="fallback reply", no_answer_found=False)
+            ),
         ) as mock_generate_reply,
     ):
         response = client.post("/internal/chat/messages", json={"content": user_content})
@@ -245,7 +290,8 @@ def test_dislike_message_toggles_disliked_flag_on_and_off(client: TestClient) ->
     with (
         patch("app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
         patch(
-            "app.chat.router.generate_reply", new=AsyncMock(return_value="a reply")
+            "app.chat.router.generate_reply",
+            new=AsyncMock(return_value=GeneratedReply(content="a reply", no_answer_found=False)),
         ),
     ):
         response = client.post("/internal/chat/messages", json={"content": user_content})
@@ -444,3 +490,252 @@ def test_top_chunks_embed_texts_llm_error_returns_502(client: TestClient) -> Non
 
     assert response.status_code == 502
     assert response.json()["detail"] == "chat_completion_failed"
+
+
+def test_dislikes_list_reflects_dislike_toggle_with_question_content(
+    client: TestClient,
+) -> None:
+    message_ids: list[str] = []
+    user_content = f"dislike list question {uuid.uuid4()}"
+    with (
+        patch("app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
+        patch(
+            "app.chat.router.generate_reply",
+            new=AsyncMock(
+                return_value=GeneratedReply(content="a disliked reply", no_answer_found=False)
+            ),
+        ),
+    ):
+        response = client.post("/internal/chat/messages", json={"content": user_content})
+    assert response.status_code == 200
+    assistant_id = response.json()["id"]
+    message_ids.append(assistant_id)
+
+    try:
+        list_response = client.get("/internal/chat/messages")
+        user_message = next(
+            m for m in list_response.json() if m["content"] == user_content
+        )
+        message_ids.append(user_message["id"])
+
+        # Before disliking: absent from the Dislikes list.
+        before = client.get("/internal/chat/dislikes", params={"range": "all"})
+        assert before.status_code == 200
+        assert all(item["id"] != assistant_id for item in before.json())
+
+        dislike_response = client.post(
+            f"/internal/chat/messages/{assistant_id}/dislike"
+        )
+        assert dislike_response.status_code == 204
+
+        after = client.get("/internal/chat/dislikes", params={"range": "all"})
+        assert after.status_code == 200
+        matching = next(item for item in after.json() if item["id"] == assistant_id)
+        assert matching["content"] == "a disliked reply"
+        assert matching["questionContent"] == user_content
+        assert matching["dislikedAt"] is not None
+
+        # Un-disliking (toggle again) drops it out of the list and clears
+        # disliked_at in the DB.
+        undislike_response = client.post(
+            f"/internal/chat/messages/{assistant_id}/dislike"
+        )
+        assert undislike_response.status_code == 204
+
+        after_undislike = client.get("/internal/chat/dislikes", params={"range": "all"})
+        assert all(item["id"] != assistant_id for item in after_undislike.json())
+
+        with SyncSessionLocal() as session:
+            disliked_at = session.execute(
+                text("SELECT disliked_at FROM chat_messages WHERE id = :id"),
+                {"id": assistant_id},
+            ).scalar_one()
+        assert disliked_at is None
+    finally:
+        _cleanup_messages(message_ids)
+
+
+def test_no_answer_message_appears_in_list_with_marker_stripped_and_question_content(
+    client: TestClient,
+) -> None:
+    message_ids: list[str] = []
+    user_content = f"no answer question {uuid.uuid4()}"
+    with (
+        patch("app.chat.router.embed_texts", new=AsyncMock(side_effect=_fake_embed_texts)),
+        patch(
+            "app.chat.router.generate_reply",
+            new=AsyncMock(
+                return_value=GeneratedReply(
+                    content="I'm sorry, I don't have an answer to that.",
+                    no_answer_found=True,
+                )
+            ),
+        ),
+    ):
+        response = client.post("/internal/chat/messages", json={"content": user_content})
+    assert response.status_code == 200
+    assistant_id = response.json()["id"]
+    message_ids.append(assistant_id)
+
+    try:
+        list_response = client.get("/internal/chat/messages")
+        user_message = next(
+            m for m in list_response.json() if m["content"] == user_content
+        )
+        message_ids.append(user_message["id"])
+
+        with SyncSessionLocal() as session:
+            no_answer_found = session.execute(
+                text("SELECT no_answer_found FROM chat_messages WHERE id = :id"),
+                {"id": assistant_id},
+            ).scalar_one()
+        assert no_answer_found is True
+
+        no_answer_response = client.get(
+            "/internal/chat/no-answer-messages", params={"range": "all"}
+        )
+        assert no_answer_response.status_code == 200
+        matching = next(
+            item for item in no_answer_response.json() if item["id"] == assistant_id
+        )
+        assert matching["questionContent"] == user_content
+        assert matching["content"] == "I'm sorry, I don't have an answer to that."
+        assert "[[NO_ANSWER]]" not in matching["content"]
+
+        dismiss_response = client.post(
+            f"/internal/chat/messages/{assistant_id}/dismiss-no-answer"
+        )
+        assert dismiss_response.status_code == 204
+
+        after_dismiss = client.get(
+            "/internal/chat/no-answer-messages", params={"range": "all"}
+        )
+        assert all(item["id"] != assistant_id for item in after_dismiss.json())
+
+        # The underlying message itself is still visible in ordinary chat
+        # history - dismiss only clears the flag, never deletes anything.
+        still_there = client.get("/internal/chat/messages")
+        assert any(m["id"] == assistant_id for m in still_there.json())
+    finally:
+        _cleanup_messages(message_ids)
+
+
+def test_dismiss_no_answer_on_missing_id_is_a_204_noop(client: TestClient) -> None:
+    response = client.post(
+        f"/internal/chat/messages/{uuid.uuid4()}/dismiss-no-answer"
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+def test_dislikes_list_range_filter_excludes_entries_outside_window(
+    client: TestClient,
+) -> None:
+    message_ids: list[str] = []
+    now = datetime.now(timezone.utc)
+    try:
+        question_id = _insert_message(role="user", content=f"range q {uuid.uuid4()}")
+        message_ids.append(question_id)
+
+        recent_id = _insert_message(
+            role="assistant",
+            content=f"recent disliked {uuid.uuid4()}",
+            disliked=True,
+            disliked_at=now - timedelta(hours=1),
+            question_id=question_id,
+        )
+        message_ids.append(recent_id)
+
+        old_id = _insert_message(
+            role="assistant",
+            content=f"old disliked {uuid.uuid4()}",
+            disliked=True,
+            disliked_at=now - timedelta(days=40),
+            question_id=question_id,
+        )
+        message_ids.append(old_id)
+
+        day_response = client.get("/internal/chat/dislikes", params={"range": "day"})
+        assert day_response.status_code == 200
+        day_ids = {item["id"] for item in day_response.json()}
+        assert recent_id in day_ids
+        assert old_id not in day_ids
+
+        all_response = client.get("/internal/chat/dislikes", params={"range": "all"})
+        assert all_response.status_code == 200
+        all_ids = {item["id"] for item in all_response.json()}
+        assert recent_id in all_ids
+        assert old_id in all_ids
+    finally:
+        _cleanup_messages(message_ids)
+
+
+def test_no_answer_messages_list_range_filter_excludes_entries_outside_window(
+    client: TestClient,
+) -> None:
+    message_ids: list[str] = []
+    now = datetime.now(timezone.utc)
+    try:
+        question_id = _insert_message(
+            role="user", content=f"range no-answer q {uuid.uuid4()}"
+        )
+        message_ids.append(question_id)
+
+        recent_id = _insert_message(
+            role="assistant",
+            content=f"recent no answer {uuid.uuid4()}",
+            created_at=now - timedelta(hours=1),
+            no_answer_found=True,
+            question_id=question_id,
+        )
+        message_ids.append(recent_id)
+
+        old_id = _insert_message(
+            role="assistant",
+            content=f"old no answer {uuid.uuid4()}",
+            created_at=now - timedelta(days=40),
+            no_answer_found=True,
+            question_id=question_id,
+        )
+        message_ids.append(old_id)
+
+        day_response = client.get(
+            "/internal/chat/no-answer-messages", params={"range": "day"}
+        )
+        assert day_response.status_code == 200
+        day_ids = {item["id"] for item in day_response.json()}
+        assert recent_id in day_ids
+        assert old_id not in day_ids
+
+        all_response = client.get(
+            "/internal/chat/no-answer-messages", params={"range": "all"}
+        )
+        assert all_response.status_code == 200
+        all_ids = {item["id"] for item in all_response.json()}
+        assert recent_id in all_ids
+        assert old_id in all_ids
+    finally:
+        _cleanup_messages(message_ids)
+
+
+def test_list_disliked_messages_without_session_cookie_returns_401() -> None:
+    # A bare TestClient built directly (not via this module's `client`
+    # fixture override, which is always pre-authenticated) so this request
+    # genuinely carries no `session` cookie - same idiom as
+    # test_documents_router.py's test_list_documents_without_session_cookie_returns_401.
+    with TestClient(app) as bare_client:
+        response = bare_client.get("/internal/chat/dislikes", params={"range": "all"})
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "not_authenticated"}
+
+
+def test_list_no_answer_messages_without_session_cookie_returns_401() -> None:
+    with TestClient(app) as bare_client:
+        response = bare_client.get(
+            "/internal/chat/no-answer-messages", params={"range": "all"}
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "not_authenticated"}

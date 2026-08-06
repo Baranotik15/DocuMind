@@ -1,12 +1,16 @@
 import type { ApiClient } from './client'
 import type {
+  AnalysisReportDetail,
+  AnalysisReportSummary,
   ChatMessage,
   Chunk,
   ChunkGraphNode,
   DashboardEvent,
   DashboardStatsBucket,
   DashboardStatsRange,
+  DislikedMessage,
   DocumentSummary,
+  NoAnswerMessage,
 } from './types'
 
 // In-memory mock store. This module stands in for the real backend during
@@ -86,6 +90,31 @@ const chatMessages: ChatMessage[] = [
   },
 ]
 
+// Improvements page's own two seeded lists - kept as independent in-memory
+// stores (not derived from `chatMessages` above) since ChatMessage itself
+// carries neither a dislikedAt timestamp nor a no_answer_found flag; range
+// filtering isn't modeled here (same "just enough for local/offline dev"
+// rationale as getDashboardStats's own seed data below), every seeded entry
+// is returned regardless of which range is requested.
+const dislikedMessages: DislikedMessage[] = [
+  {
+    id: 'msg-5',
+    content: 'I\'m not fully certain about that - could you rephrase the question?',
+    questionContent: 'Does the system support real-time collaborative editing?',
+    dislikedAt: '2026-07-30T16:40:00.000Z',
+    createdAt: '2026-07-30T16:39:30.000Z',
+  },
+]
+
+const noAnswerMessages: NoAnswerMessage[] = [
+  {
+    id: 'msg-6',
+    content: 'I\'m sorry, that isn\'t covered in the uploaded documentation.',
+    questionContent: 'What is the refund policy for enterprise customers?',
+    createdAt: '2026-07-29T09:12:00.000Z',
+  },
+]
+
 const dashboardEvents: DashboardEvent[] = [
   {
     id: 'event-1',
@@ -120,10 +149,44 @@ const dashboardEvents: DashboardEvent[] = [
   },
 ]
 
+// One seeded historical run, `completed`, with a sample gap-analysis report
+// and one sample conflict - enough for the Analysis sub-tab to have
+// something real to render while wired against this mock. New runs started
+// via startAnalysisRun below are prepended ahead of this one (newest first,
+// matching the real GET /internal/analysis/reports ordering).
+const analysisReports: AnalysisReportDetail[] = [
+  {
+    id: 'analysis-1',
+    status: 'completed',
+    startedAt: '2026-08-01T09:00:00.000Z',
+    completedAt: '2026-08-01T09:02:30.000Z',
+    startedByEmail: 'admin@documind.dev',
+    gapAnalysis:
+      "Recurring theme: several questions ask about real-time collaborative editing, which isn't covered anywhere in the current documentation. Consider adding a dedicated section explaining what collaboration features are (and aren't) supported.",
+    conflicts: [
+      {
+        documentAId: 'doc-1',
+        documentAFilename: 'architecture-guide.pdf',
+        chunkAId: 'chunk-1',
+        chunkAContent: ARCHITECTURE_GUIDE_SECTIONS[0],
+        documentBId: 'doc-2',
+        documentBFilename: 'onboarding-notes.docx',
+        chunkBId: 'chunk-onboarding-1',
+        chunkBContent: 'DocuMind runs as three services - backend, worker, and frontend - with no separate database service to manage.',
+        description:
+          "One document describes DocuMind as four cooperating services (including a separate Postgres database), the other says three services with no separate database - these directly disagree on the deployment topology.",
+      },
+    ],
+    totalTokens: 842,
+    errorDetail: null,
+  },
+]
+
 // Counters seeded past the ids above so newly created rows never collide
 // with seed data.
 let nextDocumentId = documents.length + 1
 let nextMessageId = chatMessages.length + 1
+let nextAnalysisReportId = analysisReports.length + 1
 
 // Bucket counts/spacing per range, ending at "now" - unlike the real
 // backend (see routers/dashboard.py's get_dashboard_stats), this mock
@@ -229,6 +292,24 @@ export const mockApiClient: ApiClient = {
     message.disliked = true
   },
 
+  // range isn't modeled here - see dislikedMessages' own seed-data comment
+  // above.
+  async getDislikedMessages(_range) {
+    return dislikedMessages.map((message) => ({ ...message }))
+  },
+
+  async getNoAnswerMessages(_range) {
+    return noAnswerMessages.map((message) => ({ ...message }))
+  },
+
+  async dismissNoAnswerMessage(messageId) {
+    const index = noAnswerMessages.findIndex((message) => message.id === messageId)
+    if (index === -1) {
+      throw new Error(`dismissNoAnswerMessage: no message found with id "${messageId}"`)
+    }
+    noAnswerMessages.splice(index, 1)
+  },
+
   // No real embedding/similarity search in this mock - just returns up to
   // the first 5 seeded chunks with a deterministically decreasing (but
   // fake) matchPercent, purely so RelevancePage has something to render
@@ -305,5 +386,47 @@ export const mockApiClient: ApiClient = {
       currency: 'usd',
       configured: false,
     }
+  },
+
+  // No real background run in this mock - starts immediately `running` with
+  // every detail field still null (matching the real backend's just-started
+  // response shape) and is prepended so it's the newest entry; there's no
+  // Celery worker here to ever flip it to `completed`, so a run started
+  // against this mock simply stays `running` forever - acceptable, this
+  // client only backs local/offline dev.
+  async startAnalysisRun() {
+    const report: AnalysisReportDetail = {
+      id: `analysis-${nextAnalysisReportId++}`,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      startedByEmail: 'admin@documind.dev',
+      gapAnalysis: null,
+      conflicts: null,
+      totalTokens: null,
+      errorDetail: null,
+    }
+    analysisReports.unshift(report)
+    return { ...report }
+  },
+
+  async listAnalysisReports() {
+    return analysisReports.map((report): AnalysisReportSummary => ({ ...report }))
+  },
+
+  async getAnalysisReport(reportId) {
+    const report = analysisReports.find((candidate) => candidate.id === reportId)
+    if (!report) {
+      throw new Error(`getAnalysisReport: no report found with id "${reportId}"`)
+    }
+    return { ...report }
+  },
+
+  async deleteAnalysisReport(reportId) {
+    const index = analysisReports.findIndex((candidate) => candidate.id === reportId)
+    if (index === -1) {
+      throw new Error(`deleteAnalysisReport: no report found with id "${reportId}"`)
+    }
+    analysisReports.splice(index, 1)
   },
 }

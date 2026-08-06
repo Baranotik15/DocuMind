@@ -83,6 +83,16 @@ describe('AppLayout', () => {
     expect(screen.queryByText('system ok')).not.toBeInTheDocument()
   })
 
+  it('shows an "Improvements" nav link pointing at /improvements', () => {
+    renderWithProviders(
+      <AppLayout>
+        <div>page content</div>
+      </AppLayout>,
+    )
+
+    expect(screen.getByRole('link', { name: 'Improvements' })).toHaveAttribute('href', '/improvements')
+  })
+
   it('logs out against POST /internal/auth/logout, clears the stored email, and navigates to /login', async () => {
     setStoredEmail('admin@documind.dev')
     fetchMock.mockResolvedValueOnce(emptyResponse(204))

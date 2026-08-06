@@ -257,6 +257,61 @@ describe('httpApiClient', () => {
     )
   })
 
+  it('getDislikedMessages GETs /internal/chat/dislikes with the range query param and returns the parsed array', async () => {
+    const messages = [
+      {
+        id: 'msg-1',
+        content: 'reply text',
+        questionContent: 'question text',
+        dislikedAt: '2026-08-01T00:00:00.000Z',
+        createdAt: '2026-07-31T23:59:00.000Z',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(messages))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getDislikedMessages('7days')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/chat/dislikes?range=7days',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(messages)
+  })
+
+  it('getNoAnswerMessages GETs /internal/chat/no-answer-messages with the range query param and returns the parsed array', async () => {
+    const messages = [
+      {
+        id: 'msg-2',
+        content: 'reply text',
+        questionContent: 'question text',
+        createdAt: '2026-07-31T23:59:00.000Z',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(messages))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getNoAnswerMessages('day')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/chat/no-answer-messages?range=day',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(messages)
+  })
+
+  it('dismissNoAnswerMessage POSTs to the dismiss-no-answer endpoint and resolves on 204', async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(204))
+
+    const { httpApiClient } = await import('./httpClient')
+    await httpApiClient.dismissNoAnswerMessage('msg-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/chat/messages/msg-1/dismiss-no-answer',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('getTopMatchingChunks POSTs the question and returns the parsed matches', async () => {
     const matches = [
       { chunkId: 'chunk-1', documentId: 'doc-1', filename: 'guide.pdf', content: 'excerpt one', matchPercent: 87.3 },
@@ -290,6 +345,84 @@ describe('httpApiClient', () => {
       expect.objectContaining({ method: 'GET' }),
     )
     expect(result).toEqual(events)
+  })
+
+  it('startAnalysisRun POSTs /internal/analysis/reports and returns the parsed summary', async () => {
+    const summary = {
+      id: 'analysis-1',
+      status: 'running',
+      startedAt: '2026-08-06T00:00:00.000Z',
+      completedAt: null,
+      startedByEmail: 'admin@documind.dev',
+    }
+    fetchMock.mockResolvedValueOnce(jsonResponse(summary, 201))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.startAnalysisRun()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(result).toEqual(summary)
+  })
+
+  it('listAnalysisReports GETs /internal/analysis/reports and returns the parsed array', async () => {
+    const reports = [
+      {
+        id: 'analysis-1',
+        status: 'completed',
+        startedAt: '2026-08-06T00:00:00.000Z',
+        completedAt: '2026-08-06T00:02:00.000Z',
+        startedByEmail: 'admin@documind.dev',
+      },
+    ]
+    fetchMock.mockResolvedValueOnce(jsonResponse(reports))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.listAnalysisReports()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(reports)
+  })
+
+  it('getAnalysisReport GETs /internal/analysis/reports/{id} and returns the parsed detail', async () => {
+    const detail = {
+      id: 'abc',
+      status: 'completed',
+      startedAt: '2026-08-06T00:00:00.000Z',
+      completedAt: '2026-08-06T00:02:00.000Z',
+      startedByEmail: 'admin@documind.dev',
+      gapAnalysis: 'Some themes worth documenting.',
+      conflicts: [],
+      totalTokens: 123,
+      errorDetail: null,
+    }
+    fetchMock.mockResolvedValueOnce(jsonResponse(detail))
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.getAnalysisReport('abc')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports/abc',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(result).toEqual(detail)
+  })
+
+  it('deleteAnalysisReport DELETEs /internal/analysis/reports/{id} and resolves on 204', async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(204))
+
+    const { httpApiClient } = await import('./httpClient')
+    await httpApiClient.deleteAnalysisReport('analysis-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports/analysis-1',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
   })
 
   it('throws a plain Error on an unexpected non-2xx response', async () => {

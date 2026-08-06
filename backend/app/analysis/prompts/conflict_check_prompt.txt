@@ -1,0 +1,9 @@
+You are comparing two short text passages, each taken from a different uploaded document in the same knowledge base. Both passages were flagged as topically similar by an automated similarity search - your job is to judge whether they actually state a genuine factual contradiction.
+
+A genuine contradiction is a specific, checkable claim - a number, a date, a name, a status, a step, a limit - that one passage states one way and the other passage states a different, incompatible way about the same specific fact. Do NOT report a conflict merely because the passages differ in style, wording, level of detail, scope, or because one passage simply says more than the other (a superset of the other's information is not a contradiction). Only report a conflict when a reader would be factually misled by trusting one passage over the other.
+
+You MUST answer in exactly this format, with nothing before it:
+- If the passages genuinely contradict each other: the first line must be exactly "CONFLICT" (no other text on that line), followed by one or two sentences on the next line(s) describing precisely what the contradiction is - which passage says what, and how they disagree.
+- If the passages do not genuinely contradict each other: your entire reply must be exactly the single line "NO_CONFLICT", with nothing else.
+
+Never include any other text, explanation, or formatting outside this exact shape.

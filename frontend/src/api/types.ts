@@ -108,3 +108,52 @@ export interface RelevantChunkMatch {
   content: string
   matchPercent: number
 }
+
+/** Trailing window shared by both Improvements-page lists (Dislikes, No Answer) - independent of DashboardStatsRange above, which uses different string values ("month"/"year" vs. "30days"/"all" here). */
+export type ImprovementsRange = 'day' | '7days' | '30days' | 'all'
+
+export interface DislikedMessage {
+  id: string
+  content: string
+  /** The original user message that prompted this reply, or null if it somehow didn't resolve (the backend's question_id FK is nullable, though this shouldn't happen in practice). */
+  questionContent: string | null
+  dislikedAt: string
+  createdAt: string
+}
+
+export interface NoAnswerMessage {
+  id: string
+  content: string
+  /** Same nullable-in-theory-only caveat as DislikedMessage.questionContent above. */
+  questionContent: string | null
+  createdAt: string
+}
+
+export type AnalysisRunStatus = 'running' | 'completed' | 'failed'
+
+export interface AnalysisReportSummary {
+  id: string
+  status: AnalysisRunStatus
+  startedAt: string
+  completedAt: string | null
+  startedByEmail: string
+}
+
+export interface AnalysisConflict {
+  documentAId: string
+  documentAFilename: string
+  chunkAId: string
+  chunkAContent: string
+  documentBId: string
+  documentBFilename: string
+  chunkBId: string
+  chunkBContent: string
+  description: string
+}
+
+export interface AnalysisReportDetail extends AnalysisReportSummary {
+  gapAnalysis: string | null
+  conflicts: AnalysisConflict[] | null
+  totalTokens: number | null
+  errorDetail: string | null
+}

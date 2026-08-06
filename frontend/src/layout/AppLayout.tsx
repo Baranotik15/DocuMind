@@ -6,21 +6,24 @@ import { AppShell, Box, Button, Group, Stack, Text, Title } from '@mantine/core'
 import { NavLink, useNavigate } from 'react-router-dom'
 
 import classes from './AppLayout.module.css'
+import { NavChatIcon, NavImprovementsIcon, NavLogsIcon, NavRelevanceIcon, NavUploadIcon } from './NavIcons'
 import { apiClient } from '../api/client'
 import { clearStoredEmail, getStoredEmail } from '../utils/authStorage'
 
 interface NavItem {
   to: string
   label: string
+  icon: JSX.Element
 }
 
 // No standalone "Chunks" tab - chunk review/editing opens per-document from
 // the Upload page's edit (pencil) action instead, see UploadPage.tsx.
 const NAV_ITEMS: NavItem[] = [
-  { to: '/upload', label: 'Upload' },
-  { to: '/chat', label: 'Chat' },
-  { to: '/relevance', label: 'Relevance Preview' },
-  { to: '/dashboard', label: 'Logs & Stats' },
+  { to: '/upload', label: 'Upload', icon: <NavUploadIcon /> },
+  { to: '/chat', label: 'Chat', icon: <NavChatIcon /> },
+  { to: '/relevance', label: 'Relevance Preview', icon: <NavRelevanceIcon /> },
+  { to: '/dashboard', label: 'Logs & Stats', icon: <NavLogsIcon /> },
+  { to: '/improvements', label: 'Improvements', icon: <NavImprovementsIcon /> },
 ]
 
 /**
@@ -122,7 +125,17 @@ export function AppLayout({ children }: AppLayoutProps) {
       </AppShell.Header>
 
       <AppShell.Navbar p="md" className={classes.navbar} aria-label="Main navigation">
-        <Stack gap={4}>
+        <Stack gap={6}>
+          {/* Small uppercase section label above the nav list - same
+              size/weight/tracking treatment as DashboardPage.tsx's StatCard
+              labels (size="xs" fw={600} tt="uppercase" c="dimmed", 0.04em
+              letter-spacing), reused here for a consistent "section label"
+              convention across the app. Purely a structural/orientation cue,
+              not interactive, so it's plain text content rather than a
+              real heading element. */}
+          <Text size="xs" fw={600} tt="uppercase" c="dimmed" px="xs" pb={2} style={{ letterSpacing: '0.04em' }}>
+            Workspace
+          </Text>
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
@@ -136,7 +149,8 @@ export function AppLayout({ children }: AppLayoutProps) {
                 backgroundColor: isActive ? 'rgba(10, 14, 26, 0.35)' : 'transparent',
               })}
             >
-              {item.label}
+              {item.icon}
+              <span>{item.label}</span>
             </NavLink>
           ))}
         </Stack>

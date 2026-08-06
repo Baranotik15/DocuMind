@@ -58,7 +58,7 @@ def test_build_document_event_detail_uses_format_file_size_for_the_second_line()
 def test_build_document_event_detail_with_token_count_adds_a_third_line() -> None:
     assert (
         build_document_event_detail("x.txt", 1024, 500)
-        == "filename = x.txt\nfilesize = 1.0 KB\ntokens = 500"
+        == "filename = x.txt\nfilesize = 1.0 KB\ntokens spend = 500"
     )
 
 

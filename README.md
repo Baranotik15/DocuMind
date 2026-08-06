@@ -37,6 +37,7 @@ shows pipeline event logs, usage stats, and a 3D visualization of chunk
 embeddings.
 
 <p align="center">
+  <a href="#-features">Features</a> ·
   <a href="#-preview">Preview</a> ·
   <a href="#-tech-stack">Tech stack</a> ·
   <a href="#-architecture">Architecture</a> ·
@@ -45,6 +46,19 @@ embeddings.
   <a href="#-project-structure">Project structure</a> ·
   <a href="#-getting-started">Getting started</a>
 </p>
+
+---
+
+<a id="-features"></a>
+
+## ✨ Features
+
+- **📥 Ingest, don't just store** — drop in a PDF, DOCX, or Markdown file and it's parsed, split into paragraph-sized chunks, and embedded automatically in the background — no manual formatting step first.
+- **✂️ Nothing ships blind** — every chunk is human-reviewable and editable, with draggable boundaries between chunks, before any of it ever reaches the vector index. A bad split gets fixed before it can become a bad answer.
+- **💬 Answers grounded in your own words** — chat retrieves context straight from the documents you uploaded via pgvector similarity search, not from the model's imagination.
+- **🎯 See the retrieval before you trust it** — the Relevance Preview page runs the same retrieval step the chat uses and shows exactly which chunks a question would pull back and how closely each one scores, no LLM call required.
+- **📊 A dashboard that actually watches the pipeline** — a full event log, calendar-aligned usage charts, a live 3D map of how your chunks cluster in embedding space, and OpenAI spend broken down to the token.
+- **🔎 Turns failure into a to-do list** — the Improvements tab quietly tracks every disliked reply and every "I don't know" the bot gives, then an AI-powered pass reads that history and writes a plain-language gap analysis of what your documentation is missing, plus flags places where two documents flatly contradict each other.
 
 ---
 
@@ -63,6 +77,14 @@ embeddings.
 | Dashboard | Logs |
 |---|---|
 | ![Dashboard](docs/images/dashboard.png) | ![Logs page](docs/images/logs.png) |
+
+| Chunk Relevance Preview |
+|---|
+| ![Chunk Relevance Preview page](docs/images/relevance.png) |
+
+| Improvements — Lists | Improvements — AI Analysis |
+|---|---|
+| ![Improvements page, Lists tab](docs/images/improvements-list.png) | ![Improvements page, Analysis tab](docs/images/improvements-analysis.png) |
 
 ---
 
@@ -136,6 +158,16 @@ organization-level spend/token usage panel.
 A `getTopMatchingChunks`/`top-chunks` endpoint exposes the same retrieval
 step directly (a "Relevance Preview" page) for inspecting semantic search
 results without going through the LLM.
+
+Every disliked chat reply and every reply where the model reports the
+answer isn't in the documentation is tracked (`chat_messages.disliked` /
+`no_answer_found`) and surfaced on the Improvements page. From there, an
+analysis run (`analysis_reports`, dispatched through the same Celery/Redis
+path as ingestion) sends the accumulated failing questions to the LLM for
+a plain-language **documentation gap analysis**, and separately runs a
+**conflict-detection** pass over candidate chunk pairs (typically across
+two different documents) to flag ones whose content actually contradicts
+each other.
 
 > **Note:** the admin panel requires logging in — see
 > [Authentication](#-authentication) below. Session-based, not
@@ -213,6 +245,17 @@ below, grouped by module; all paths are prefixed with `/internal` except
 | `GET` | `/chat/messages` | List chat history |
 | `POST` | `/chat/messages/{id}/dislike` | Toggle dislike on a message |
 | `POST` | `/chat/top-chunks` | Relevance preview - top-5 matching chunks, no LLM call |
+| `GET` | `/chat/dislikes` | Every currently-disliked message (query: `range`) |
+| `GET` | `/chat/no-answer-messages` | Every message where the model reported no answer was found (query: `range`) |
+| `POST` | `/chat/messages/{id}/dismiss-no-answer` | Clear the no-answer flag on a message |
+
+**Analysis**
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/analysis/reports` | Start a documentation gap-analysis + conflict-detection run |
+| `GET` | `/analysis/reports` | List all analysis runs |
+| `GET` | `/analysis/reports/{id}` | One run's full detail (gap analysis text, conflicts, token count) |
+| `DELETE` | `/analysis/reports/{id}` | Delete a run |
 
 **Dashboard**
 | Method | Path | Description |
@@ -250,7 +293,10 @@ DocuMind/
 │   │   │                  the parse->chunk->embed pipeline, its Celery task
 │   │   ├── chunks/        chunk router, splitting, embedding, vectors,
 │   │   │                  similarity retrieval
-│   │   ├── chat/          messages, dislike, top-chunks, reply generation
+│   │   ├── chat/          messages, dislike + no-answer tracking,
+│   │   │                  top-chunks, reply generation
+│   │   ├── analysis/      AI documentation gap analysis + cross-document
+│   │   │                  conflict detection, its Celery task
 │   │   ├── dashboard_events/  dashboard_events table CRUD
 │   │   ├── dashboard/     stats/chunk-graph/openai-spend (no single
 │   │   │                  owning table - kept separate from the above)
@@ -263,7 +309,8 @@ DocuMind/
 │   └── tests/
 ├── frontend/
 │   └── src/
-│       ├── pages/         Upload, Chunk review, Chat, Relevance, Dashboard
+│       ├── pages/         Upload, Chunk review, Chat, Relevance, Dashboard,
+│       │                  Improvements
 │       └── api/           ApiClient (real HTTP client + offline mock)
 ├── docker-compose.yml
 └── .github/workflows/     CI (backend-ci.yml, frontend-ci.yml)

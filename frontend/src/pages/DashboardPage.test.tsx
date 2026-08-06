@@ -74,6 +74,13 @@ const events: DashboardEvent[] = [
     detail: 'release-plan.md chunking started.',
     userEmail: null,
   },
+  {
+    id: 'event-5',
+    type: 'analysis.run_completed',
+    timestamp: '2026-01-01T00:04:00.000Z',
+    detail: 'Documentation analysis completed - 842 tokens used.',
+    userEmail: 'admin@documind.dev',
+  },
 ]
 
 // Timezone-safe conversion from an ISO instant to the local date/time parts
@@ -160,28 +167,27 @@ describe('DashboardPage', () => {
   it('lists all seeded dashboard events with their type and detail', async () => {
     renderWithProviders(<DashboardPage />)
 
-    // Stats is the default tab now, so switch to Logs first to reach the table.
+    // Stats is the default tab now, so switch to Logs first to reach the
+    // card list.
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
+    await screen.findByTestId('logs-event-list')
 
-    // The new "events by type" bar visualization also renders each event
-    // `type` string as a bar label, so `type` values now appear twice on the
-    // page (once as a bar label, once as a table cell) - queries are scoped
-    // to the detail table (the same element/assertion as before, just
-    // disambiguated) rather than the whole document. `detail` sentences
-    // remain unique to the table, so those queries are unchanged.
-    const table = await screen.findByRole('table')
-
-    expect(await within(table).findByText('Upload Document')).toBeInTheDocument()
+    expect(await screen.findByText('Upload Document')).toBeInTheDocument()
     expect(await screen.findByText('onboarding-notes.docx was uploaded.')).toBeInTheDocument()
 
     // 'document.chunked' isn't a real backend event type (this fixture's
     // own placeholder) - not in EVENT_TYPE_LABELS, so formatEventType falls
     // back to rendering it verbatim.
-    expect(await within(table).findByText('document.chunked')).toBeInTheDocument()
+    expect(await screen.findByText('document.chunked')).toBeInTheDocument()
     expect(await screen.findByText('architecture-guide.pdf was split into 3 chunks.')).toBeInTheDocument()
 
-    expect(await within(table).findByText('Rechunk Document — Started')).toBeInTheDocument()
+    expect(await screen.findByText('Rechunk Document — Started')).toBeInTheDocument()
     expect(await screen.findByText('release-plan.md chunking started.')).toBeInTheDocument()
+
+    // 'analysis.*' events (from the Documentation Analysis feature) also
+    // belong on the Logs tab, alongside 'document.*' - not just the latter.
+    expect(await screen.findByText('Documentation Analysis — Completed')).toBeInTheDocument()
+    expect(await screen.findByText('Documentation analysis completed - 842 tokens used.')).toBeInTheDocument()
   })
 
   it('excludes non-document events (e.g. chat.message_sent) from the Logs view', async () => {
@@ -202,35 +208,35 @@ describe('DashboardPage', () => {
     expect(statsButton).toHaveAttribute('aria-pressed', 'true')
     expect(logsButton).toHaveAttribute('aria-pressed', 'false')
     expect(await screen.findByText('Total Documents')).toBeInTheDocument()
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('logs-event-list')).not.toBeInTheDocument()
   })
 
-  it('switching to the Logs tab shows the events table and hides stats, and back again', async () => {
+  it('switching to the Logs tab shows the events list and hides stats, and back again', async () => {
     renderWithProviders(<DashboardPage />)
     await screen.findByText('Total Documents')
 
     fireEvent.click(screen.getByRole('button', { name: 'Logs' }))
 
     expect(screen.queryByText('Total Documents')).not.toBeInTheDocument()
-    expect(await screen.findByRole('table')).toBeInTheDocument()
+    expect(await screen.findByTestId('logs-event-list')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Logs' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Stats' })).toHaveAttribute('aria-pressed', 'false')
 
     fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
 
     expect(await screen.findByText('Total Documents')).toBeInTheDocument()
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('logs-event-list')).not.toBeInTheDocument()
   })
 
   it('remembers the previously selected tab across remounts', async () => {
     const { unmount } = renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
-    await screen.findByRole('table')
+    await screen.findByTestId('logs-event-list')
     unmount()
 
     renderWithProviders(<DashboardPage />)
 
-    expect(await screen.findByRole('table')).toBeInTheDocument()
+    expect(await screen.findByTestId('logs-event-list')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Logs' })).toHaveAttribute('aria-pressed', 'true')
   })
 
@@ -280,7 +286,7 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
 
-    await screen.findByRole('table')
+    await screen.findByTestId('logs-event-list')
     expect(screen.queryByText(/page \d+ of \d+/i)).not.toBeInTheDocument()
   })
 
@@ -303,6 +309,35 @@ describe('DashboardPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
 
     expect(await screen.findByText(longDetail)).toBeInTheDocument()
+  })
+
+  it('renders a raw SQL/exception detail line as plain text, not a mis-parsed key/value chip', async () => {
+    // Regression test for a live bug: a FAILED analysis event's own detail
+    // is the raw SQLAlchemy/asyncpg exception text, which routinely
+    // contains " = " itself (SQL JOIN/WHERE equality) - naively splitting
+    // on the first " = " in the line treated the entire multi-hundred-
+    // character SQL dump as one giant chip "key", rendering as a hugely
+    // distorted pill instead of small tags/plain text.
+    const sqlDetail =
+      '[SQL: SELECT c1.id FROM chunks AS c1 JOIN documents AS d1 ON d1.id = c1.document_id WHERE d1.status = $1]'
+    const sqlEvents: DashboardEvent[] = [
+      { id: 'event-1', type: 'analysis.run_failed', timestamp: '2026-01-01T00:00:00.000Z', detail: sqlDetail, userEmail: null },
+    ]
+    fetchMock.mockImplementation((url: string) => {
+      const body = url.endsWith('/internal/dashboard/chunk-graph')
+        ? { nodes: [] }
+        : url.endsWith('/internal/dashboard/events')
+          ? sqlEvents
+          : documents
+      return Promise.resolve({ ok: true, status: 200, json: async () => body } as Response)
+    })
+
+    renderWithProviders(<DashboardPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
+
+    // Renders as one plain text node, not split into a "key" (everything up
+    // to the first " = ") and a separate "value" chip.
+    expect(await screen.findByText(sqlDetail)).toBeInTheDocument()
   })
 
   it('filters the Logs table by text match in Detail, only once Search is clicked', async () => {
@@ -341,33 +376,34 @@ describe('DashboardPage', () => {
     expect(screen.queryByText('onboarding-notes.docx was uploaded.')).not.toBeInTheDocument()
   })
 
-  it('sorts by clicking the Timestamp header, cycling unsorted -> newest -> oldest -> unsorted', async () => {
+  it('sorts via the Sort by time button, cycling unsorted -> newest -> oldest -> unsorted', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
-    const table = await screen.findByRole('table')
+    await screen.findByTestId('logs-event-list')
 
-    // Type is the 3rd column (ID, Timestamp, Type, Detail) - read by
-    // position rather than by text match, since some fixture Detail
-    // sentences ("...a new document.") happen to contain other rows' Type
-    // values ("document.*") as substrings.
-    const firstRowTypeCell = () => within(within(table).getAllByRole('row')[1]).getAllByRole('cell')[2]
-    const timestampHeaderCell = within(table).getAllByRole('columnheader')[1]
-    const timestampHeaderButton = screen.getByRole('button', { name: 'Timestamp' })
+    // The event's own Type text, read off the first card in the currently
+    // rendered order - not a fixed DOM position (unlike the old table's own
+    // row/cell indices), since each event is now its own card.
+    const firstCardType = () => within(screen.getAllByTestId('log-event-card')[0]).getByText(/^(Upload Document|Documentation Analysis — Completed)$/)
+    const sortButton = () => screen.getByRole('button', { name: /sort by time/i })
 
-    // Unsorted (default): this fixture's own fetch/insertion order.
-    expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'none')
-    expect(firstRowTypeCell()).toHaveTextContent('Upload Document')
+    // Unsorted (default): this fixture's own fetch/insertion order. The
+    // accessible name (not just the arrow icon, which is aria-hidden) spells
+    // out the current state, so it doubles as the assertion target here.
+    expect(sortButton()).toHaveAccessibleName('Sort by time (currently unsorted)')
+    expect(firstCardType()).toHaveTextContent('Upload Document')
 
-    fireEvent.click(timestampHeaderButton)
-    expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'descending')
-    expect(firstRowTypeCell()).toHaveTextContent('Rechunk Document — Started')
+    fireEvent.click(sortButton())
+    expect(sortButton()).toHaveAccessibleName('Sort by time (currently newest first)')
+    // event-5 (analysis.run_completed) is now the fixture's newest event.
+    expect(firstCardType()).toHaveTextContent('Documentation Analysis — Completed')
 
-    fireEvent.click(timestampHeaderButton)
-    expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'ascending')
-    expect(firstRowTypeCell()).toHaveTextContent('Upload Document')
+    fireEvent.click(sortButton())
+    expect(sortButton()).toHaveAccessibleName('Sort by time (currently oldest first)')
+    expect(firstCardType()).toHaveTextContent('Upload Document')
 
-    fireEvent.click(timestampHeaderButton)
-    expect(timestampHeaderCell).toHaveAttribute('aria-sort', 'none')
+    fireEvent.click(sortButton())
+    expect(sortButton()).toHaveAccessibleName('Sort by time (currently unsorted)')
   })
 
   it('filters the Logs table by a From/To date-time range', async () => {
@@ -399,7 +435,7 @@ describe('DashboardPage', () => {
     expect(screen.queryByText('Upload Document')).not.toBeInTheDocument()
   })
 
-  it('shows a "no matching entries" message instead of an empty table when the filters match nothing', async () => {
+  it('shows a "no matching entries" message instead of an empty list when the filters match nothing', async () => {
     renderWithProviders(<DashboardPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Logs' }))
     await screen.findByText('Upload Document')
@@ -410,7 +446,7 @@ describe('DashboardPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
 
     expect(await screen.findByText(/no matching entries found/i)).toBeInTheDocument()
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('logs-event-list')).not.toBeInTheDocument()
   })
 
   it('clears search, sort, and date-range filters via the Clear filters button', async () => {

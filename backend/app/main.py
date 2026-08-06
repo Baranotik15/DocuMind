@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analysis.router import router as analysis_router
 from app.auth.dependencies import require_session
 from app.auth.router import router as auth_router
 from app.chat.router import router as chat_router
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
         dashboard_router,
         dashboard_events_router,
         smoke_jobs_router,
+        analysis_router,
     ):
         app.include_router(router, prefix="/internal", dependencies=[Depends(require_session)])
 
