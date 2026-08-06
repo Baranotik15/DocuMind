@@ -203,3 +203,48 @@ def test_get_analysis_report_without_session_cookie_returns_401() -> None:
 
     assert response.status_code == 401
     assert response.json() == {"detail": "not_authenticated"}
+
+
+def test_delete_analysis_report_returns_204_and_removes_it_from_the_list(
+    client: TestClient,
+) -> None:
+    report_ids: list[str] = []
+    try:
+        report_id = _insert_report(
+            status="completed",
+            started_by_email=f"delete-{uuid.uuid4()}@example.com",
+            completed_at=datetime.now(timezone.utc),
+        )
+        report_ids.append(report_id)
+
+        response = client.delete(f"/internal/analysis/reports/{report_id}")
+
+        assert response.status_code == 204
+        assert response.content == b""
+
+        list_response = client.get("/internal/analysis/reports")
+        assert list_response.status_code == 200
+        ids_in_list = [item["id"] for item in list_response.json()]
+        assert report_id not in ids_in_list
+    finally:
+        _cleanup_reports(report_ids)
+
+
+def test_delete_analysis_report_unknown_id_returns_404(client: TestClient) -> None:
+    response = client.delete(f"/internal/analysis/reports/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+
+
+def test_delete_analysis_report_malformed_id_returns_422_not_500(client: TestClient) -> None:
+    response = client.delete("/internal/analysis/reports/not-a-uuid")
+
+    assert response.status_code == 422
+
+
+def test_delete_analysis_report_without_session_cookie_returns_401() -> None:
+    with TestClient(app) as bare_client:
+        response = bare_client.delete(f"/internal/analysis/reports/{uuid.uuid4()}")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "not_authenticated"}

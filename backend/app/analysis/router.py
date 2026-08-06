@@ -112,3 +112,30 @@ async def get_analysis_report(
     if row is None:
         raise HTTPException(status_code=404, detail=_ANALYSIS_REPORT_NOT_FOUND_ERROR)
     return _report_detail(row)
+
+
+@router.delete("/analysis/reports/{report_id}", status_code=204)
+async def delete_analysis_report(
+    report_id: UUID, session: AsyncSession = Depends(get_session)
+) -> None:
+    """Permanently deletes one analysis_reports row. 404 if report_id
+    doesn't exist.
+
+    No busy-guard on status == 'running', unlike documents/router.py's
+    delete_document (which blocks while status == 'chunking'): a report
+    mid-run has nothing else writing to related tables that deleting it
+    would corrupt - the Celery task's own later UPDATE on a since-deleted
+    row is just a harmless no-op.
+
+    `report_id` is typed as UUID (not str) so a malformed id 422s via
+    FastAPI's own path-param validation before ever reaching the DB, same
+    convention as get_analysis_report/delete_document."""
+    row = (
+        await session.execute(
+            text("DELETE FROM analysis_reports WHERE id = :report_id RETURNING id"),
+            {"report_id": str(report_id)},
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=_ANALYSIS_REPORT_NOT_FOUND_ERROR)
+    await session.commit()
