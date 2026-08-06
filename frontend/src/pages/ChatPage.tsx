@@ -119,12 +119,21 @@ function findTopmostVisibleMessageId(list: HTMLElement): string | null {
   return null
 }
 
-// Both the message list and the input bar share this exact max-width rather
-// than each picking its own ratio of the surrounding flex area. Widened from
-// an initial 50rem (chatgpt.com's own ~768px column) per explicit request,
-// in two live-tested passes - that read as too narrow, with messages cramped
-// relative to the available page width.
-const CHAT_COLUMN_MAX_WIDTH = '72rem'
+// The message list's own max-width - wider than the input bar's own
+// CHAT_INPUT_MAX_WIDTH below (per explicit request: more text visible per
+// line in the message column, while the input pill itself stays a
+// narrower, more input-box-shaped element rather than stretching edge to
+// edge under the wider message column). Widened from an initial 50rem
+// (chatgpt.com's own ~768px column) per an earlier explicit request, in
+// two live-tested passes - that read as too narrow, with messages cramped
+// relative to the available page width; this pass widens it further still.
+const CHAT_COLUMN_MAX_WIDTH = '90rem'
+
+// The input bar's own, narrower max-width - deliberately decoupled from
+// CHAT_COLUMN_MAX_WIDTH above (they used to share one constant) so the
+// message column can be wide while the input pill stays compact, centered
+// underneath it.
+const CHAT_INPUT_MAX_WIDTH = '60rem'
 
 /** Simple send-arrow glyph - no icon library installed (see design-principles.md). */
 function SendIcon(): JSX.Element {
@@ -400,6 +409,13 @@ export function ChatPage(): JSX.Element {
       content,
       disliked: false,
     }
+    // Sending a message always jumps to the bottom, even if the viewer had
+    // scrolled up into older history - per explicit request, unlike an
+    // incoming reply (which only auto-scrolls if they were already near the
+    // bottom, see the auto-scroll effect above). Forced true here BEFORE
+    // setMessages, since that effect reads this ref the next time it runs
+    // (triggered by the messages update right below).
+    isNearBottomRef.current = true
     setMessages((current) => [...current, optimisticUserMessage])
     setDraft('')
     setSendFailed(false)
@@ -478,12 +494,12 @@ export function ChatPage(): JSX.Element {
         </Stack>
       </Modal>
 
-      {/* Shared centered column: the message list, the inline error, and the
-          input bar all live inside this one fixed-max-width wrapper (see
-          CHAT_COLUMN_MAX_WIDTH) so their proportions match - one centered
-          column - instead of the list floating pills asymmetrically indented
-          by a percentage of the viewport while the input bar used a
-          different ratio of the flex area. */}
+      {/* Centered column at CHAT_COLUMN_MAX_WIDTH for the message list and
+          the inline error - the input bar below now deliberately opts out
+          of this width via its own narrower CHAT_INPUT_MAX_WIDTH + its own
+          mx="auto" (per explicit request: a wide message column with a
+          more compact, centered input pill underneath, not the same width
+          for both as this used to be). */}
       <Stack gap="md" w="100%" maw={CHAT_COLUMN_MAX_WIDTH} mx="auto" style={{ flex: 1, minHeight: 0 }}>
         {/* The message list's scrollbar is styled by the app-wide rule in
             global.css (applies to every scrollable element automatically) -
@@ -611,6 +627,8 @@ export function ChatPage(): JSX.Element {
           p="xs"
           bg="var(--doc-surface)"
           w="100%"
+          maw={CHAT_INPUT_MAX_WIDTH}
+          mx="auto"
           style={{ border: '1px solid var(--doc-hairline)', flexShrink: 0 }}
           my="md"
         >
