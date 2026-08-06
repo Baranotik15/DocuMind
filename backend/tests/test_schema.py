@@ -29,6 +29,8 @@ EXPECTED_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
         "content": ("text", "NO"),
         "disliked": ("boolean", "NO"),
         "created_at": ("timestamp with time zone", "NO"),
+        "channel": ("text", "NO"),
+        "external_identity": ("text", "YES"),
     },
     "dashboard_events": {
         "id": ("uuid", "NO"),
@@ -200,12 +202,21 @@ def test_chat_message_and_dashboard_event_round_trip() -> None:
         session.commit()
 
         row = session.execute(
-            text("SELECT role, content, disliked FROM chat_messages WHERE id = :id"),
+            text(
+                "SELECT role, content, disliked, channel, external_identity "
+                "FROM chat_messages WHERE id = :id"
+            ),
             {"id": message_id},
         ).one()
         assert row.role == "user"
         assert row.content == "hello"
         assert row.disliked is False
+        # An INSERT that never mentions the `channel` column (the idiom
+        # every app.chat.router.send_message insert uses) picks up the
+        # migration's own server_default rather than erroring against the
+        # NOT NULL constraint.
+        assert row.channel == "admin"
+        assert row.external_identity is None
 
         event_id = session.execute(
             text(

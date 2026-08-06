@@ -12,6 +12,7 @@ from app.dashboard.router import router as dashboard_router
 from app.dashboard_events.router import router as dashboard_events_router
 from app.db.session import get_session
 from app.documents.router import router as documents_router
+from app.slack.router import router as slack_router
 from app.smoke_jobs.router import router as smoke_jobs_router
 
 
@@ -27,6 +28,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth_router, prefix="/internal")
+    # Slack calls this endpoint directly (webhook), with no admin session
+    # cookie - it authenticates via its own request-signature scheme
+    # instead (see app/slack/signature.py), so it's mounted the same way as
+    # auth_router above: outside/before the require_session loop below.
+    app.include_router(slack_router, prefix="/internal")
     # Every other router requires a session - looped rather than six
     # near-identical include_router(..., prefix="/internal",
     # dependencies=[Depends(require_session)]) calls, so a router added
