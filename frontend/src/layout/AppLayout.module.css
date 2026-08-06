@@ -3,9 +3,15 @@
  * sparkOrange mark (border + glow) are applied per-item via inline style
  * (they depend on react-router's `isActive`) - this stylesheet only owns the
  * structural shape and the hover state, which inline styles can't express.
+ * `display: flex` (rather than the previous `display: block`) lays out each
+ * item's leading icon and text label side by side, vertically centered -
+ * a pure layout change that doesn't touch the active/hover color logic
+ * above or below.
  */
 .navLink {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   padding: 12px 16px;
   border-radius: var(--mantine-radius-md);
   border: 1px solid transparent;
@@ -19,11 +25,21 @@
 }
 
 .navLink:hover {
-  background-color: rgba(232, 237, 250, 0.08);
+  /* A translucent signalBlue tint - the same technique/opacity already used
+     for ChunkPreviewPage.module.css's boundary-handle hover
+     (`rgba(61, 107, 255, 0.08)`) - reads as more "neon operator console"
+     than a flat neutral gray tint would. */
+  background-color: rgba(61, 107, 255, 0.08);
   border-color: var(--mantine-color-sparkOrange-7);
 }
 
-/* Solid blue-shaded navbar - no decorative texture (removed per feedback:
+/* Icons never shrink to make room for a long label at narrow widths - the
+   label wraps/truncates first, the glyph stays a fixed 20x20 square. */
+.navLink svg {
+  flex-shrink: 0;
+}
+
+/* Solid surface-shaded navbar - no decorative texture (removed per feedback:
    the dot-grid pattern read as visual noise rather than ambient texture). */
 .navbar {
   background-color: var(--doc-surface);
