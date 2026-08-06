@@ -413,6 +413,18 @@ describe('httpApiClient', () => {
     expect(result).toEqual(detail)
   })
 
+  it('deleteAnalysisReport DELETEs /internal/analysis/reports/{id} and resolves on 204', async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(204))
+
+    const { httpApiClient } = await import('./httpClient')
+    await httpApiClient.deleteAnalysisReport('analysis-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/internal/analysis/reports/analysis-1',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+
   it('throws a plain Error on an unexpected non-2xx response', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'boom' }, 500))
 

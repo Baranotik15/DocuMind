@@ -421,4 +421,12 @@ export const mockApiClient: ApiClient = {
     }
     return { ...report }
   },
+
+  async deleteAnalysisReport(reportId) {
+    const index = analysisReports.findIndex((candidate) => candidate.id === reportId)
+    if (index === -1) {
+      throw new Error(`deleteAnalysisReport: no report found with id "${reportId}"`)
+    }
+    analysisReports.splice(index, 1)
+  },
 }

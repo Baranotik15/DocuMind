@@ -107,6 +107,18 @@ function analysisFetchImplementation(options: {
     if (url.includes('/internal/chat/no-answer-messages')) {
       return Promise.resolve(jsonResponse(noAnswerMessages))
     }
+    if (url.includes('/internal/analysis/reports/') && init?.method === 'DELETE') {
+      // Mutates options.reports in place (same "closures over mutable
+      // fixture state" idiom as onStart above) so a later GET reflects the
+      // deletion too, even though the component itself removes the row
+      // optimistically without waiting on a refetch.
+      const id = url.split('/internal/analysis/reports/')[1]
+      const index = options.reports.findIndex((report) => report.id === id)
+      if (index !== -1) {
+        options.reports.splice(index, 1)
+      }
+      return Promise.resolve(jsonResponse(null, 204))
+    }
     if (url.includes('/internal/analysis/reports/')) {
       const id = url.split('/internal/analysis/reports/')[1]
       return Promise.resolve(jsonResponse(options.details[id]))
@@ -398,6 +410,93 @@ describe('ImprovementsPage', () => {
 
       const linkB = screen.getByRole('link', { name: /onboarding-notes\.docx/i })
       expect(linkB).toHaveAttribute('href', '/upload/doc-2/chunks')
+    })
+
+    describe('deleting a report from the history sidebar', () => {
+      it("clicking a history card's delete icon opens a confirm modal without deleting anything or changing the selection", async () => {
+        fetchMock.mockImplementation(analysisFetchImplementation({ reports: [...analysisReports], details: { ...analysisReportDetails } }))
+
+        renderWithProviders(<ImprovementsPage />)
+        fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+        await screen.findByText('Consider documenting the refund policy in more detail.')
+
+        fireEvent.click(screen.getByRole('button', { name: `Delete report from ${formatDateTime(analysisReports[1].startedAt)}` }))
+
+        expect(await screen.findByText(/are you sure you want to delete this analysis report/i)).toBeInTheDocument()
+
+        // No DELETE call happened yet.
+        expect(fetchMock.mock.calls.some((args: unknown[]) => (args[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false)
+        // Selection is untouched - report 1's content is still showing.
+        expect(screen.getByText('Consider documenting the refund policy in more detail.')).toBeInTheDocument()
+        // Report 2 is still in the history list.
+        expect(screen.getByText(formatDateTime(analysisReports[1].startedAt))).toBeInTheDocument()
+      })
+
+      it('clicking Cancel in the confirm modal leaves the report in the history list', async () => {
+        fetchMock.mockImplementation(analysisFetchImplementation({ reports: [...analysisReports], details: { ...analysisReportDetails } }))
+
+        renderWithProviders(<ImprovementsPage />)
+        fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+        await screen.findByText('Consider documenting the refund policy in more detail.')
+
+        fireEvent.click(screen.getByRole('button', { name: `Delete report from ${formatDateTime(analysisReports[1].startedAt)}` }))
+        await screen.findByText(/are you sure you want to delete this analysis report/i)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+        await waitFor(() => {
+          expect(screen.queryByText(/are you sure you want to delete this analysis report/i)).not.toBeInTheDocument()
+        })
+        expect(fetchMock.mock.calls.some((args: unknown[]) => (args[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false)
+        expect(screen.getByText(formatDateTime(analysisReports[1].startedAt))).toBeInTheDocument()
+      })
+
+      it('confirming the modal calls DELETE on the right report and removes it from the history list', async () => {
+        const reports = [...analysisReports]
+        fetchMock.mockImplementation(analysisFetchImplementation({ reports, details: { ...analysisReportDetails } }))
+
+        renderWithProviders(<ImprovementsPage />)
+        fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+        await screen.findByText('Consider documenting the refund policy in more detail.')
+
+        fireEvent.click(screen.getByRole('button', { name: `Delete report from ${formatDateTime(analysisReports[1].startedAt)}` }))
+        await screen.findByText(/are you sure you want to delete this analysis report/i)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+        await waitFor(() => {
+          expect(screen.queryByText(formatDateTime(analysisReports[1].startedAt))).not.toBeInTheDocument()
+        })
+
+        const deleteCall = fetchMock.mock.calls.find((args: unknown[]) => (args[1] as RequestInit | undefined)?.method === 'DELETE')
+        expect(deleteCall).toBeDefined()
+        const [url] = deleteCall as [string, RequestInit]
+        expect(url).toBe(`http://localhost:8000/internal/analysis/reports/${analysisReports[1].id}`)
+
+        // Report 1 (untouched) is still in the list and still selected.
+        expect(screen.getByText(formatDateTime(analysisReports[0].startedAt))).toBeInTheDocument()
+        expect(screen.getByText('Consider documenting the refund policy in more detail.')).toBeInTheDocument()
+      })
+
+      it('deleting the currently selected report clears the stale content instead of leaving it visible', async () => {
+        const reports = [...analysisReports]
+        fetchMock.mockImplementation(analysisFetchImplementation({ reports, details: { ...analysisReportDetails } }))
+
+        renderWithProviders(<ImprovementsPage />)
+        fireEvent.click(screen.getByRole('button', { name: 'Analysis' }))
+        // Report 1 (newest) is selected by default.
+        await screen.findByText('Consider documenting the refund policy in more detail.')
+
+        fireEvent.click(screen.getByRole('button', { name: `Delete report from ${formatDateTime(analysisReports[0].startedAt)}` }))
+        await screen.findByText(/are you sure you want to delete this analysis report/i)
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+        await waitFor(() => {
+          expect(screen.queryByText('Consider documenting the refund policy in more detail.')).not.toBeInTheDocument()
+        })
+        // Its own history card is gone too.
+        expect(screen.queryByText(formatDateTime(analysisReports[0].startedAt))).not.toBeInTheDocument()
+      })
     })
   })
 })

@@ -48,6 +48,8 @@ export interface ApiClient {
   listAnalysisReports(): Promise<AnalysisReportSummary[]>
   /** GET /internal/analysis/reports/{reportId} - one report's full detail. */
   getAnalysisReport(reportId: string): Promise<AnalysisReportDetail>
+  /** DELETE /internal/analysis/reports/{reportId} - removes one past run from history. 204 on success, 404 if it's already gone. */
+  deleteAnalysisReport(reportId: string): Promise<void>
 }
 
 // Bound to the real HTTP-backed implementation. Page components always

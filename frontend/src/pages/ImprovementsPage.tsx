@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 
 import { useEffect, useState } from 'react'
 
-import { ActionIcon, Alert, Badge, Box, Button, Group, Loader, Paper, Stack, Text, Title, UnstyledButton } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Box, Button, Group, Loader, Modal, Paper, Stack, Text, Title, UnstyledButton } from '@mantine/core'
 import { Link } from 'react-router-dom'
 
 import { apiClient } from '../api/client'
@@ -326,6 +326,110 @@ function ConflictSide({
   )
 }
 
+/**
+ * Splits the gap-analysis report's plain-prose text into its own paragraphs
+ * (blank-line-separated, per gap_analysis_prompt.txt's own "plain prose and
+ * short lists" instruction) so each one can render as its own visual block
+ * below instead of one dense wall of text - works regardless of whether the
+ * model happened to number its findings or not, since it splits on
+ * paragraph breaks rather than parsing "1./2./3." list syntax specifically.
+ */
+function splitIntoParagraphs(text: string): string[] {
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0)
+}
+
+interface GapAnalysisBlockProps {
+  index: number
+  text: string
+}
+
+/** One paragraph of the gap-analysis report as its own card - a numbered badge (purely a visual "this is finding #N" cue, not tied to any structure the model is required to follow) plus the paragraph text, same left-accent-stripe card language as the Dislikes/No Answer panels' own entries (ImprovementsListPanel) and ConflictCard below. */
+function GapAnalysisBlock({ index, text }: GapAnalysisBlockProps): JSX.Element {
+  return (
+    <Paper
+      radius="lg"
+      p="md"
+      bg="var(--doc-bg)"
+      className={classes.entryCard}
+      style={{ border: '1px solid var(--doc-hairline)', borderLeft: '3px solid var(--mantine-color-sparkOrange-6)' }}
+    >
+      <Group align="flex-start" gap="sm" wrap="nowrap">
+        <Box
+          aria-hidden="true"
+          style={{
+            flexShrink: 0,
+            width: 24,
+            height: 24,
+            borderRadius: '50%',
+            backgroundColor: 'var(--mantine-color-sparkOrange-6)',
+            color: '#101B36',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        >
+          {index + 1}
+        </Box>
+        <Text style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{text}</Text>
+      </Group>
+    </Paper>
+  )
+}
+
+/** Trash-can glyph, same path data as UploadPage.tsx's own TrashIcon - this app doesn't currently export icons for cross-file reuse (unlike e.g. BotAvatar), so it's kept as a local copy here for the History sidebar's own per-report delete action below. */
+function TrashIcon(): JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  )
+}
+
+/** Checkmark glyph - same no-icon-library rationale as this app's other hand-rolled SVGs. Used only for the Conflicts section's own empty state below, as a positive ("all clear") cue rather than a plain dimmed sentence. */
+function CheckIcon(): JSX.Element {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  )
+}
+
+/** The Conflicts section's own empty state - teal (this app's "good/completed" accent, see ANALYSIS_STATUS_META) instead of a plain dimmed sentence, so "nothing wrong was found" reads as a positive result rather than an absence of content. */
+function NoConflictsFound(): JSX.Element {
+  return (
+    <Paper radius="lg" p="md" bg="var(--doc-bg)" style={{ border: '1px solid var(--doc-hairline)', borderLeft: '3px solid var(--mantine-color-teal-6)' }}>
+      <Group gap="sm" align="center" wrap="nowrap">
+        <Box
+          aria-hidden="true"
+          style={{
+            flexShrink: 0,
+            width: 32,
+            height: 32,
+            borderRadius: '50%',
+            backgroundColor: 'rgba(56, 217, 169, 0.16)',
+            color: 'var(--mantine-color-teal-4)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <CheckIcon />
+        </Box>
+        <Text fw={600}>No conflicts found in the documents.</Text>
+      </Group>
+    </Paper>
+  )
+}
+
 /** One detected cross-document conflict - both sides' chunk excerpts side by side, the LLM's own description of the contradiction, and a "view chunk" link per side into ChunkPreviewPage.tsx. */
 function ConflictCard({ conflict }: ConflictCardProps): JSX.Element {
   return (
@@ -353,6 +457,11 @@ function AnalysisTab(): JSX.Element {
   const [reports, setReports] = useState<AnalysisReportSummary[]>([])
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
   const [selectedReport, setSelectedReport] = useState<AnalysisReportDetail | null>(null)
+  // Set when a history card's own delete icon is clicked - opens the confirm
+  // Modal below without deleting anything yet, same "hold the target, only
+  // act on the modal's own confirm button" pattern as UploadPage.tsx's own
+  // deleteTarget/attemptDelete/handleConfirmDelete.
+  const [deleteTarget, setDeleteTarget] = useState<AnalysisReportSummary | null>(null)
   // True only for the brief window between clicking "Analyze with AI" and
   // the POST resolving - NOT the same as the selected report's own
   // status==='running' below, which covers the whole run's duration (the
@@ -447,6 +556,25 @@ function AnalysisTab(): JSX.Element {
     }
   }
 
+  // DELETE /internal/analysis/reports/{id}: 204 on success, 404 if it's
+  // already gone. Removes the row from local state immediately (optimistic,
+  // same convention as ImprovementsListPanel's own handleRemove above)
+  // rather than waiting on a refetch. If the deleted report was the one
+  // currently selected, its own selection is cleared too - otherwise the
+  // content area would keep showing that now-deleted report's stale detail.
+  async function attemptDelete(report: AnalysisReportSummary): Promise<void> {
+    await apiClient.deleteAnalysisReport(report.id)
+    setDeleteTarget(null)
+    setReports((current) => current.filter((candidate) => candidate.id !== report.id))
+    setSelectedReportId((current) => (current === report.id ? null : current))
+  }
+
+  function handleConfirmDelete(): void {
+    if (deleteTarget) {
+      void attemptDelete(deleteTarget)
+    }
+  }
+
   const isAnalyzeDisabled = isStarting || reports[0]?.status === 'running'
 
   let contentBody: JSX.Element
@@ -468,17 +596,16 @@ function AnalysisTab(): JSX.Element {
       <Stack gap="lg">
         <Stack gap="xs">
           <Title order={4}>Gap Analysis</Title>
-          <Text style={{ whiteSpace: 'pre-wrap' }}>{selectedReport.gapAnalysis}</Text>
+          <Stack gap="sm">
+            {splitIntoParagraphs(selectedReport.gapAnalysis ?? '').map((paragraph, index) => (
+              <GapAnalysisBlock key={index} index={index} text={paragraph} />
+            ))}
+          </Stack>
         </Stack>
         <Stack gap="xs">
-          <Group gap="xs" align="center">
-            <Title order={4}>Conflicts</Title>
-            <Badge color="alertMagenta" variant="light" radius="sm">
-              Total: {conflicts.length}
-            </Badge>
-          </Group>
+          <Title order={4}>Conflicts</Title>
           {conflicts.length === 0 ? (
-            <Text c="dimmed">No cross-document conflicts were found.</Text>
+            <NoConflictsFound />
           ) : (
             <Stack gap="sm">
               {conflicts.map((conflict, index) => (
@@ -496,79 +623,121 @@ function AnalysisTab(): JSX.Element {
   }
 
   return (
-    <Paper
-      radius="lg"
-      p="xl"
-      bg="var(--doc-surface)"
-      withBorder
-      style={{ boxShadow: '0 24px 48px -24px rgba(0, 0, 0, 0.55)', height: PANEL_AREA_HEIGHT, display: 'flex', overflow: 'hidden' }}
-    >
-      <Group align="stretch" gap="xl" wrap="nowrap" style={{ flex: 1, minHeight: 0 }}>
-        {/* History sidebar - narrower than the content area beside it, its
-            own independent scroll area so a long run history never pushes
-            the content area (or the page) taller. */}
-        <Stack gap="sm" style={{ width: 280, flexShrink: 0, height: '100%', overflowY: 'auto' }}>
-          <Group justify="space-between" align="center" wrap="nowrap">
-            <Title order={4}>History</Title>
-            <Badge color="signalBlue" variant="light" radius="sm">
-              Total: {reports.length}
-            </Badge>
-          </Group>
-          {reports.length === 0 ? (
-            <Text c="dimmed" size="sm">
-              No runs yet.
-            </Text>
-          ) : (
-            reports.map((report) => {
-              const meta = ANALYSIS_STATUS_META[report.status]
-              const isSelected = report.id === selectedReportId
-              return (
-                <UnstyledButton key={report.id} onClick={() => setSelectedReportId(report.id)} style={{ width: '100%' }}>
-                  <Paper
-                    radius="md"
-                    p="sm"
-                    bg="var(--doc-bg)"
-                    className={classes.entryCard}
-                    style={{ border: `1px solid ${isSelected ? 'var(--mantine-color-sparkOrange-6)' : 'var(--doc-hairline)'}` }}
-                  >
-                    <Stack gap={4}>
-                      <Text size="sm" fw={600}>
-                        {formatDateTime(report.startedAt)}
-                      </Text>
-                      <Text size="xs" c="dimmed" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {report.startedByEmail}
-                      </Text>
-                      <Badge color={meta.color} variant="light" radius="sm" size="sm" style={{ alignSelf: 'flex-start' }}>
-                        {meta.label}
-                      </Badge>
-                    </Stack>
-                  </Paper>
-                </UnstyledButton>
-              )
-            })
-          )}
-        </Stack>
+    <>
+      <Paper
+        radius="lg"
+        p="xl"
+        bg="var(--doc-surface)"
+        withBorder
+        style={{ boxShadow: '0 24px 48px -24px rgba(0, 0, 0, 0.55)', height: PANEL_AREA_HEIGHT, display: 'flex', overflow: 'hidden' }}
+      >
+        <Group align="stretch" gap="xl" wrap="nowrap" style={{ flex: 1, minHeight: 0 }}>
+          {/* History sidebar - narrower than the content area beside it, its
+              own independent scroll area so a long run history never pushes
+              the content area (or the page) taller. */}
+          <Stack gap="sm" style={{ width: 280, flexShrink: 0, height: '100%', overflowY: 'auto' }}>
+            <Group justify="space-between" align="center" wrap="nowrap">
+              <Title order={4}>History</Title>
+              <Badge color="signalBlue" variant="light" radius="sm">
+                Total: {reports.length}
+              </Badge>
+            </Group>
+            {reports.length === 0 ? (
+              <Text c="dimmed" size="sm">
+                No runs yet.
+              </Text>
+            ) : (
+              reports.map((report) => {
+                const meta = ANALYSIS_STATUS_META[report.status]
+                const isSelected = report.id === selectedReportId
+                return (
+                  <UnstyledButton key={report.id} onClick={() => setSelectedReportId(report.id)} style={{ width: '100%' }}>
+                    <Paper
+                      radius="md"
+                      p="sm"
+                      bg="var(--doc-bg)"
+                      className={classes.entryCard}
+                      style={{ border: `1px solid ${isSelected ? 'var(--mantine-color-sparkOrange-6)' : 'var(--doc-hairline)'}` }}
+                    >
+                      <Group justify="space-between" align="flex-start" wrap="nowrap" gap="xs">
+                        <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
+                          <Text size="sm" fw={600}>
+                            {formatDateTime(report.startedAt)}
+                          </Text>
+                          <Text size="xs" c="dimmed" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {report.startedByEmail}
+                          </Text>
+                          <Badge color={meta.color} variant="light" radius="sm" size="sm" style={{ alignSelf: 'flex-start' }}>
+                            {meta.label}
+                          </Badge>
+                        </Stack>
+                        {/* stopPropagation is load-bearing - without it, this
+                            click would bubble up to the surrounding
+                            UnstyledButton and re-select this (about to be
+                            deleted) report on the same click. Opens the
+                            confirm Modal below rather than deleting
+                            immediately - see attemptDelete/handleConfirmDelete
+                            above. */}
+                        <ActionIcon
+                          size="sm"
+                          aria-label={`Delete report from ${formatDateTime(report.startedAt)}`}
+                          variant="subtle"
+                          color="alertMagenta"
+                          style={{ flexShrink: 0 }}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setDeleteTarget(report)
+                          }}
+                        >
+                          <TrashIcon />
+                        </ActionIcon>
+                      </Group>
+                    </Paper>
+                  </UnstyledButton>
+                )
+              })
+            )}
+          </Stack>
 
-        <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
+          <Box aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', backgroundColor: 'var(--doc-hairline)' }} />
 
-        <Stack gap="md" style={{ flex: 1, minWidth: 0, height: '100%' }}>
-          <Group justify="space-between" align="center" wrap="wrap">
-            <Title order={3}>Documentation Gap Analysis</Title>
-            <Button
-              variant="filled"
-              color="sparkOrange"
-              radius="xl"
-              loading={isStarting}
-              disabled={isAnalyzeDisabled}
-              onClick={() => void handleStartAnalysis()}
-            >
-              Analyze with AI
+          <Stack gap="md" style={{ flex: 1, minWidth: 0, height: '100%' }}>
+            <Group justify="space-between" align="center" wrap="wrap">
+              <Title order={3}>Documentation Gap Analysis</Title>
+              <Button
+                variant="filled"
+                color="sparkOrange"
+                radius="xl"
+                loading={isStarting}
+                disabled={isAnalyzeDisabled}
+                onClick={() => void handleStartAnalysis()}
+              >
+                Analyze with AI
+              </Button>
+            </Group>
+            <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>{contentBody}</Box>
+          </Stack>
+        </Group>
+      </Paper>
+
+      {/* History sidebar's own delete-confirm Modal - same shape as
+          UploadPage.tsx's own delete Modal: opened by deleteTarget being
+          non-null, only the modal's own confirm button (handleConfirmDelete)
+          actually calls the delete endpoint. */}
+      <Modal opened={deleteTarget !== null} onClose={() => setDeleteTarget(null)} title="Delete report" radius="lg">
+        <Stack gap="lg">
+          <Text>Are you sure you want to delete this analysis report? This action cannot be undone.</Text>
+          <Group justify="flex-end">
+            <Button variant="subtle" color="signalBlue" radius="xl" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="filled" color="alertMagenta" radius="xl" onClick={handleConfirmDelete}>
+              Delete
             </Button>
           </Group>
-          <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>{contentBody}</Box>
         </Stack>
-      </Group>
-    </Paper>
+      </Modal>
+    </>
   )
 }
 

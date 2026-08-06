@@ -236,4 +236,8 @@ export const httpApiClient: ApiClient = {
   getAnalysisReport(reportId) {
     return requestJson(`/internal/analysis/reports/${reportId}`, { method: 'GET' })
   },
+
+  deleteAnalysisReport(reportId) {
+    return requestVoid(`/internal/analysis/reports/${reportId}`, { method: 'DELETE' })
+  },
 }
