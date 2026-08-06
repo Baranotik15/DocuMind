@@ -373,6 +373,7 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   'document.deleted': 'Delete Document',
   'analysis.run_completed': 'Documentation Analysis — Completed',
   'analysis.run_failed': 'Documentation Analysis — Failed',
+  'analysis.run_deleted': 'Documentation Analysis — Report Deleted',
 }
 
 function formatEventType(type: string): string {
