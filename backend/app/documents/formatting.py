@@ -31,7 +31,7 @@ def build_document_event_detail(
     """The shared `detail` string every document.* dashboard event uses:
     'filename = <name>', plus a second line 'filesize = <human-readable>'
     when `file_size_bytes` is not None, plus a third line
-    'tokens = <count>' when `token_count` is not None. Each line is
+    'tokens spend = <count>' when `token_count` is not None. Each line is
     omitted entirely - no trailing newline, no placeholder text - when its
     value is None: `file_size_bytes` is None for a legacy pre-migration row
     that predates the file_size_bytes column (0006_documents_file_size.py);
@@ -39,10 +39,15 @@ def build_document_event_detail(
     (see documents/pipeline.py's _replace_chunks - the only call site that
     knows a token count, since it's computed from the chunks just embedded).
     Unlike file size, a token count has no unit conversion - it's rendered
-    as a plain integer."""
+    as a plain integer. Same 'tokens spend' key text as
+    analysis/service.py's _build_analysis_run_detail - this one counts
+    embedding tokens, that one counts LLM completion tokens, two different
+    metrics that share a label by explicit request; nothing in either
+    event's own detail line distinguishes which is which beyond the event
+    card's own type/heading."""
     detail = f"filename = {filename}"
     if file_size_bytes is not None:
         detail = f"{detail}\nfilesize = {format_file_size(file_size_bytes)}"
     if token_count is not None:
-        detail = f"{detail}\ntokens = {token_count}"
+        detail = f"{detail}\ntokens spend = {token_count}"
     return detail

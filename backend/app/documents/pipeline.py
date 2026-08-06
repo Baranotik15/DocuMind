@@ -148,8 +148,9 @@ def _replace_chunks(
     replaces the document's chunk set, then transitions status to 'ready'.
     Also sums each chunk's count_tokens into `token_count` and threads it
     into that final _transition_status call, so the resulting
-    document.chunking_succeeded event's detail carries a 'tokens = <n>'
-    line - this is the only place in the pipeline a token count is known
+    document.chunking_succeeded event's detail carries a
+    'tokens spend = <n>' line - this is the only place in the pipeline a
+    token count is known
     (chunking_started fires before embedding even runs; chunking_failed
     means embedding either never ran or can't be trusted), so it's also
     the only _transition_status call site that ever passes one.

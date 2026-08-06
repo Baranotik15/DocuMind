@@ -199,12 +199,12 @@ def _conflict_dict(row, result: ConflictCheckResult) -> dict:
 
 def _build_analysis_run_detail(total_tokens: int) -> str:
     """The dashboard_events `detail` string for ANALYSIS_RUN_COMPLETED
-    (ANALYSIS_RUN_FAILED uses str(exc) instead, not this). "tokens spend"
-    (not just "tokens") to read unambiguously on the Logs tab next to
-    document.chunking_succeeded's own unrelated "tokens = <n>" line
-    (documents/formatting.py's build_document_event_detail) - that one
-    counts embedding tokens, this one counts LLM completion tokens, two
-    different metrics that happened to share a label."""
+    (ANALYSIS_RUN_FAILED uses str(exc) instead, not this). Same
+    "tokens spend" key text as documents/formatting.py's
+    build_document_event_detail - that one counts embedding tokens, this
+    one counts LLM completion tokens, two different metrics that
+    deliberately share a label; the event card's own type/heading is what
+    tells them apart, not the detail line."""
     return f"tokens spend = {total_tokens}"
 
 

@@ -299,9 +299,9 @@ def test_run_pipeline_records_token_count_only_on_chunking_succeeded_event() -> 
             succeeded = _matching_events(session, "document.chunking_succeeded", filename)
             assert started
             assert succeeded
-            assert all("tokens = " not in row.detail for row in started)
+            assert all("tokens spend = " not in row.detail for row in started)
             assert all(
-                f"tokens = {expected_token_count}" in row.detail for row in succeeded
+                f"tokens spend = {expected_token_count}" in row.detail for row in succeeded
             )
     finally:
         _cleanup(document_id, filename)
@@ -332,7 +332,7 @@ def test_run_pipeline_with_whitespace_only_source_text_marks_document_failed() -
             assert all(
                 len(row.detail) > 0
                 and row.user_email is None
-                and "tokens = " not in row.detail
+                and "tokens spend = " not in row.detail
                 for row in matching
             )
 
@@ -377,7 +377,7 @@ def test_run_pipeline_failure_marks_document_failed_and_leaves_old_chunks_untouc
             assert all(
                 len(row.detail) > 0
                 and row.user_email is None
-                and "tokens = " not in row.detail
+                and "tokens spend = " not in row.detail
                 for row in matching
             )
 
