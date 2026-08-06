@@ -643,9 +643,22 @@ function AnalysisTab(): JSX.Element {
               </Badge>
             </Group>
             {reports.length === 0 ? (
-              <Text c="dimmed" size="sm">
-                No runs yet.
-              </Text>
+              // flex: 1 + justify="center" on this inner Stack (not the
+              // outer sidebar Stack, which needs its own top-aligned
+              // header) is what centers the bot vertically in whatever
+              // space is actually left below the History/Total header,
+              // rather than sitting flush under it.
+              <Stack align="center" justify="center" gap="md" style={{ flex: 1 }}>
+                <img
+                  src="/bot-history-empty.png"
+                  alt=""
+                  draggable={false}
+                  style={{ width: 360, height: 360, maxWidth: '100%', objectFit: 'contain' }}
+                />
+                <Text fw={600} size="md" c="dimmed" ta="center" style={{ letterSpacing: '0.01em' }}>
+                  No runs yet.
+                </Text>
+              </Stack>
             ) : (
               reports.map((report) => {
                 const meta = ANALYSIS_STATUS_META[report.status]
