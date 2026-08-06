@@ -227,11 +227,26 @@ function ImprovementsListPanel<T extends ImprovementsEntry>({
                       >
                         <RemoveIcon />
                       </ActionIcon>
-                      <Text size="xs" c="dimmed" ff="monospace" ta="right" style={{ whiteSpace: 'nowrap' }}>
-                        {timestampLabel}
-                        <br />
-                        {formatDateTime(getTimestamp(item))}
-                      </Text>
+                      {/* A solid-fill chip (not a translucent tint) - the
+                          translucent version's text didn't read clearly
+                          enough against it. Same "solid accent background +
+                          dark navy text" device DashboardPage.tsx's own
+                          Timezone chip uses, for guaranteed contrast
+                          regardless of accentColor. */}
+                      <Box
+                        style={{
+                          backgroundColor: `var(--mantine-color-${accentColor}-6)`,
+                          borderRadius: 'var(--mantine-radius-md)',
+                          padding: '4px 10px',
+                        }}
+                      >
+                        <Text size="10px" fw={700} tt="uppercase" c="#101B36" ta="right" style={{ letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                          {timestampLabel}
+                        </Text>
+                        <Text size="sm" fw={700} ff="monospace" c="#101B36" ta="right" style={{ whiteSpace: 'nowrap' }}>
+                          {formatDateTime(getTimestamp(item))}
+                        </Text>
+                      </Box>
                     </Stack>
                   </Group>
                 </Paper>
