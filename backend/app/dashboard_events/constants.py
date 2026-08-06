@@ -14,3 +14,4 @@ class DashboardEventType(StrEnum):
     DOCUMENT_CHUNKING_FAILED = "document.chunking_failed"
     ANALYSIS_RUN_COMPLETED = "analysis.run_completed"
     ANALYSIS_RUN_FAILED = "analysis.run_failed"
+    ANALYSIS_RUN_DELETED = "analysis.run_deleted"

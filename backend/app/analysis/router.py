@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.analysis.schemas import AnalysisConflict, AnalysisReportDetail, AnalysisReportSummary
 from app.analysis.tasks import run_documentation_analysis
 from app.auth.dependencies import require_session
+from app.dashboard_events.constants import DashboardEventType
+from app.dashboard_events.recording import record_event_async
 from app.db.session import get_session
 
 router = APIRouter()
@@ -116,7 +118,9 @@ async def get_analysis_report(
 
 @router.delete("/analysis/reports/{report_id}", status_code=204)
 async def delete_analysis_report(
-    report_id: UUID, session: AsyncSession = Depends(get_session)
+    report_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    user_email: str = Depends(require_session),
 ) -> None:
     """Permanently deletes one analysis_reports row. 404 if report_id
     doesn't exist.
@@ -129,13 +133,26 @@ async def delete_analysis_report(
 
     `report_id` is typed as UUID (not str) so a malformed id 422s via
     FastAPI's own path-param validation before ever reaching the DB, same
-    convention as get_analysis_report/delete_document."""
+    convention as get_analysis_report/delete_document.
+
+    Records a DashboardEventType.ANALYSIS_RUN_DELETED dashboard_event
+    (per explicit request: deletions show up on the Logs tab same as
+    every other analysis-run event) - `user_email` here is who deleted
+    it, not who originally ran it (that attribution is gone along with
+    the row itself)."""
     row = (
         await session.execute(
-            text("DELETE FROM analysis_reports WHERE id = :report_id RETURNING id"),
+            text("DELETE FROM analysis_reports WHERE id = :report_id RETURNING id, started_at"),
             {"report_id": str(report_id)},
         )
     ).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail=_ANALYSIS_REPORT_NOT_FOUND_ERROR)
+
+    await record_event_async(
+        session,
+        DashboardEventType.ANALYSIS_RUN_DELETED,
+        f"deleted report started {row.started_at.isoformat()}",
+        user_email=user_email,
+    )
     await session.commit()

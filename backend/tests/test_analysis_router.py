@@ -230,6 +230,38 @@ def test_delete_analysis_report_returns_204_and_removes_it_from_the_list(
         _cleanup_reports(report_ids)
 
 
+def test_delete_analysis_report_records_a_dashboard_event(client: TestClient) -> None:
+    report_ids: list[str] = []
+    try:
+        report_id = _insert_report(
+            status="completed",
+            started_by_email=f"delete-log-{uuid.uuid4()}@example.com",
+            completed_at=datetime.now(timezone.utc),
+        )
+        report_ids.append(report_id)
+
+        me_response = client.get("/internal/auth/me")
+        deleting_user_email = me_response.json()["email"]
+
+        response = client.delete(f"/internal/analysis/reports/{report_id}")
+        assert response.status_code == 204
+
+        with SyncSessionLocal() as session:
+            events = session.execute(
+                text(
+                    "SELECT type, user_email FROM dashboard_events "
+                    "WHERE type = 'analysis.run_deleted' AND user_email = :email"
+                ),
+                {"email": deleting_user_email},
+            ).all()
+        # authenticated_client provisions a fresh UUID-random email per
+        # test (see conftest.py), so this email is unique to this test -
+        # exactly one event is expected, not just "at least one".
+        assert len(events) == 1
+    finally:
+        _cleanup_reports(report_ids)
+
+
 def test_delete_analysis_report_unknown_id_returns_404(client: TestClient) -> None:
     response = client.delete(f"/internal/analysis/reports/{uuid.uuid4()}")
 

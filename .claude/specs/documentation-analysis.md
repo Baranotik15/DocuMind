@@ -28,6 +28,10 @@ every file.
 - The Analysis sub-tab shows the most recent report by default, plus a
   way to browse and view any past report from its history, not just the
   latest one.
+- A report can be permanently deleted from the history from the Analysis
+  sub-tab, but only after an explicit confirmation step - no accidental
+  one-click deletes (revises the original "append-only" Non-Goal below,
+  added 2026-08-06 per explicit request).
 - Every analysis run is recorded as an entry on the existing Logs &
   Stats page's Logs tab, including which user ran it and how many LLM
   tokens the run consumed.
@@ -62,12 +66,16 @@ every file.
 - [ ] Running analysis when there are zero ready documents, or zero
       Dislikes/No Answer entries, still completes and produces a report
       that plainly reflects that (not an error).
+- [ ] Deleting a report from the history requires an explicit
+      confirmation step, and the report is gone from the list (and no
+      longer viewable) once confirmed.
 
 ## Non-Goals
 - Automatic/scheduled analysis runs - every run is manually triggered by
   clicking the button.
-- Editing or deleting past reports from the history - the history is
-  append-only.
+- Editing a past report's own content (the report itself is immutable -
+  only whole-report deletion, with confirmation, is supported, see
+  Requirements above).
 - Acting on a report's findings automatically (e.g. auto-editing
   documents, auto-dismissing Dislikes/No Answer entries) - the report is
   informational only.
