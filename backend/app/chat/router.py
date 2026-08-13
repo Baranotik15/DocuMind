@@ -1,7 +1,8 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,12 @@ from app.chat.schemas import (
     SendMessageRequest,
     TopChunkSummary,
     TopChunksRequest,
+    TranscriptionResult,
+)
+from app.chat.voice import (
+    AudioConversionError,
+    VoiceRecognitionUnavailableError,
+    transcribe_audio,
 )
 from app.chunks.embedding import LLMError, embed_texts
 from app.chunks.retrieval import fetch_similar_chunks
@@ -29,6 +36,28 @@ TOP_CHUNKS_LIMIT = 5
 # chat-completion step, top_chunks's embed step) - same error contract
 # either way: any LLMError becomes a 502 with this detail.
 _CHAT_COMPLETION_FAILED_ERROR = "chat_completion_failed"
+
+_FILE_TOO_LARGE_ERROR = "file_too_large"
+_VOICE_MODEL_NOT_CONFIGURED_ERROR = "voice_model_not_configured"
+_AUDIO_PROCESSING_FAILED_ERROR = "audio_processing_failed"
+
+# Local duplicate of documents/router.py's _read_upload_within_limit - see
+# this plan's design notes for why this isn't a shared cross-router import.
+_UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
+
+
+async def _read_upload_within_limit(file: UploadFile, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail=_FILE_TOO_LARGE_ERROR)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 # Trailing-window durations for the Improvements page's `range` query param
 # (GET /chat/dislikes, GET /chat/no-answer-messages) - "all" has no entry
@@ -337,3 +366,32 @@ async def top_chunks(
         )
         for row in rows
     ]
+
+
+@router.post("/chat/transcribe")
+async def transcribe_message(file: UploadFile) -> TranscriptionResult:
+    """Accepts one recorded audio clip (any container/codec ffmpeg can
+    decode - the browser's MediaRecorder output, in practice), bounded by
+    get_settings().max_upload_size_bytes (413 over that, same contract as
+    documents' upload endpoint). Runs voice.transcribe_audio in a worker
+    thread via asyncio.to_thread (blocking subprocess + CPU-bound Kaldi
+    work, not async I/O - would otherwise stall the event loop for the
+    whole decode+recognize). No DB write, no dashboard event - see this
+    plan's design notes on why this endpoint is stateless.
+
+    Maps VoiceRecognitionUnavailableError -> 503
+    _VOICE_MODEL_NOT_CONFIGURED_ERROR, AudioConversionError -> 400
+    _AUDIO_PROCESSING_FAILED_ERROR. Session auth is enforced by
+    app/main.py's existing router-level `Depends(require_session)` on all of
+    chat_router - no per-endpoint user_email param needed since nothing here
+    is attributed to a user."""
+    data = await _read_upload_within_limit(file, get_settings().max_upload_size_bytes)
+
+    try:
+        text_result = await asyncio.to_thread(transcribe_audio, data)
+    except VoiceRecognitionUnavailableError:
+        raise HTTPException(status_code=503, detail=_VOICE_MODEL_NOT_CONFIGURED_ERROR)
+    except AudioConversionError:
+        raise HTTPException(status_code=400, detail=_AUDIO_PROCESSING_FAILED_ERROR)
+
+    return TranscriptionResult(text=text_result)

@@ -47,3 +47,7 @@ class NoAnswerMessageSummary(BaseModel):
     content: str
     questionContent: str | None
     createdAt: str
+
+
+class TranscriptionResult(BaseModel):
+    text: str

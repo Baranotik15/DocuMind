@@ -1,14 +1,17 @@
+import io
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.chat.completion import GeneratedReply
+from app.chat.voice import AudioConversionError, VoiceRecognitionUnavailableError
 from app.chunks.embedding import LLMError
 from app.chunks.vectors import format_vector
+from app.config import Settings
 from app.db.sync_session import SyncSessionLocal
 from app.main import app
 
@@ -773,6 +776,83 @@ def test_list_no_answer_messages_without_session_cookie_returns_401() -> None:
     with TestClient(app) as bare_client:
         response = bare_client.get(
             "/internal/chat/no-answer-messages", params={"range": "all"}
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "not_authenticated"}
+
+
+def test_transcribe_returns_text_from_transcribe_audio(client: TestClient) -> None:
+    with patch(
+        "app.chat.router.transcribe_audio",
+        new=MagicMock(return_value="what is the refund policy"),
+    ):
+        response = client.post(
+            "/internal/chat/transcribe",
+            files={"file": ("recording.webm", io.BytesIO(b"fake-audio-bytes"), "audio/webm")},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "what is the refund policy"}
+
+
+def test_transcribe_voice_recognition_unavailable_returns_503(client: TestClient) -> None:
+    with patch(
+        "app.chat.router.transcribe_audio",
+        new=MagicMock(side_effect=VoiceRecognitionUnavailableError("no model configured")),
+    ):
+        response = client.post(
+            "/internal/chat/transcribe",
+            files={"file": ("recording.webm", io.BytesIO(b"fake-audio-bytes"), "audio/webm")},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "voice_model_not_configured"
+
+
+def test_transcribe_audio_conversion_error_returns_400(client: TestClient) -> None:
+    with patch(
+        "app.chat.router.transcribe_audio",
+        new=MagicMock(side_effect=AudioConversionError("ffmpeg boom")),
+    ):
+        response = client.post(
+            "/internal/chat/transcribe",
+            files={"file": ("recording.webm", io.BytesIO(b"fake-audio-bytes"), "audio/webm")},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "audio_processing_failed"
+
+
+def test_transcribe_over_size_limit_returns_413(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.chat.router as chat_router
+
+    monkeypatch.setattr(
+        chat_router, "get_settings", lambda: Settings(max_upload_size_bytes=10)
+    )
+
+    response = client.post(
+        "/internal/chat/transcribe",
+        files={
+            "file": (
+                "recording.webm",
+                io.BytesIO(b"this payload is over ten bytes"),
+                "audio/webm",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "file_too_large"
+
+
+def test_transcribe_without_session_cookie_returns_401() -> None:
+    with TestClient(app) as bare_client:
+        response = bare_client.post(
+            "/internal/chat/transcribe",
+            files={"file": ("recording.webm", io.BytesIO(b"fake-audio-bytes"), "audio/webm")},
         )
 
     assert response.status_code == 401
