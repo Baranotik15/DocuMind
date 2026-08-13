@@ -277,6 +277,7 @@ docker compose exec backend python -m app.auth.cli revoke-user --email you@examp
 |---|---|---|
 | `POST` | `/chat/messages` | Отправить сообщение, получить ответ LLM |
 | `GET` | `/chat/messages` | История чата |
+| `POST` | `/chat/transcribe` | Распознать записанный аудиофрагмент в текст (multipart; офлайн через Vosk, см. [Настройка распознавания голоса](#-настройка-распознавания-голоса-опционально)) |
 | `POST` | `/chat/messages/{id}/dislike` | Переключить дизлайк на сообщении |
 | `POST` | `/chat/top-chunks` | Relevance preview — топ-5 подходящих чанков, без вызова LLM |
 | `GET` | `/chat/dislikes` | Все дизлайкнутые сообщения (query: `range`) |

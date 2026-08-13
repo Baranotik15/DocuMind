@@ -278,6 +278,7 @@ below, grouped by module; all paths are prefixed with `/internal` except
 |---|---|---|
 | `POST` | `/chat/messages` | Send a message, get an LLM reply |
 | `GET` | `/chat/messages` | List chat history |
+| `POST` | `/chat/transcribe` | Transcribe a recorded audio clip to text (multipart; offline via Vosk, see [Setting up voice recognition](#-setting-up-voice-recognition-optional)) |
 | `POST` | `/chat/messages/{id}/dislike` | Toggle dislike on a message |
 | `POST` | `/chat/top-chunks` | Relevance preview - top-5 matching chunks, no LLM call |
 | `GET` | `/chat/dislikes` | Every currently-disliked message (query: `range`) |
