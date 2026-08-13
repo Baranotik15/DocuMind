@@ -327,6 +327,10 @@ export const mockApiClient: ApiClient = {
     })
   },
 
+  async transcribeVoice(_audioBlob) {
+    return 'mock transcribed text'
+  },
+
   async getDashboardEvents() {
     return dashboardEvents.map((event) => ({ ...event }))
   },

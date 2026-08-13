@@ -36,6 +36,14 @@ export class ChatCompletionError extends Error {
   }
 }
 
+/** Thrown when POST /internal/chat/transcribe fails with 503 (no Vosk model configured server-side). */
+export class VoiceUnavailableError extends Error {
+  constructor(message = 'voice_model_not_configured') {
+    super(message)
+    this.name = 'VoiceUnavailableError'
+  }
+}
+
 async function parseDetail(response: Response): Promise<string | undefined> {
   try {
     const body = (await response.json()) as { detail?: string }
@@ -74,6 +82,10 @@ async function throwForStatus(response: Response, path: string): Promise<never> 
 
   if (response.status === 502) {
     throw new ChatCompletionError(detail ?? 'chat_completion_failed')
+  }
+
+  if (response.status === 503 && detail === 'voice_model_not_configured') {
+    throw new VoiceUnavailableError()
   }
 
   throw new Error(detail ?? `Request failed with status ${response.status}`)
@@ -204,6 +216,16 @@ export const httpApiClient: ApiClient = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
     })
+  },
+
+  async transcribeVoice(audioBlob) {
+    const formData = new FormData()
+    formData.set('file', audioBlob, 'recording.webm')
+    const result = await requestJson<{ text: string }>('/internal/chat/transcribe', {
+      method: 'POST',
+      body: formData,
+    })
+    return result.text
   },
 
   getDashboardEvents() {

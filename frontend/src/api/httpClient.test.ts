@@ -312,6 +312,39 @@ describe('httpApiClient', () => {
     )
   })
 
+  it('transcribeVoice POSTs multipart form data with the blob under "file" and returns the transcribed text', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ text: 'what is the refund policy' }))
+    const blob = new Blob(['fake-audio'], { type: 'audio/webm' })
+
+    const { httpApiClient } = await import('./httpClient')
+    const result = await httpApiClient.transcribeVoice(blob)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://localhost:8000/internal/chat/transcribe')
+    expect(init.method).toBe('POST')
+    const body = init.body as FormData
+    expect(body).toBeInstanceOf(FormData)
+    // formData.set(name, blob, filename) wraps a bare Blob (no filename of
+    // its own) into a new File, so this can't assert reference identity like
+    // uploadDocument's test does with an already-named File - assert on the
+    // wrapped file's name and content instead.
+    const filePart = body.get('file') as File
+    expect(filePart).toBeInstanceOf(File)
+    expect(filePart.name).toBe('recording.webm')
+    expect(await filePart.text()).toBe(await blob.text())
+    expect(result).toBe('what is the refund policy')
+  })
+
+  it('transcribeVoice rejects with VoiceUnavailableError on a 503 voice_model_not_configured', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'voice_model_not_configured' }, 503))
+    const blob = new Blob(['fake-audio'], { type: 'audio/webm' })
+
+    const { httpApiClient, VoiceUnavailableError } = await import('./httpClient')
+
+    await expect(httpApiClient.transcribeVoice(blob)).rejects.toBeInstanceOf(VoiceUnavailableError)
+  })
+
   it('getTopMatchingChunks POSTs the question and returns the parsed matches', async () => {
     const matches = [
       { chunkId: 'chunk-1', documentId: 'doc-1', filename: 'guide.pdf', content: 'excerpt one', matchPercent: 87.3 },
