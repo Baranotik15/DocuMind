@@ -20,3 +20,4 @@ umap-learn==0.5.12
 bcrypt==5.0.0
 tiktoken==0.13.0
 reportlab==5.0.0
+vosk==0.3.45
