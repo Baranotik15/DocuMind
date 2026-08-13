@@ -178,6 +178,75 @@ function MicIcon(): JSX.Element {
 }
 
 /**
+ * Filled square glyph shown on the mic button ONLY while recording (see its
+ * render site below) - the widely recognized "click to stop" cue (matches
+ * OS/video-call recording-stop buttons), so the recording state reads as
+ * unambiguous at a glance rather than relying on the button's red fill
+ * color alone.
+ */
+function StopIcon(): JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+      data-testid="voice-recording-icon"
+    >
+      <rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" />
+    </svg>
+  )
+}
+
+/** Distinguishable-by-ear pitches for playRecordingSound below - start
+ * noticeably higher than stop (mirrors the ascending/descending cue pairs
+ * common in video-call apps' own recording start/stop sounds), so a user
+ * who isn't looking at the screen can tell which one just played. */
+const RECORDING_START_BEEP_HZ = 880
+const RECORDING_STOP_BEEP_HZ = 440
+const RECORDING_BEEP_DURATION_S = 0.15
+
+/**
+ * Short audible cue played when a recording starts or stops (see
+ * handleMicClick's `recorder.start()` call site and its `onstop` handler
+ * below) - the mic button's own visual state change is easy to miss if the
+ * user isn't looking at the input bar, so this makes both edges audible
+ * too. A synthesized Web Audio API tone rather than an `<audio>` element
+ * playing a bundled sound file - no binary asset to ship, same hand-rolled,
+ * no-external-asset rationale as this file's SVG icons (see MicIcon/
+ * SendIcon above). Silently does nothing if the Web Audio API isn't
+ * available (old Safari, jsdom test environments) - same degrade-quietly
+ * convention as loadHiddenMessageIds above; a recording still starts/stops
+ * correctly either way, it just has no sound.
+ */
+function playRecordingSound(cue: 'start' | 'stop'): void {
+  try {
+    const AudioContextClass =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!AudioContextClass) {
+      return
+    }
+    const context = new AudioContextClass()
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.frequency.value = cue === 'start' ? RECORDING_START_BEEP_HZ : RECORDING_STOP_BEEP_HZ
+    // A quick exponential decay (rather than a flat tone cut off abruptly)
+    // so the beep reads as a soft "blip" instead of a harsh click.
+    gain.gain.setValueAtTime(0.15, context.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + RECORDING_BEEP_DURATION_S)
+    oscillator.start()
+    oscillator.stop(context.currentTime + RECORDING_BEEP_DURATION_S)
+    oscillator.onended = () => void context.close()
+  } catch {
+    // See this function's own doc comment - degrade quietly.
+  }
+}
+
+/**
  * Small identity avatar shown next to assistant messages (and the typing
  * indicator) only - never next to the user's own messages. A filled
  * signalBlue circle with a minimal bot-head glyph, pairing with the user's
@@ -501,11 +570,13 @@ export function ChatPage(): JSX.Element {
         }
       }
       recorder.onstop = () => {
+        playRecordingSound('stop')
         stream.getTracks().forEach((track) => track.stop())
         void handleRecordingStopped()
       }
       mediaRecorderRef.current = recorder
       recorder.start()
+      playRecordingSound('start')
       setMicState('recording')
     } catch {
       // getUserMedia rejected - no mic, permission denied, or the API isn't
@@ -768,6 +839,8 @@ export function ChatPage(): JSX.Element {
             >
               {micState === 'transcribing' ? (
                 <Loader size="xs" color="white" data-testid="voice-transcribing" />
+              ) : micState === 'recording' ? (
+                <StopIcon />
               ) : (
                 <MicIcon />
               )}

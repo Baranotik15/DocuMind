@@ -518,6 +518,46 @@ describe('ChatPage', () => {
       }
     }
 
+    // jsdom also has no Web Audio API - playRecordingSound's try/catch means
+    // ChatPage itself never crashes without it (see that function's own doc
+    // comment), but these fakes let the two tests below actually assert a
+    // start/stop beep was played, not just that nothing threw. Records each
+    // oscillator's frequency at the moment .start() is called - matching
+    // playRecordingSound, which always sets `oscillator.frequency.value`
+    // before calling .start().
+    let recordedOscillatorFrequencies: number[]
+
+    class FakeGainNode {
+      gain = { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() }
+      connect(): void {}
+    }
+
+    class FakeOscillatorNode {
+      frequency = { value: 0 }
+      onended: (() => void) | null = null
+      connect(): void {}
+      start(): void {
+        recordedOscillatorFrequencies.push(this.frequency.value)
+      }
+      stop(): void {
+        this.onended?.()
+      }
+    }
+
+    class FakeAudioContext {
+      currentTime = 0
+      destination = {}
+      createOscillator(): FakeOscillatorNode {
+        return new FakeOscillatorNode()
+      }
+      createGain(): FakeGainNode {
+        return new FakeGainNode()
+      }
+      close(): Promise<void> {
+        return Promise.resolve()
+      }
+    }
+
     let getUserMediaMock: ReturnType<typeof vi.fn>
 
     beforeEach(() => {
@@ -527,6 +567,8 @@ describe('ChatPage', () => {
         value: { getUserMedia: getUserMediaMock },
       })
       vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+      recordedOscillatorFrequencies = []
+      vi.stubGlobal('AudioContext', FakeAudioContext)
     })
 
     function stubMessagesAndTranscribe(transcribeResponse: () => Response): void {
@@ -542,7 +584,7 @@ describe('ChatPage', () => {
       })
     }
 
-    it('clicking the mic button starts recording, flipping its aria-label', async () => {
+    it('clicking the mic button starts recording, flipping its aria-label, showing the stop-square icon, and playing a start beep', async () => {
       stubMessagesAndTranscribe(() => jsonResponse({ text: 'hello' }))
       renderWithProviders(<ChatPage />)
       await screen.findByText('How do I upload a new document?')
@@ -553,6 +595,12 @@ describe('ChatPage', () => {
         expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument()
       })
       expect(getUserMediaMock).toHaveBeenCalledWith({ audio: true })
+      // The button swaps its mic glyph for a filled square (StopIcon) the
+      // instant recording starts - a widely-recognized "click to stop" cue,
+      // not just a color change.
+      expect(screen.getByTestId('voice-recording-icon')).toBeInTheDocument()
+      // One oscillator, at the start-cue's pitch (see RECORDING_START_BEEP_HZ).
+      expect(recordedOscillatorFrequencies).toEqual([880])
     })
 
     it('stopping the recording shows a transcribing state, then REPLACES the draft (not appends) once transcription resolves', async () => {
@@ -583,6 +631,27 @@ describe('ChatPage', () => {
       })
       expect(screen.queryByTestId('voice-transcribing')).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: /start voice input/i })).toBeInTheDocument()
+    })
+
+    it('plays a lower-pitched beep when the recording stops, distinct from the start beep', async () => {
+      stubMessagesAndTranscribe(() => jsonResponse({ text: 'hello' }))
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
+
+      // FakeMediaRecorder.stop() fires onstop synchronously (see its own
+      // comment above), so the stop beep has already played by the time
+      // this assertion runs, no waitFor needed - same reasoning the
+      // 'voice-transcribing' assertion right after this uses elsewhere in
+      // this file. Start beep first (880Hz), then a distinctly lower stop
+      // beep (440Hz) - see RECORDING_START_BEEP_HZ/RECORDING_STOP_BEEP_HZ.
+      expect(recordedOscillatorFrequencies).toEqual([880, 440])
     })
 
     it('shows the voice-unavailable message when the backend has no model configured', async () => {
