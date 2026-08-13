@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
 
+    # Absolute or CWD-relative path to an unzipped Vosk model directory (e.g.
+    # "./data/vosk_models/vosk-model-small-ru-0.22") - operator-installed, never
+    # bundled with the app (see backend/data/vosk_models/, .gitignore'd, and the
+    # README's voice-recognition setup section). Empty (default) means voice
+    # input is unconfigured - app/chat/voice.py's _get_model() is what actually
+    # enforces "gracefully unavailable, not a crash" for that, same convention as
+    # openai_api_key/slack_bot_token above.
+    vosk_model_path: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
