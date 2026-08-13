@@ -59,6 +59,7 @@ embeddings.
 - **🎯 See the retrieval before you trust it** — the Relevance Preview page runs the same retrieval step the chat uses and shows exactly which chunks a question would pull back and how closely each one scores, no LLM call required.
 - **📊 A dashboard that actually watches the pipeline** — a full event log, calendar-aligned usage charts, a live 3D map of how your chunks cluster in embedding space, and OpenAI spend broken down to the token.
 - **🔎 Turns failure into a to-do list** — the Improvements tab quietly tracks every disliked reply and every "I don't know" the bot gives, then an AI-powered pass reads that history and writes a plain-language gap analysis of what your documentation is missing, plus flags places where two documents flatly contradict each other.
+- **🎙️ Dictate instead of type** — a mic button on the Chat page transcribes speech to text entirely offline via a locally-hosted Vosk model, so no audio ever leaves your deployment. Optional and off by default — see [Setting up voice recognition](#-setting-up-voice-recognition-optional).
 
 ---
 
@@ -484,6 +485,45 @@ admin-Chat-page message) is a harmless no-op. An app-authored message
 (the bot's own reply landing back in a DM as a new `message.im` event)
 is always ignored too - otherwise it would answer its own answers in a
 loop.
+
+<a id="-setting-up-voice-recognition-optional"></a>
+
+### 🎙️ Setting up voice recognition (optional)
+
+The Chat page's mic button lets you dictate a question instead of typing it.
+Recognition runs entirely offline via a locally-hosted [Vosk](https://alphacephei.com/vosk/)
+speech model - no audio ever leaves your deployment, and no cloud API is
+called for it. It's optional and off by default: with no model configured,
+the mic button still records, but transcription fails with a clear "not
+installed" error instead of working.
+
+**1. Download a model** - pick one for your language from the official
+[Vosk model list](https://alphacephei.com/vosk/models). This project has
+been tested against `vosk-model-small-ru-0.22` (Russian, ~45MB). License
+terms vary per model - most (including the one above) are Apache 2.0, but
+check the specific model you pick on that page rather than assuming.
+
+**2. Unzip it into `backend/data/vosk_models/`** - e.g. unzipping
+`vosk-model-small-ru-0.22.zip` should produce
+`backend/data/vosk_models/vosk-model-small-ru-0.22/`. This directory is
+`.gitignore`d - models are never committed to the repo, you install your
+own copy locally.
+
+**3. Point `VOSK_MODEL_PATH` at it in `.env`** (see `.env.example`):
+
+```
+VOSK_MODEL_PATH=./data/vosk_models/vosk-model-small-ru-0.22
+```
+
+**4. Rebuild/restart the backend and worker** to pick up the new setting:
+
+```bash
+docker compose up -d --build backend worker
+```
+
+Only one model (one language) is active at a time - there's no in-app
+language switcher yet. Switching languages means downloading a different
+model and repointing `VOSK_MODEL_PATH` at it.
 
 ### 🔗 Exposing your local backend for webhook testing (ngrok)
 
