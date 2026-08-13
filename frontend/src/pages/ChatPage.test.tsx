@@ -492,4 +492,140 @@ describe('ChatPage', () => {
       expect(screen.queryByText('How do I upload a new document?')).not.toBeInTheDocument()
     })
   })
+
+  // jsdom has no real MediaRecorder/getUserMedia - FakeMediaRecorder's
+  // stop() synchronously fires both ondataavailable and onstop (a real
+  // MediaRecorder does this asynchronously, but synchronous is enough to
+  // exercise ChatPage's own state transitions and is far simpler to drive
+  // from a test). navigator.mediaDevices doesn't exist in jsdom at all, so
+  // it's defined fresh via Object.defineProperty (same pattern
+  // src/test-setup.ts already uses for matchMedia/ResizeObserver/
+  // document.fonts - there's no existing precedent for mediaDevices
+  // specifically, this follows that file's established shape) rather than
+  // vi.spyOn, which requires the property to already exist on the object.
+  describe('Voice input (mic button)', () => {
+    class FakeMediaRecorder {
+      stream: MediaStream
+      ondataavailable: ((event: { data: Blob }) => void) | null = null
+      onstop: (() => void) | null = null
+      constructor(stream: MediaStream) {
+        this.stream = stream
+      }
+      start(): void {}
+      stop(): void {
+        this.ondataavailable?.({ data: new Blob(['fake-audio']) })
+        this.onstop?.()
+      }
+    }
+
+    let getUserMediaMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+      getUserMediaMock = vi.fn().mockResolvedValue({ getTracks: () => [] } as unknown as MediaStream)
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: { getUserMedia: getUserMediaMock },
+      })
+      vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    })
+
+    function stubMessagesAndTranscribe(transcribeResponse: () => Response): void {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && url.endsWith('/internal/chat/messages')) {
+          return Promise.resolve(jsonResponse(seededMessages))
+        }
+        if (method === 'POST' && url.endsWith('/internal/chat/transcribe')) {
+          return Promise.resolve(transcribeResponse())
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`)
+      })
+    }
+
+    it('clicking the mic button starts recording, flipping its aria-label', async () => {
+      stubMessagesAndTranscribe(() => jsonResponse({ text: 'hello' }))
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+      })
+      expect(getUserMediaMock).toHaveBeenCalledWith({ audio: true })
+    })
+
+    it('stopping the recording shows a transcribing state, then REPLACES the draft (not appends) once transcription resolves', async () => {
+      stubMessagesAndTranscribe(() => jsonResponse({ text: 'hello' }))
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      // Seed the input with prior text first, to prove the transcribed text
+      // REPLACES it rather than appending/merging - see this plan's design
+      // notes.
+      const input = screen.getByRole('textbox', { name: /message/i })
+      fireEvent.change(input, { target: { value: 'existing draft text' } })
+
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
+
+      // FakeMediaRecorder.stop() fires onstop synchronously, which sets
+      // micState to 'transcribing' before the (mocked, but still
+      // microtask-async) transcribeVoice call resolves.
+      expect(screen.getByTestId('voice-transcribing')).toBeInTheDocument()
+
+      await waitFor(() => {
+        expect(input).toHaveValue('hello')
+      })
+      expect(screen.queryByTestId('voice-transcribing')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /start voice input/i })).toBeInTheDocument()
+    })
+
+    it('shows the voice-unavailable message when the backend has no model configured', async () => {
+      stubMessagesAndTranscribe(() => jsonResponse({ detail: 'voice_model_not_configured' }, 503))
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
+
+      expect(
+        await screen.findByText("Voice recognition isn't set up on the server yet - see the README's Voice Recognition section."),
+      ).toBeInTheDocument()
+    })
+
+    it('shows a generic error message when transcription fails for any other reason', async () => {
+      stubMessagesAndTranscribe(() => jsonResponse({ detail: 'audio_processing_failed' }, 400))
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
+
+      expect(await screen.findByText("Couldn't transcribe that - try again.")).toBeInTheDocument()
+    })
+
+    it('shows the generic error and stays idle when getUserMedia rejects (no mic, permission denied, unsupported)', async () => {
+      getUserMediaMock.mockRejectedValue(new Error('permission denied'))
+      stubMessagesAndTranscribe(() => jsonResponse({ text: 'hello' }))
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }))
+
+      expect(await screen.findByText("Couldn't transcribe that - try again.")).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /start voice input/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /stop recording/i })).not.toBeInTheDocument()
+    })
+  })
 })

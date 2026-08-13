@@ -2,14 +2,24 @@ import type { JSX } from 'react'
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
+import { ActionIcon, Alert, Box, Button, Group, Loader, Modal, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
 
 import classes from './ChatPage.module.css'
 import { apiClient } from '../api/client'
-import { ChatCompletionError } from '../api/httpClient'
+import { ChatCompletionError, VoiceUnavailableError } from '../api/httpClient'
 import type { ChatMessage } from '../api/types'
 
 const SEND_ERROR_MESSAGE = "The assistant couldn't respond - try again."
+
+// Drives the mic ActionIcon's appearance/behavior (see handleMicClick/
+// handleRecordingStopped below): 'idle' -> clicking starts recording;
+// 'recording' -> clicking stops it (which triggers transcription);
+// 'transcribing' -> clicks are ignored until the request settles.
+type MicState = 'idle' | 'recording' | 'transcribing'
+
+const VOICE_UNAVAILABLE_MESSAGE =
+  "Voice recognition isn't set up on the server yet - see the README's Voice Recognition section."
+const VOICE_GENERIC_ERROR_MESSAGE = "Couldn't transcribe that - try again."
 
 // "Clear chat" (see handleClearChat) never deletes anything server-side -
 // chat history has no session/user scoping at all, so hiding a message
@@ -155,6 +165,18 @@ function ThumbsDownIcon(): JSX.Element {
   )
 }
 
+/** Hand-rolled mic glyph - same no-icon-library rationale as SendIcon/ThumbsDownIcon above. */
+function MicIcon(): JSX.Element {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  )
+}
+
 /**
  * Small identity avatar shown next to assistant messages (and the typing
  * indicator) only - never next to the user's own messages. A filled
@@ -217,6 +239,11 @@ export function ChatPage(): JSX.Element {
   // below, since without it the UI looks frozen after the optimistic user
   // message appears.
   const [isSending, setIsSending] = useState(false)
+  // Drives the mic ActionIcon and the voiceError Alert below - see
+  // handleMicClick/handleRecordingStopped, which follow the same state-and-
+  // Alert shape handleSend's isSending/sendFailed already use.
+  const [micState, setMicState] = useState<MicState>('idle')
+  const [voiceError, setVoiceError] = useState<string | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   // The scrollable message list itself (the inner Stack below, not the
   // outer page column) - read/written directly via scrollTop/scrollHeight
@@ -252,6 +279,16 @@ export function ChatPage(): JSX.Element {
   // on every later messages/isSending change (which should keep using the
   // ordinary near-bottom auto-follow behavior below it instead).
   const hasRestoredInitialScrollRef = useRef(false)
+  // The in-progress MediaRecorder (see handleMicClick) - a ref, not state,
+  // since it's an imperative handle (started/stopped by calling methods on
+  // it directly), not something a re-render should ever read/display.
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  // Audio chunks collected via the recorder's ondataavailable handler,
+  // assembled into one Blob once recording stops (see
+  // handleRecordingStopped) - a ref rather than state for the same reason as
+  // mediaRecorderRef above, plus it needs to be reset synchronously at the
+  // start of each new recording without waiting on a re-render.
+  const recordedChunksRef = useRef<Blob[]>([])
 
   function handleMessageListScroll(event: React.UIEvent<HTMLDivElement>): void {
     const list = event.currentTarget
@@ -440,6 +477,64 @@ export function ChatPage(): JSX.Element {
     }
   }
 
+  // Idle -> requests mic access and starts recording. Recording -> stops the
+  // in-progress recorder, which triggers its 'stop' handler (wired below)
+  // and, in turn, handleRecordingStopped. Transcribing -> ignored, so a
+  // stray click mid-request can't stop/restart anything.
+  async function handleMicClick(): Promise<void> {
+    if (micState === 'recording') {
+      mediaRecorderRef.current?.stop()
+      return
+    }
+    if (micState !== 'idle') {
+      return
+    }
+
+    setVoiceError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      recordedChunksRef.current = []
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data)
+        }
+      }
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop())
+        void handleRecordingStopped()
+      }
+      mediaRecorderRef.current = recorder
+      recorder.start()
+      setMicState('recording')
+    } catch {
+      // getUserMedia rejected - no mic, permission denied, or the API isn't
+      // supported at all. Nothing was ever recording, so micState stays
+      // 'idle' rather than needing a reset here.
+      setVoiceError(VOICE_GENERIC_ERROR_MESSAGE)
+    }
+  }
+
+  // Assembles the recorded chunks into one Blob and uploads it for
+  // transcription. The result REPLACES the current draft rather than
+  // appending/merging with it - a deliberate choice (see
+  // .claude/plans/2026-08-13-voice-recognition.md's design notes): dictating
+  // after already having typed something is a rare edge case, and inventing
+  // concatenation/cursor-position semantics for it isn't worth the
+  // complexity when replacing is simple and predictable.
+  async function handleRecordingStopped(): Promise<void> {
+    setMicState('transcribing')
+    const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' })
+    try {
+      const text = await apiClient.transcribeVoice(blob)
+      setDraft(text)
+    } catch (error) {
+      setVoiceError(error instanceof VoiceUnavailableError ? VOICE_UNAVAILABLE_MESSAGE : VOICE_GENERIC_ERROR_MESSAGE)
+    } finally {
+      setMicState('idle')
+    }
+  }
+
   return (
     <Stack
       gap="lg"
@@ -616,6 +711,20 @@ export function ChatPage(): JSX.Element {
           </Alert>
         ) : null}
 
+        {voiceError ? (
+          <Alert
+            color="alertMagenta"
+            variant="light"
+            radius="lg"
+            title="Something went wrong"
+            withCloseButton
+            onClose={() => setVoiceError(null)}
+            style={{ flexShrink: 0 }}
+          >
+            {voiceError}
+          </Alert>
+        ) : null}
+
         {/* Naturally pinned at the bottom: it's the last child of the
             fixed-height flex column above, after the scrollable message
             list - not `position: sticky`, which only engages once there's
@@ -648,6 +757,21 @@ export function ChatPage(): JSX.Element {
               style={{ flex: 1 }}
               styles={{ input: { paddingLeft: 'var(--mantine-spacing-md)' } }}
             />
+            <ActionIcon
+              aria-label={micState === 'recording' ? 'Stop recording' : 'Start voice input'}
+              onClick={() => void handleMicClick()}
+              disabled={isSending || micState === 'transcribing'}
+              color={micState === 'recording' ? 'alertMagenta' : 'signalBlue'}
+              radius="xl"
+              size="xl"
+              variant={micState === 'recording' ? 'filled' : 'outline'}
+            >
+              {micState === 'transcribing' ? (
+                <Loader size="xs" color="white" data-testid="voice-transcribing" />
+              ) : (
+                <MicIcon />
+              )}
+            </ActionIcon>
             <ActionIcon
               aria-label="Send"
               onClick={() => void handleSend()}
