@@ -603,14 +603,15 @@ describe('ChatPage', () => {
       expect(recordedOscillatorFrequencies).toEqual([880])
     })
 
-    it('stopping the recording shows a transcribing state, then REPLACES the draft (not appends) once transcription resolves', async () => {
+    it('stopping the recording shows a transcribing state, then APPENDS the transcribed text to an existing draft (joined by a space)', async () => {
       stubMessagesAndTranscribe(() => jsonResponse({ text: 'hello' }))
       renderWithProviders(<ChatPage />)
       await screen.findByText('How do I upload a new document?')
 
       // Seed the input with prior text first, to prove the transcribed text
-      // REPLACES it rather than appending/merging - see this plan's design
-      // notes.
+      // is APPENDED (space-joined) rather than replacing it - revised
+      // 2026-08-14 per explicit request, see handleRecordingStopped's own
+      // comment.
       const input = screen.getByRole('textbox', { name: /message/i })
       fireEvent.change(input, { target: { value: 'existing draft text' } })
 
@@ -627,10 +628,29 @@ describe('ChatPage', () => {
       expect(screen.getByTestId('voice-transcribing')).toBeInTheDocument()
 
       await waitFor(() => {
-        expect(input).toHaveValue('hello')
+        expect(input).toHaveValue('existing draft text hello')
       })
       expect(screen.queryByTestId('voice-transcribing')).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: /start voice input/i })).toBeInTheDocument()
+    })
+
+    it('sets the transcribed text directly (no leading space) when the draft was empty', async () => {
+      stubMessagesAndTranscribe(() => jsonResponse({ text: 'hello' }))
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      const input = screen.getByRole('textbox', { name: /message/i })
+      expect(input).toHaveValue('')
+
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
+
+      await waitFor(() => {
+        expect(input).toHaveValue('hello')
+      })
     })
 
     it('plays a lower-pitched beep when the recording stops, distinct from the start beep', async () => {

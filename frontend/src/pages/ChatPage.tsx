@@ -587,18 +587,23 @@ export function ChatPage(): JSX.Element {
   }
 
   // Assembles the recorded chunks into one Blob and uploads it for
-  // transcription. The result REPLACES the current draft rather than
-  // appending/merging with it - a deliberate choice (see
-  // .claude/plans/2026-08-13-voice-recognition.md's design notes): dictating
-  // after already having typed something is a rare edge case, and inventing
-  // concatenation/cursor-position semantics for it isn't worth the
-  // complexity when replacing is simple and predictable.
+  // transcription. The result is APPENDED to the current draft (joined by a
+  // single space) rather than replacing it - revised 2026-08-14 per
+  // explicit request, from this feature's original REPLACES-the-draft
+  // design (see .claude/plans/2026-08-13-voice-recognition.md's design
+  // notes for that original reasoning) after live use showed replace felt
+  // wrong when re-recording to add more onto an already-dictated message.
+  // An empty (or whitespace-only) draft just becomes the transcribed text
+  // directly, with no leading space.
   async function handleRecordingStopped(): Promise<void> {
     setMicState('transcribing')
     const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' })
     try {
       const text = await apiClient.transcribeVoice(blob)
-      setDraft(text)
+      setDraft((current) => {
+        const trimmedCurrent = current.trim()
+        return trimmedCurrent ? `${trimmedCurrent} ${text}` : text
+      })
     } catch (error) {
       setVoiceError(error instanceof VoiceUnavailableError ? VOICE_UNAVAILABLE_MESSAGE : VOICE_GENERIC_ERROR_MESSAGE)
     } finally {
