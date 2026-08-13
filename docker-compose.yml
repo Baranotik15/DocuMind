@@ -72,6 +72,17 @@ services:
       # by storage_key. Without this, backend and worker each have their own
       # ephemeral container filesystem and the worker's read 404s.
       - documind_storage:/app/data
+      # Bind mount (not the named volume above) nested inside it - Docker
+      # mounts parent paths before child paths regardless of listed order,
+      # so this subtree resolves to the HOST's backend/data/vosk_models/
+      # instead of the named volume. Vosk models are operator-installed by
+      # hand (see README's Voice Recognition section: unzip into
+      # backend/data/vosk_models/, .gitignore'd, never committed) - a bind
+      # mount is what makes a model dropped there on the host actually
+      # visible inside the container without a manual `docker compose cp`,
+      # unlike documind_storage's own contents (uploaded documents), which
+      # only ever get written from inside a container to begin with.
+      - ./backend/data/vosk_models:/app/data/vosk_models
 
   worker:
     build: ./backend
@@ -84,6 +95,11 @@ services:
         condition: service_healthy
     volumes:
       - documind_storage:/app/data
+      # Same bind mount as backend above - the worker doesn't call
+      # transcribe_audio() itself (voice.py only runs in-request, on the
+      # backend), but keeping both services' /app/data trees identical
+      # avoids a confusing asymmetry if that ever changes.
+      - ./backend/data/vosk_models:/app/data/vosk_models
 
 volumes:
   postgres_data:
