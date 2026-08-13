@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { ActionIcon, Alert, Box, Button, Group, Loader, Modal, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
+import { ActionIcon, Alert, Box, Button, Group, Loader, Modal, Paper, Stack, Text, Textarea, Title } from '@mantine/core'
 
 import classes from './ChatPage.module.css'
 import { apiClient } from '../api/client'
@@ -144,6 +144,15 @@ const CHAT_COLUMN_MAX_WIDTH = '90rem'
 // message column can be wide while the input pill stays compact, centered
 // underneath it.
 const CHAT_INPUT_MAX_WIDTH = '60rem'
+
+// The message input's autosize bounds (see the Textarea below) - starts at
+// one line, grows with wrapped/multi-line content up to
+// CHAT_INPUT_MAX_ROWS rows, then stops growing and scrolls internally
+// instead - added per explicit request, since a long dictated/typed message
+// used to just scroll horizontally inside a single fixed-height line,
+// making it hard to read back before sending.
+const CHAT_INPUT_MIN_ROWS = 1
+const CHAT_INPUT_MAX_ROWS = 6
 
 /** Simple send-arrow glyph - no icon library installed (see design-principles.md). */
 function SendIcon(): JSX.Element {
@@ -817,17 +826,32 @@ export function ChatPage(): JSX.Element {
           style={{ border: '1px solid var(--doc-hairline)', flexShrink: 0 }}
           my="md"
         >
-          <Group gap="xs" wrap="nowrap">
-            <TextInput
+          {/* align="flex-end" (not the default center) so the mic/send
+              buttons stay pinned to the bottom of the input as it grows
+              past one line, matching how the growing Textarea below visibly
+              extends upward - centering them would look increasingly
+              off-balance the taller the box gets. */}
+          <Group gap="xs" wrap="nowrap" align="flex-end">
+            <Textarea
               aria-label="Message"
               placeholder="Message DocuMind"
               value={draft}
               onChange={(event) => setDraft(event.currentTarget.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') {
+                // Enter sends, same as the old single-line input - Shift+Enter
+                // is left unhandled here so the browser's own default
+                // textarea behavior (insert a newline) applies instead,
+                // letting a message be composed across multiple lines.
+                // preventDefault on the send path stops Enter from ALSO
+                // inserting a newline before handleSend clears the draft.
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
                   void handleSend()
                 }
               }}
+              autosize
+              minRows={CHAT_INPUT_MIN_ROWS}
+              maxRows={CHAT_INPUT_MAX_ROWS}
               variant="unstyled"
               size="lg"
               style={{ flex: 1 }}
