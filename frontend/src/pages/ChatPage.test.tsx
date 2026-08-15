@@ -2,7 +2,7 @@ import type { ChatMessage } from '../api/types'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fireEvent, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, waitFor, within } from '@testing-library/react'
 
 import { ChatPage } from './ChatPage'
 import { renderWithProviders, screen } from '../test-utils'
@@ -715,6 +715,187 @@ describe('ChatPage', () => {
       expect(await screen.findByText("Couldn't transcribe that - try again.")).toBeInTheDocument()
       expect(screen.getByRole('button', { name: /start voice input/i })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /stop recording/i })).not.toBeInTheDocument()
+    })
+  })
+
+  // The separate, dedicated voice-conversation-mode button/session (see
+  // useVoiceConversationSession.ts) - deliberately different stubbing shape
+  // than 'Voice input (mic button)' above: this feature owns a PERSISTENT
+  // WebSocket, not just getUserMedia/MediaRecorder, so FakeWebSocket is
+  // duplicated here rather than shared with useVoiceConversationSession's own
+  // test file, matching that file's own "small setup, fine to duplicate"
+  // call.
+  describe('Voice conversation mode', () => {
+    class FakeMediaRecorder {
+      stream: MediaStream
+      ondataavailable: ((event: { data: Blob }) => void) | null = null
+      onstop: (() => void) | null = null
+      constructor(stream: MediaStream) {
+        this.stream = stream
+      }
+      start(): void {}
+      stop(): void {}
+    }
+
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = []
+      url: string
+      send = vi.fn()
+      close = vi.fn()
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onclose: (() => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(url: string) {
+        this.url = url
+        FakeWebSocket.instances.push(this)
+      }
+    }
+
+    let getUserMediaMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+      FakeWebSocket.instances = []
+      getUserMediaMock = vi.fn().mockResolvedValue({ getTracks: () => [] } as unknown as MediaStream)
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: { getUserMedia: getUserMediaMock },
+      })
+      vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+      vi.stubGlobal('WebSocket', FakeWebSocket)
+    })
+
+    async function startVoiceConversation(): Promise<void> {
+      fireEvent.click(screen.getByRole('button', { name: /start voice conversation/i }))
+      await waitFor(() => {
+        expect(FakeWebSocket.instances).toHaveLength(1)
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /end voice conversation/i })).toBeInTheDocument()
+      })
+    }
+
+    it('clicking the button shows the listening state and disables the message input, Send button, and dictation mic button', async () => {
+      stubFetch()
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      await startVoiceConversation()
+
+      expect(screen.getByRole('textbox', { name: /message/i })).toBeDisabled()
+      expect(screen.getByRole('button', { name: /^send$/i })).toBeDisabled()
+      expect(screen.getByRole('button', { name: /start voice input/i })).toBeDisabled()
+    })
+
+    it("a 'user_message' event appends a user ChatMessage to the transcript", async () => {
+      stubFetch()
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      await startVoiceConversation()
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'user_message', id: 'voice-msg-1', content: 'what is the refund policy' }),
+        })
+      })
+
+      expect(await screen.findByText('what is the refund policy')).toBeInTheDocument()
+    })
+
+    it("'reply_delta' events after that render a growing assistant bubble with the accumulated text, not yet a real message", async () => {
+      stubFetch()
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      await startVoiceConversation()
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'user_message', id: 'voice-msg-1', content: 'what is the refund policy' }),
+        })
+      })
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'The refund' }) })
+      })
+      expect(await screen.findByText('The refund')).toBeInTheDocument()
+      expect(screen.getByTestId('voice-streaming-reply')).toBeInTheDocument()
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'reply_delta', content: ' policy is 30 days.' }),
+        })
+      })
+      expect(await screen.findByText('The refund policy is 30 days.')).toBeInTheDocument()
+    })
+
+    it("'reply_done' finalizes the streaming bubble into a real assistant message and the transient bubble disappears", async () => {
+      stubFetch()
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      await startVoiceConversation()
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'user_message', id: 'voice-msg-1', content: 'what is the refund policy' }),
+        })
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'reply_delta', content: 'The refund policy is 30 days.' }),
+        })
+      })
+      await screen.findByTestId('voice-streaming-reply')
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'reply_done', id: 'voice-reply-1', noAnswerFound: false }),
+        })
+      })
+
+      expect(await screen.findByText('The refund policy is 30 days.')).toBeInTheDocument()
+      expect(screen.queryByTestId('voice-streaming-reply')).not.toBeInTheDocument()
+    })
+
+    it("an 'error' event with detail 'voice_model_not_configured' shows the existing voice-unavailable alert", async () => {
+      stubFetch()
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      await startVoiceConversation()
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'error', detail: 'voice_model_not_configured' }),
+        })
+      })
+
+      expect(
+        await screen.findByText("Voice recognition isn't set up on the server yet - see the README's Voice Recognition section."),
+      ).toBeInTheDocument()
+    })
+
+    it('clicking the button again while active ends the session: input/Send/mic re-enable and the button returns to idle', async () => {
+      stubFetch()
+      renderWithProviders(<ChatPage />)
+      await screen.findByText('How do I upload a new document?')
+
+      await startVoiceConversation()
+
+      fireEvent.click(screen.getByRole('button', { name: /end voice conversation/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /start voice conversation/i })).toBeInTheDocument()
+      })
+      expect(FakeWebSocket.instances[0].close).toHaveBeenCalledTimes(1)
+      expect(screen.getByRole('textbox', { name: /message/i })).not.toBeDisabled()
+      expect(screen.getByRole('button', { name: /^send$/i })).not.toBeDisabled()
+      expect(screen.getByRole('button', { name: /start voice input/i })).not.toBeDisabled()
     })
   })
 })
