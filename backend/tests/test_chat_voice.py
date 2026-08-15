@@ -1,8 +1,9 @@
+import asyncio
 import io
 import wave
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 from app.chat import voice
 from app.chat.voice import (
@@ -115,3 +116,159 @@ def test_transcribe_audio_raises_when_unconfigured_and_never_converts(
         transcribe_audio(b"whatever", model=None)
 
     convert_mock.assert_not_called()
+
+
+# --- StreamingAudioDecoder -------------------------------------------------
+#
+# Wraps ONE long-lived ffmpeg subprocess via asyncio.create_subprocess_exec
+# (not the blocking subprocess.run used above) - no existing async-subprocess
+# test precedent in this file, so these fakes mimic asyncio's own
+# StreamWriter/StreamReader/Process surface directly:
+#   - stdin.write() is SYNC (buffers), stdin.drain()/close() per real
+#     asyncio.StreamWriter (drain is async, close is sync).
+#   - stdout.read(n) is ASYNC per real asyncio.StreamReader.
+#   - process.wait()/kill() per real asyncio.subprocess.Process (wait is
+#     async, kill is sync).
+# Every test drives the decoder's async methods via asyncio.run(), matching
+# this codebase's established convention (see this plan's Task 4 notes) of
+# not introducing pytest-asyncio for a handful of async call sites.
+
+
+def _fake_stdin() -> MagicMock:
+    stdin = MagicMock()
+    stdin.write = MagicMock()
+    stdin.drain = AsyncMock()
+    stdin.close = MagicMock()
+    return stdin
+
+
+def _fake_stdout(read_side_effect: list[bytes]) -> MagicMock:
+    stdout = MagicMock()
+    stdout.read = AsyncMock(side_effect=read_side_effect)
+    return stdout
+
+
+def _fake_process(
+    stdin: MagicMock | None = None,
+    stdout: MagicMock | None = None,
+    wait_side_effect: object = None,
+) -> MagicMock:
+    process = MagicMock()
+    process.stdin = stdin if stdin is not None else _fake_stdin()
+    process.stdout = stdout if stdout is not None else _fake_stdout([b""])
+    process.stderr = MagicMock()
+    process.wait = AsyncMock(side_effect=wait_side_effect)
+    process.kill = MagicMock()
+    return process
+
+
+def _patch_create_subprocess_exec(
+    monkeypatch: pytest.MonkeyPatch, process: MagicMock
+) -> AsyncMock:
+    create_mock = AsyncMock(return_value=process)
+    monkeypatch.setattr(voice.asyncio, "create_subprocess_exec", create_mock)
+    return create_mock
+
+
+def test_streaming_audio_decoder_starts_ffmpeg_with_raw_pcm_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one concrete assertion that this path genuinely differs from
+    convert_to_pcm_wav's: `-f s16le`, not `-f wav`, piped both ends."""
+    process = _fake_process()
+    create_mock = _patch_create_subprocess_exec(monkeypatch, process)
+
+    async def _run() -> None:
+        async with voice.StreamingAudioDecoder():
+            pass
+
+    asyncio.run(_run())
+
+    create_mock.assert_awaited_once()
+    args, kwargs = create_mock.call_args
+    assert "ffmpeg" in args
+    assert "-ar" in args
+    assert str(voice.TARGET_SAMPLE_RATE_HZ) in args
+    assert "-ac" in args
+    f_index = args.index("-f")
+    assert args[f_index + 1] == "s16le"
+    assert "wav" not in args
+    assert kwargs["stdin"] == asyncio.subprocess.PIPE
+    assert kwargs["stdout"] == asyncio.subprocess.PIPE
+    assert kwargs["stderr"] == asyncio.subprocess.PIPE
+
+
+def test_streaming_audio_decoder_write_writes_and_drains_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _fake_process()
+    _patch_create_subprocess_exec(monkeypatch, process)
+
+    async def _run() -> None:
+        async with voice.StreamingAudioDecoder() as decoder:
+            await decoder.write(b"abc")
+
+    asyncio.run(_run())
+
+    process.stdin.write.assert_called_once_with(b"abc")
+    process.stdin.drain.assert_awaited_once()
+
+
+def test_streaming_audio_decoder_read_yields_chunks_until_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _fake_process(stdout=_fake_stdout([b"pcm-1", b"pcm-2", b""]))
+    _patch_create_subprocess_exec(monkeypatch, process)
+
+    async def _run() -> list[bytes]:
+        collected: list[bytes] = []
+        async with voice.StreamingAudioDecoder() as decoder:
+            async for chunk in decoder.read():
+                collected.append(chunk)
+        return collected
+
+    collected = asyncio.run(_run())
+
+    assert collected == [b"pcm-1", b"pcm-2"]
+    assert process.stdout.read.await_count == 3
+
+
+def test_streaming_audio_decoder_aexit_closes_stdin_before_awaiting_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = MagicMock()
+    stdin = _fake_stdin()
+    stdin.close.side_effect = lambda: tracker.close()
+
+    async def _record_wait() -> None:
+        tracker.wait()
+
+    process = _fake_process(stdin=stdin)
+    process.wait = AsyncMock(side_effect=_record_wait)
+    _patch_create_subprocess_exec(monkeypatch, process)
+
+    async def _run() -> None:
+        async with voice.StreamingAudioDecoder():
+            pass
+
+    asyncio.run(_run())
+
+    assert tracker.mock_calls == [call.close(), call.wait()]
+
+
+def test_streaming_audio_decoder_aexit_kills_process_if_wait_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck/misbehaving ffmpeg process must never be left running after
+    the connection closes."""
+    process = _fake_process(wait_side_effect=[asyncio.TimeoutError(), None])
+    _patch_create_subprocess_exec(monkeypatch, process)
+
+    async def _run() -> None:
+        async with voice.StreamingAudioDecoder():
+            pass
+
+    asyncio.run(_run())
+
+    process.kill.assert_called_once()
+    assert process.wait.await_count == 2

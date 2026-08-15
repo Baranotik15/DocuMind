@@ -1,7 +1,9 @@
+import asyncio
 import json
 import os
 import subprocess
 import wave
+from collections.abc import AsyncIterator
 from functools import lru_cache
 from io import BytesIO
 
@@ -13,6 +15,16 @@ from app.config import get_settings
 vosk.SetLogLevel(-1)
 
 TARGET_SAMPLE_RATE_HZ = 16000
+
+# Chunk size for draining ffmpeg's stdout in StreamingAudioDecoder.read() -
+# arbitrary but reasonable; small enough to keep latency low, large enough
+# not to spend most of the time in read() syscall overhead.
+_STREAM_READ_CHUNK_SIZE = 4096
+
+# How long __aexit__ waits for ffmpeg to exit on its own (after closing
+# stdin) before concluding it's hung and force-killing it - see
+# StreamingAudioDecoder.__aexit__.
+_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 class VoiceRecognitionUnavailableError(Exception):
@@ -80,6 +92,99 @@ def convert_to_pcm_wav(audio_bytes: bytes) -> bytes:
         stderr_text = result.stderr.decode("utf-8", errors="replace")
         raise AudioConversionError(f"ffmpeg failed to convert audio: {stderr_text}")
     return result.stdout
+
+
+class StreamingAudioDecoder:
+    """One long-lived ffmpeg process per voice-conversation WebSocket
+    connection (app/chat/router.py's voice_session) - decodes whatever
+    container/codec the browser's continuously-chunked MediaRecorder
+    produces into a continuous raw PCM stream (mono, TARGET_SAMPLE_RATE_HZ,
+    16-bit, headerless - `ffmpeg ... -f s16le`, NOT `-f wav` like
+    convert_to_pcm_wav - there's no single complete WAV file in a
+    continuous stream to parse a header out of; every byte read from
+    ffmpeg's stdout here is immediately usable PCM).
+
+    `write()` and `read()` must be driven concurrently by the caller (two
+    asyncio tasks gathered for the connection's lifetime - see
+    app/chat/router.py's voice_session). ffmpeg's stdout pipe has a bounded
+    OS buffer; if nothing ever drains it, ffmpeg blocks writing its own
+    output, which stops it reading more stdin, which blocks our own
+    writes - a classic pipe deadlock. This class does not spawn its own
+    background draining task; it only wraps the subprocess and exposes
+    both sides.
+    """
+
+    def __init__(self) -> None:
+        self._process: asyncio.subprocess.Process | None = None
+
+    async def __aenter__(self) -> "StreamingAudioDecoder":
+        """Starts the ffmpeg subprocess via asyncio.create_subprocess_exec
+        (stdin=PIPE, stdout=PIPE, stderr=PIPE) - same flag set as
+        convert_to_pcm_wav's `-hide_banner -loglevel error -i pipe:0 -ar
+        {TARGET_SAMPLE_RATE_HZ} -ac 1`, but `-f s16le pipe:1` instead of
+        `-f wav pipe:1`."""
+        self._process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-ar",
+            str(TARGET_SAMPLE_RATE_HZ),
+            "-ac",
+            "1",
+            "-f",
+            "s16le",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        """Closes stdin (signals ffmpeg no more input is coming, so it
+        flushes and exits cleanly), awaits the process, and only then
+        force-kills it if it's still alive (a stuck/misbehaving ffmpeg
+        process must never be left running after the connection closes)."""
+        process = self._process
+        assert process is not None, "__aenter__ must run before __aexit__"
+
+        if process.stdin is not None:
+            process.stdin.close()
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+
+    async def write(self, chunk: bytes) -> None:
+        """Writes one incoming audio chunk to ffmpeg's stdin and drains
+        it (`await stdin.drain()`) - backpressure-aware, per this class's
+        concurrent-loops contract."""
+        process = self._process
+        assert process is not None and process.stdin is not None, (
+            "write() called outside an active StreamingAudioDecoder context"
+        )
+        process.stdin.write(chunk)
+        await process.stdin.drain()
+
+    async def read(self) -> AsyncIterator[bytes]:
+        """Yields decoded PCM as it becomes available from ffmpeg's
+        stdout (`await stdout.read(n)` in a loop, some reasonable chunk
+        size), until stdout hits EOF (empty read - ffmpeg exited/stdin was
+        closed), at which point the generator ends."""
+        process = self._process
+        assert process is not None and process.stdout is not None, (
+            "read() called outside an active StreamingAudioDecoder context"
+        )
+        while True:
+            chunk = await process.stdout.read(_STREAM_READ_CHUNK_SIZE)
+            if not chunk:
+                return
+            yield chunk
 
 
 def transcribe_audio(audio_bytes: bytes, model: vosk.Model | None = None) -> str:
