@@ -752,10 +752,32 @@ describe('ChatPage', () => {
       }
     }
 
+    // jsdom never actually decodes/plays a real clip - same hand-driven-
+    // events stubbing style useVoiceConversationSession.test.ts already
+    // established for the hook's own reveal-pacing tests (ontimeupdate/
+    // onended are fired manually by test code, currentTime/duration are
+    // plain settable fields, not real media metadata).
+    class FakeAudio {
+      static instances: FakeAudio[] = []
+      src: string
+      currentTime = 0
+      duration = 0
+      ontimeupdate: (() => void) | null = null
+      onended: (() => void) | null = null
+      onerror: (() => void) | null = null
+      play = vi.fn()
+      pause = vi.fn()
+      constructor(src: string) {
+        this.src = src
+        FakeAudio.instances.push(this)
+      }
+    }
+
     let getUserMediaMock: ReturnType<typeof vi.fn>
 
     beforeEach(() => {
       FakeWebSocket.instances = []
+      FakeAudio.instances = []
       getUserMediaMock = vi.fn().mockResolvedValue({ getTracks: () => [] } as unknown as MediaStream)
       Object.defineProperty(navigator, 'mediaDevices', {
         configurable: true,
@@ -763,6 +785,8 @@ describe('ChatPage', () => {
       })
       vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
       vi.stubGlobal('WebSocket', FakeWebSocket)
+      vi.stubGlobal('Audio', FakeAudio)
+      vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:fake-url'), revokeObjectURL: vi.fn() })
     })
 
     async function startVoiceConversation(): Promise<void> {
@@ -806,7 +830,13 @@ describe('ChatPage', () => {
       expect(await screen.findByText('what is the refund policy')).toBeInTheDocument()
     })
 
-    it("'reply_delta' events after that render a growing assistant bubble with the accumulated text, not yet a real message", async () => {
+    it("'reply_delta' events after that render a growing assistant bubble with the accumulated text once paired with an audio_chunk and revealed", async () => {
+      // Paced text reveal (see useVoiceConversationSession.ts's own tests
+      // for the full pacing mechanism) buffers reply_delta text until it's
+      // paired with the next audio_chunk, then reveals it as that clip's
+      // FakeAudio reports playback progress via ontimeupdate - matching
+      // the hook's own test file's stubbing style (a real Audio instance
+      // never actually gets constructed/played in jsdom).
       stubFetch()
       renderWithProviders(<ChatPage />)
       await screen.findByText('How do I upload a new document?')
@@ -822,13 +852,41 @@ describe('ChatPage', () => {
       act(() => {
         FakeWebSocket.instances[0].onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'The refund' }) })
       })
-      expect(await screen.findByText('The refund')).toBeInTheDocument()
+      // Still buffered, not yet revealed - no audio_chunk has claimed it yet.
+      expect(screen.queryByText('The refund')).not.toBeInTheDocument()
       expect(screen.getByTestId('voice-streaming-reply')).toBeInTheDocument()
+
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('first-clip') }),
+        })
+      })
+      const firstAudio = FakeAudio.instances[0]
+      act(() => {
+        firstAudio.duration = 4
+        firstAudio.currentTime = 4
+        firstAudio.ontimeupdate?.()
+      })
+      expect(await screen.findByText('The refund')).toBeInTheDocument()
 
       act(() => {
         FakeWebSocket.instances[0].onmessage?.({
           data: JSON.stringify({ type: 'reply_delta', content: ' policy is 30 days.' }),
         })
+      })
+      act(() => {
+        firstAudio.onended?.()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('second-clip') }),
+        })
+      })
+      const secondAudio = FakeAudio.instances[1]
+      act(() => {
+        secondAudio.duration = 3
+        secondAudio.currentTime = 3
+        secondAudio.ontimeupdate?.()
       })
       expect(await screen.findByText('The refund policy is 30 days.')).toBeInTheDocument()
     })
