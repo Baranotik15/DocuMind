@@ -393,6 +393,17 @@ export function ChatPage(): JSX.Element {
   // "separate from the real list" shape as the isSending typing indicator
   // below, just showing real growing text instead of three dots.
   const [streamingReplyContent, setStreamingReplyContent] = useState<string | null>(null)
+  // Mirrors streamingReplyContent's value synchronously, read directly (not
+  // through a state updater) by onReplyDone below - a functional state
+  // updater must stay pure and can be invoked more than once by React (e.g.
+  // under StrictMode's double-invoke-to-catch-impurities behavior), and
+  // nesting a SECOND setState call (setMessages) inside
+  // setStreamingReplyContent's own updater was observed, live, to push the
+  // same finalized message into `messages` twice (a duplicate-key React
+  // warning, and a genuinely duplicated bubble) for exactly that reason.
+  // This ref sidesteps the problem entirely: nothing but a plain synchronous
+  // read happens inside any updater.
+  const streamingReplyContentRef = useRef('')
 
   // Owns the WebSocket + continuously-chunked MediaRecorder for the SEPARATE
   // hands-free voice-conversation button (see useVoiceConversationSession.ts
@@ -403,21 +414,22 @@ export function ChatPage(): JSX.Element {
       setMessages((current) => [...current, { id: message.id, role: 'user', content: message.content, disliked: false }])
       // A reply is now expected - empty string, not null, so the streaming
       // bubble renders immediately even before the first delta arrives.
+      streamingReplyContentRef.current = ''
       setStreamingReplyContent('')
     },
     onReplyDelta: (content) => {
+      streamingReplyContentRef.current += content
       setStreamingReplyContent((current) => (current ?? '') + content)
     },
     onReplyDone: (message) => {
-      // Reads the accumulated text via the updater's own `current` param
-      // (rather than closing over the streamingReplyContent variable, which
-      // could be stale) - the backend's reply_done event deliberately does
-      // NOT resend the full reply text (see this feature's plan), so this
-      // is the only place with the complete string.
-      setStreamingReplyContent((current) => {
-        setMessages((prev) => [...prev, { id: message.id, role: 'assistant', content: current ?? '', disliked: false }])
-        return null
-      })
+      // streamingReplyContentRef.current is the complete accumulated text -
+      // the backend's reply_done event deliberately does NOT resend it (see
+      // this feature's plan).
+      setMessages((prev) => [
+        ...prev,
+        { id: message.id, role: 'assistant', content: streamingReplyContentRef.current, disliked: false },
+      ])
+      setStreamingReplyContent(null)
     },
     onError: (detail) => {
       setStreamingReplyContent(null)
