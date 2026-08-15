@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,18 @@ NO_ANSWER_MARKER = "[[NO_ANSWER]]"
 class GeneratedReply:
     content: str
     no_answer_found: bool
+
+
+@dataclass
+class StreamingReplyResult:
+    """Mutable result populated by generate_reply_stream as it consumes the
+    OpenAI stream - read AFTER the async generator it returns is fully
+    exhausted (an async generator's yielded values are the only thing
+    `async for` exposes; there's no ergonomic way to also get a return
+    value out of one, hence this out-parameter style instead)."""
+
+    content: str = ""
+    no_answer_found: bool = False
 
 
 async def generate_reply(
@@ -55,6 +68,88 @@ async def generate_reply(
     except Exception as exc:
         raise LLMError(f"Failed to generate reply: {exc}") from exc
     return _parse_reply(content)
+
+
+async def generate_reply_stream(
+    user_message: str,
+    context_chunks: list[str],
+    result: StreamingReplyResult,
+    client: AsyncOpenAI | None = None,
+) -> AsyncIterator[str]:
+    """Streaming counterpart to generate_reply - same
+    get_settings().openai_chat_model/messages construction via
+    _build_system_prompt, same LLMError-on-any-SDK-failure contract
+    (including a failure partway through iteration). Calls
+    active_client.chat.completions.create(..., stream=True) and yields each
+    chunk's delta content as it arrives.
+
+    Buffers incoming deltas locally until it has at least
+    len(NO_ANSWER_MARKER) characters (or the stream ends first - a valid
+    short reply, not an error). Checks whether that buffered prefix EQUALS
+    NO_ANSWER_MARKER: if so, sets result.no_answer_found = True, drops the
+    marker plus any immediately-following whitespace (matching
+    _parse_reply's .lstrip()) without ever yielding it, and streams
+    everything after normally; if not, yields the buffered prefix as-is
+    first, then continues streaming normally. Every piece actually yielded
+    is also appended to result.content, so result.content holds the exact
+    final reply text once exhausted - see this plan's design notes for why
+    the caller relies on that instead of resending the full text later."""
+    messages = [
+        {"role": "system", "content": _build_system_prompt(context_chunks)},
+        {"role": "user", "content": user_message},
+    ]
+    buffer = ""
+    threshold_reached = False
+    stripping_leading_whitespace = False
+    try:
+        active_client = client if client is not None else get_client()
+        stream = await active_client.chat.completions.create(
+            model=get_settings().openai_chat_model,
+            messages=messages,
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if not delta:
+                continue
+
+            if not threshold_reached:
+                buffer += delta
+                if len(buffer) < len(NO_ANSWER_MARKER):
+                    continue
+                threshold_reached = True
+                if buffer.startswith(NO_ANSWER_MARKER):
+                    result.no_answer_found = True
+                    remainder = buffer[len(NO_ANSWER_MARKER) :].lstrip()
+                    buffer = ""
+                    if remainder:
+                        result.content += remainder
+                        yield remainder
+                    else:
+                        stripping_leading_whitespace = True
+                    continue
+                piece = buffer
+                buffer = ""
+                result.content += piece
+                yield piece
+                continue
+
+            if stripping_leading_whitespace:
+                delta = delta.lstrip()
+                if not delta:
+                    continue
+                stripping_leading_whitespace = False
+
+            result.content += delta
+            yield delta
+    except LLMError:
+        raise
+    except Exception as exc:
+        raise LLMError(f"Failed to generate reply: {exc}") from exc
+
+    if not threshold_reached and buffer:
+        result.content += buffer
+        yield buffer
 
 
 def _parse_reply(raw_content: str) -> GeneratedReply:
