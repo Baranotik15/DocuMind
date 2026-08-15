@@ -1,10 +1,12 @@
 import asyncio
+import base64
 import io
 import json
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -19,7 +21,6 @@ from app.chat.voice import AudioConversionError, VoiceRecognitionUnavailableErro
 from app.chunks.embedding import LLMError
 from app.chunks.vectors import format_vector
 from app.config import Settings
-from app.db.session import async_session_factory
 from app.db.sync_session import SyncSessionLocal
 from app.main import app
 
@@ -982,7 +983,7 @@ def test_voice_session_finalized_segment_calls_handle_finalized_turn(
 
         _wait_until(lambda: mock_handle_turn.await_count >= 1)
 
-    mock_handle_turn.assert_awaited_once_with(ANY, ANY, ANY, "what is the refund policy")
+    mock_handle_turn.assert_awaited_once_with(ANY, ANY, "what is the refund policy")
 
 
 def test_voice_session_empty_finalized_text_is_skipped_and_session_stays_open(
@@ -1015,7 +1016,7 @@ def test_voice_session_empty_finalized_text_is_skipped_and_session_stays_open(
 
     # Exactly one call, ever - the canary's. The empty-text finalize on
     # chunk-2 never triggered a call of its own.
-    mock_handle_turn.assert_awaited_once_with(ANY, ANY, ANY, "canary text")
+    mock_handle_turn.assert_awaited_once_with(ANY, ANY, "canary text")
 
 
 def test_voice_session_unconfigured_model_sends_error_event_and_closes(
@@ -1039,13 +1040,16 @@ def test_voice_session_unconfigured_model_sends_error_event_and_closes(
         voice._get_model.cache_clear()
 
 
-# --- _handle_finalized_turn (Task 4: retrieval + streaming reply) ----------
+# --- _handle_finalized_turn (Task 4: retrieval + streaming reply; Task 3 of
+# Phase 2: sentence-buffered TTS + its own DB session) ----------------------
 #
 # Called directly as a plain async function (not through the WebSocket route
-# itself) against a real test-DB session, matching test_analysis_service.py's
-# own `_run(coro)` + `async_session_factory()` idiom rather than
-# test_chat_router.py's HTTP-request-based tests above - there's no HTTP
+# itself), matching test_analysis_service.py's own `_run(coro)` idiom rather
+# than test_chat_router.py's HTTP-request-based tests above - there's no HTTP
 # request/response cycle for a VAD-triggered turn to ride along on.
+# `_handle_finalized_turn` opens its OWN `async_session_factory()` session
+# internally (see this plan's design notes on why - it's what makes
+# cancelling its task safe), so these tests no longer pass one in.
 
 
 def _run(coro):
@@ -1053,17 +1057,27 @@ def _run(coro):
 
 
 async def _call_handle_finalized_turn(websocket, spoken_text: str) -> None:
-    async with async_session_factory() as session:
-        await chat_router._handle_finalized_turn(
-            websocket, session, asyncio.Lock(), spoken_text
-        )
+    await chat_router._handle_finalized_turn(websocket, asyncio.Lock(), spoken_text)
 
 
 async def _fake_generate_reply_stream_success(user_message, context_chunks, result):
     # Mirrors app.chat.completion.generate_reply_stream's own out-parameter
     # contract: every piece yielded is also appended to result.content, and
     # result.no_answer_found is set once the stream is fully consumed.
-    for piece in ["Paris", " is", " the capital"]:
+    #
+    # Deliberately split so a sentence boundary is confirmed (a "." followed
+    # by whitespace already buffered - see SentenceBuffer.add) only once the
+    # SECOND piece arrives, and a THIRD piece follows it with no boundary of
+    # its own - this is what proves TTS's audio_chunk events genuinely land
+    # BETWEEN reply_delta events (after the delta that completes a sentence,
+    # before the next one), not just bunched in after the whole stream ends:
+    # "Paris is the capital." completes only once " It" arrives (confirming
+    # the trailing space after that period), and that sentence is
+    # synthesized+sent before " is a great city." (the third piece) is ever
+    # consumed. The trailing "It is a great city." (no confirming whitespace
+    # after its own final ".") only ever completes via flush() once the
+    # stream ends.
+    for piece in ["Paris is the capital.", " It", " is a great city."]:
         result.content += piece
         yield piece
     result.no_answer_found = False
@@ -1101,6 +1115,8 @@ def test_handle_finalized_turn_happy_path_streams_reply_and_persists_both_rows(
     monkeypatch.setattr(
         chat_router, "generate_reply_stream", _fake_generate_reply_stream_success
     )
+    mock_synthesize_speech = AsyncMock(return_value=b"fake-mp3-bytes")
+    monkeypatch.setattr(chat_router, "synthesize_speech", mock_synthesize_speech)
     mock_websocket = MagicMock()
     mock_websocket.send_json = AsyncMock()
     user_content = f"what is the capital {uuid.uuid4()}"
@@ -1110,18 +1126,45 @@ def test_handle_finalized_turn_happy_path_streams_reply_and_persists_both_rows(
         _run(_call_handle_finalized_turn(mock_websocket, user_content))
 
         calls = mock_websocket.send_json.call_args_list
-        assert len(calls) == 5
+        event_types = [call.args[0]["type"] for call in calls]
+        # user_message, then 3 reply_deltas, with an audio_chunk landing
+        # BETWEEN the 2nd and 3rd delta (the sentence "Paris is the
+        # capital." only completes once the 2nd delta's leading space
+        # confirms the period isn't mid-word) and a second audio_chunk
+        # after the stream ends (the flush()ed trailing sentence), before
+        # reply_done - proving TTS audio is interleaved with, not just
+        # appended after, the text stream.
+        assert event_types == [
+            "user_message",
+            "reply_delta",
+            "reply_delta",
+            "audio_chunk",
+            "reply_delta",
+            "audio_chunk",
+            "reply_done",
+        ]
 
         user_event = calls[0].args[0]
-        assert user_event["type"] == "user_message"
         assert user_event["content"] == user_content
         message_ids.append(user_event["id"])
 
-        delta_events = [call.args[0] for call in calls[1:4]]
-        assert [event["type"] for event in delta_events] == ["reply_delta"] * 3
-        assert [event["content"] for event in delta_events] == ["Paris", " is", " the capital"]
+        delta_events = [calls[1].args[0], calls[2].args[0], calls[4].args[0]]
+        assert [event["content"] for event in delta_events] == [
+            "Paris is the capital.",
+            " It",
+            " is a great city.",
+        ]
 
-        done_event = calls[4].args[0]
+        first_audio_event = calls[3].args[0]
+        assert base64.b64decode(first_audio_event["audioBase64"]) == b"fake-mp3-bytes"
+        second_audio_event = calls[5].args[0]
+        assert base64.b64decode(second_audio_event["audioBase64"]) == b"fake-mp3-bytes"
+
+        mock_synthesize_speech.assert_has_awaits(
+            [call("Paris is the capital."), call("It is a great city.")]
+        )
+
+        done_event = calls[6].args[0]
         assert done_event["type"] == "reply_done"
         assert done_event["noAnswerFound"] is False
         message_ids.append(done_event["id"])
@@ -1134,9 +1177,67 @@ def test_handle_finalized_turn_happy_path_streams_reply_and_persists_both_rows(
         assistant_row = _fetch_chat_message_row(done_event["id"])
         assert assistant_row is not None
         assert assistant_row.role == "assistant"
-        assert assistant_row.content == "Paris is the capital"
+        assert assistant_row.content == "Paris is the capital. It is a great city."
         assert str(assistant_row.question_id) == user_event["id"]
         assert assistant_row.no_answer_found is False
+    finally:
+        _cleanup_messages(message_ids)
+
+
+def test_handle_finalized_turn_sentence_synthesis_error_degrades_to_text_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Proves this plan's "TTS failure degrades that one sentence to
+    # text-only" design decision - unlike an LLMError from
+    # generate_reply_stream itself (which ends the whole turn), a
+    # synthesize_speech failure for one sentence must not abort anything:
+    # every reply_delta still sends, the assistant row still gets written,
+    # reply_done still fires - the failed sentence just has no audio_chunk
+    # of its own.
+    monkeypatch.setattr(chat_router, "embed_texts", AsyncMock(side_effect=_fake_embed_texts))
+    monkeypatch.setattr(
+        chat_router, "generate_reply_stream", _fake_generate_reply_stream_success
+    )
+    mock_synthesize_speech = AsyncMock(
+        side_effect=[b"first-sentence-bytes", LLMError("tts boom")]
+    )
+    monkeypatch.setattr(chat_router, "synthesize_speech", mock_synthesize_speech)
+    mock_websocket = MagicMock()
+    mock_websocket.send_json = AsyncMock()
+    user_content = f"synthesis partial failure {uuid.uuid4()}"
+    message_ids: list[str] = []
+
+    try:
+        _run(_call_handle_finalized_turn(mock_websocket, user_content))
+
+        calls = mock_websocket.send_json.call_args_list
+        event_types = [call.args[0]["type"] for call in calls]
+        # Same shape as the happy-path test above, MINUS the second
+        # audio_chunk (its synthesize_speech call raised LLMError, swallowed
+        # by _synthesize_and_send_sentence) - everything else still happens.
+        assert event_types == [
+            "user_message",
+            "reply_delta",
+            "reply_delta",
+            "audio_chunk",
+            "reply_delta",
+            "reply_done",
+        ]
+
+        user_event = calls[0].args[0]
+        message_ids.append(user_event["id"])
+
+        audio_event = calls[3].args[0]
+        assert base64.b64decode(audio_event["audioBase64"]) == b"first-sentence-bytes"
+
+        done_event = calls[-1].args[0]
+        assert done_event["type"] == "reply_done"
+        message_ids.append(done_event["id"])
+
+        assistant_row = _fetch_chat_message_row(done_event["id"])
+        assert assistant_row is not None
+        assert assistant_row.content == "Paris is the capital. It is a great city."
+        assert str(assistant_row.question_id) == user_event["id"]
     finally:
         _cleanup_messages(message_ids)
 
@@ -1211,5 +1312,163 @@ def test_handle_finalized_turn_generate_reply_stream_llm_error_midstream_no_assi
         # "user message persists even if generation fails" guarantee).
         user_row = _fetch_chat_message_row(user_event["id"])
         assert user_row is not None
+    finally:
+        _cleanup_messages(message_ids)
+
+
+# --- Barge-in: a new finalized segment cancels the previous turn's task ----
+#
+# Driven through the real, live voice_session WebSocket route (not a direct
+# _handle_finalized_turn call like the tests above) - barge-in is entirely
+# voice_session's own responsibility (see its docstring), so it can only be
+# proven end-to-end. This needs a way to hold the FIRST turn's execution open
+# under test control while the SECOND segment finalizes, so the two turns'
+# asyncio.Tasks genuinely overlap - achieved by patching
+# generate_reply_stream with a fake that, for the first segment's text only,
+# yields one delta and then blocks on a `threading.Event` the test controls
+# (a plain threading.Event rather than an asyncio.Event: the WebSocket route
+# itself runs on a DIFFERENT OS thread than this test - see this file's own
+# "First WebSocket route..." comment above - and asyncio.Event.set() isn't
+# safe to call cross-thread without routing it through that other thread's
+# own event loop via call_soon_threadsafe; a plain threading.Event, polled
+# with a short asyncio.sleep from inside the fake generator, sidesteps that
+# entirely and needs no reference to the server's event loop at all).
+
+
+def test_voice_session_barge_in_cancels_previous_turn_before_it_completes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(chat_router, "get_voice_model", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        chat_router.vosk,
+        "KaldiRecognizer",
+        _fake_kaldi_recognizer_factory(
+            accept_waveform_results=[False, True, True],
+            result_texts=["first segment text", "second segment text"],
+        ),
+    )
+    monkeypatch.setattr(chat_router, "StreamingAudioDecoder", _FakeStreamingAudioDecoder)
+    monkeypatch.setattr(chat_router, "embed_texts", AsyncMock(side_effect=_fake_embed_texts))
+    monkeypatch.setattr(
+        chat_router, "synthesize_speech", AsyncMock(return_value=b"fake-mp3-bytes")
+    )
+
+    # Held open under test control until released below.
+    hold_gate = threading.Event()
+    # Set from inside the fake stream itself, once the first turn's task has
+    # genuinely reached (and is suspended at) the hold point - the
+    # deterministic signal this test polls on before finalizing the second
+    # segment, rather than guessing at timing.
+    first_turn_reached_hold = threading.Event()
+
+    async def _fake_generate_reply_stream(user_message, context_chunks, result):
+        if user_message == "first segment text":
+            result.content += "Hello"
+            yield "Hello"
+            first_turn_reached_hold.set()
+            while not hold_gate.is_set():
+                await asyncio.sleep(0.01)
+            # Only reached if this task was NOT actually cancelled - proves
+            # cancellation interrupted real, in-progress execution here,
+            # not merely that this turn was never started.
+            result.content += " should never finish"
+            yield " should never finish"
+            result.no_answer_found = False
+        else:
+            for piece in ["Bonjour", " tout le monde"]:
+                result.content += piece
+                yield piece
+            result.no_answer_found = False
+
+    monkeypatch.setattr(chat_router, "generate_reply_stream", _fake_generate_reply_stream)
+
+    received_events: list[dict] = []
+
+    def _drain_events(ws) -> None:
+        try:
+            while True:
+                received_events.append(ws.receive_json())
+        except Exception:
+            return  # Connection closed/torn down - the drainer's job is done.
+
+    message_ids: list[str] = []
+    try:
+        with client.websocket_connect("/internal/chat/voice-session") as ws:
+            reader_thread = threading.Thread(target=_drain_events, args=(ws,), daemon=True)
+            reader_thread.start()
+
+            # 1st segment: finalizes "first segment text", starting turn 1's
+            # task - it streams one delta then suspends at the hold point.
+            ws.send_bytes(b"chunk-1")
+            ws.send_bytes(b"chunk-2")
+            _wait_until(lambda: first_turn_reached_hold.is_set(), timeout=5.0)
+
+            # Turn 1's task is now genuinely in flight (past its own
+            # user_message + first reply_delta, suspended mid-generation) -
+            # safe to finalize the 2nd segment while it's still running.
+            ws.send_bytes(b"chunk-3")
+
+            # Turn 2 must run to completion, proving barge-in doesn't affect
+            # anything about the NEW turn.
+            _wait_until(
+                lambda: any(e["type"] == "reply_done" for e in received_events), timeout=5.0
+            )
+
+            # Release turn 1's hold gate. If cancel() had NOT actually taken
+            # effect, this would let it wrongly resume and finish/persist -
+            # giving the assertions below real teeth, not just "it happened
+            # to never get there in time".
+            hold_gate.set()
+            time.sleep(0.3)
+
+        reader_thread.join(timeout=2.0)
+
+        # No stray content or event from the cancelled first turn ever
+        # arrived - specifically, its post-hold continuation never ran.
+        assert not any(
+            "should never finish" in json.dumps(event) for event in received_events
+        )
+        # Exactly one reply_done ever - the second turn's. The first turn's
+        # task was cancelled before it could ever reach its own step 4.
+        reply_done_events = [e for e in received_events if e["type"] == "reply_done"]
+        assert len(reply_done_events) == 1
+
+        with SyncSessionLocal() as sync_session:
+            first_user_row = sync_session.execute(
+                text(
+                    "SELECT id FROM chat_messages WHERE role = 'user' "
+                    "AND content = 'first segment text'"
+                )
+            ).one_or_none()
+        assert first_user_row is not None
+        first_user_id = str(first_user_row.id)
+        message_ids.append(first_user_id)
+
+        # The cancelled first turn's own assistant row was NEVER created -
+        # the definitive proof this was a real cancellation, not merely a
+        # race the test happened to win.
+        assert _chat_messages_with_question_id(first_user_id) == []
+
+        with SyncSessionLocal() as sync_session:
+            second_user_row = sync_session.execute(
+                text(
+                    "SELECT id FROM chat_messages WHERE role = 'user' "
+                    "AND content = 'second segment text'"
+                )
+            ).one_or_none()
+        assert second_user_row is not None
+        second_user_id = str(second_user_row.id)
+        message_ids.append(second_user_id)
+
+        second_turn_assistant_rows = _chat_messages_with_question_id(second_user_id)
+        assert len(second_turn_assistant_rows) == 1
+        second_assistant_id = str(second_turn_assistant_rows[0].id)
+        message_ids.append(second_assistant_id)
+
+        second_assistant_row = _fetch_chat_message_row(second_assistant_id)
+        assert second_assistant_row is not None
+        assert second_assistant_row.content == "Bonjour tout le monde"
+
+        assert reply_done_events[0]["id"] == second_assistant_id
     finally:
         _cleanup_messages(message_ids)

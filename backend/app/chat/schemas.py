@@ -101,3 +101,21 @@ class VoiceErrorEvent(BaseModel):
 
     type: Literal["error"] = "error"
     detail: str
+
+
+class VoiceAudioChunkEvent(BaseModel):
+    """Sent once a completed sentence of the in-progress reply (see
+    app.chat.sentence_buffer.SentenceBuffer) has been synthesized to speech
+    (app.chat.voice.synthesize_speech) - `audioBase64` is that sentence's
+    raw MP3 clip, base64-encoded for JSON transport, per
+    `.claude/plans/2026-08-15-voice-conversation-mode-phase-2.md`'s design
+    notes on why audio rides inside a JSON event instead of a separate
+    binary WS frame. Interleaved with reply_delta events for the same turn
+    (both are sent as soon as they're each ready) - not a replacement for
+    them, since the frontend still needs the text for the transcript. A
+    synthesis failure for one sentence is swallowed by the caller (see
+    app.chat.router._synthesize_and_send_sentence) rather than represented
+    here - that sentence simply has no corresponding event at all."""
+
+    type: Literal["audio_chunk"] = "audio_chunk"
+    audioBase64: str
