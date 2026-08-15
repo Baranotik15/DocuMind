@@ -56,8 +56,28 @@ describe('useVoiceConversationSession', () => {
     }
   }
 
+  // Stands in for the browser's real HTMLAudioElement/`Audio` constructor -
+  // jsdom has no real playback, so (matching FakeWebSocket/FakeMediaRecorder
+  // above) this fake exposes play/pause as vi.fn()s and lets a test fire
+  // onended/onerror by hand instead of relying on real timing.
+  class FakeAudio {
+    static instances: FakeAudio[] = []
+    src: string
+    play = vi.fn()
+    pause = vi.fn()
+    onended: (() => void) | null = null
+    onerror: (() => void) | null = null
+
+    constructor(src: string) {
+      this.src = src
+      FakeAudio.instances.push(this)
+    }
+  }
+
   let getUserMediaMock: ReturnType<typeof vi.fn>
   let stopTrackMock: ReturnType<typeof vi.fn>
+  let createObjectURLMock: ReturnType<typeof vi.fn>
+  let revokeObjectURLMock: ReturnType<typeof vi.fn>
   // Each field is vi.fn<T>() (the exact callback signature as vitest 4's own
   // single-generic-parameter form), not a bare vi.fn() - so each mock is
   // simultaneously assignable to VoiceConversationCallbacks itself AND still
@@ -73,6 +93,7 @@ describe('useVoiceConversationSession', () => {
   beforeEach(() => {
     FakeMediaRecorder.instances = []
     FakeWebSocket.instances = []
+    FakeAudio.instances = []
     stopTrackMock = vi.fn()
     getUserMediaMock = vi.fn().mockResolvedValue({
       getTracks: () => [{ stop: stopTrackMock }],
@@ -86,6 +107,14 @@ describe('useVoiceConversationSession', () => {
     })
     vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('Audio', FakeAudio)
+    // jsdom has no real Blob-URL implementation - fakes return a distinct,
+    // incrementing URL string each call, which is all these tests need to
+    // tell queued clips apart.
+    let nextObjectURLId = 0
+    createObjectURLMock = vi.fn(() => `blob:fake-url-${nextObjectURLId++}`)
+    revokeObjectURLMock = vi.fn()
+    vi.stubGlobal('URL', { createObjectURL: createObjectURLMock, revokeObjectURL: revokeObjectURLMock })
 
     callbacks = {
       onUserMessage: vi.fn<VoiceConversationCallbacks['onUserMessage']>(),
@@ -230,5 +259,119 @@ describe('useVoiceConversationSession', () => {
     // The underlying resources are still cleaned up even though this close
     // came from the server side rather than a user-initiated stop().
     expect(stopTrackMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('an audio_chunk event decodes and plays the clip via a fresh Audio element', async () => {
+    const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+    await act(async () => {
+      await result.current.start()
+    })
+    act(() => {
+      FakeWebSocket.instances[0].onopen?.()
+    })
+    const ws = FakeWebSocket.instances[0]
+
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+    })
+
+    expect(createObjectURLMock).toHaveBeenCalledTimes(1)
+    expect(FakeAudio.instances).toHaveLength(1)
+    expect(FakeAudio.instances[0].src).toBe('blob:fake-url-0')
+    expect(FakeAudio.instances[0].play).toHaveBeenCalledTimes(1)
+  })
+
+  it('queues a second audio_chunk clip and only starts it once the first finishes, proving sequential playback', async () => {
+    const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+    await act(async () => {
+      await result.current.start()
+    })
+    act(() => {
+      FakeWebSocket.instances[0].onopen?.()
+    })
+    const ws = FakeWebSocket.instances[0]
+
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+    })
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-2') }) })
+    })
+
+    // The second clip is queued, not played, while the first is still going.
+    expect(FakeAudio.instances).toHaveLength(1)
+    expect(FakeAudio.instances[0].play).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      FakeAudio.instances[0].onended?.()
+    })
+
+    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:fake-url-0')
+    expect(FakeAudio.instances).toHaveLength(2)
+    expect(FakeAudio.instances[1].src).toBe('blob:fake-url-1')
+    expect(FakeAudio.instances[1].play).toHaveBeenCalledTimes(1)
+  })
+
+  it('a user_message event arriving mid-playback stops and revokes the playing and queued clips, and a later audio_chunk starts fresh', async () => {
+    const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+    await act(async () => {
+      await result.current.start()
+    })
+    act(() => {
+      FakeWebSocket.instances[0].onopen?.()
+    })
+    const ws = FakeWebSocket.instances[0]
+
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+    })
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-2') }) })
+    })
+    expect(FakeAudio.instances).toHaveLength(1)
+    const playingClip = FakeAudio.instances[0]
+
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'user_message', id: 'msg-1', content: 'never mind' }) })
+    })
+
+    expect(playingClip.pause).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:fake-url-0')
+    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:fake-url-1')
+    expect(callbacks.onUserMessage).toHaveBeenCalledWith({ id: 'msg-1', content: 'never mind' })
+    // Nothing was left over from the interrupted turn - the queued clip
+    // never got its own Audio instance/play() call.
+    expect(FakeAudio.instances).toHaveLength(1)
+
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-3') }) })
+    })
+
+    expect(FakeAudio.instances).toHaveLength(2)
+    expect(FakeAudio.instances[1].src).toBe('blob:fake-url-2')
+    expect(FakeAudio.instances[1].play).toHaveBeenCalledTimes(1)
+  })
+
+  it('stop() while a clip is playing also pauses it and revokes its URL', async () => {
+    const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+    await act(async () => {
+      await result.current.start()
+    })
+    act(() => {
+      FakeWebSocket.instances[0].onopen?.()
+    })
+    const ws = FakeWebSocket.instances[0]
+
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+    })
+    const playingClip = FakeAudio.instances[0]
+
+    act(() => {
+      result.current.stop()
+    })
+
+    expect(playingClip.pause).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:fake-url-0')
   })
 })

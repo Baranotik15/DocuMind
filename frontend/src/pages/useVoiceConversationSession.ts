@@ -27,22 +27,39 @@ export interface VoiceConversationSession {
   stop: () => void
 }
 
-// The four event shapes the backend's voice-session WebSocket can send (see
+// The five event shapes the backend's voice-session WebSocket can send (see
 // backend/app/chat/schemas.py's VoiceUserMessageEvent/VoiceReplyDeltaEvent/
-// VoiceReplyDoneEvent/VoiceErrorEvent) - a plain discriminated union so
-// routeIncomingEvent below can switch on `.type` with narrowing. Deliberately
-// has NO catch-all/index-signature member for an unrecognized `.type` - see
-// routeIncomingEvent's own `default` branch for how that's handled instead;
-// adding one here would widen every other member's fields to `unknown`
-// (matching that member's index signature too, since a literal `.type` is
-// always also assignable to a `string`-typed one).
+// VoiceReplyDoneEvent/VoiceAudioChunkEvent/VoiceErrorEvent) - a plain
+// discriminated union so routeIncomingEvent below can switch on `.type` with
+// narrowing. Deliberately has NO catch-all/index-signature member for an
+// unrecognized `.type` - see routeIncomingEvent's own `default` branch for
+// how that's handled instead; adding one here would widen every other
+// member's fields to `unknown` (matching that member's index signature too,
+// since a literal `.type` is always also assignable to a `string`-typed
+// one).
 type VoiceSessionEvent =
   | { type: 'user_message'; id: string; content: string }
   | { type: 'reply_delta'; content: string }
   | { type: 'reply_done'; id: string; noAnswerFound: boolean }
+  | { type: 'audio_chunk'; audioBase64: string }
   | { type: 'error'; detail: string }
 
-function routeIncomingEvent(event: unknown, callbacks: VoiceConversationCallbacks): void {
+// The audio-playback side effects routeIncomingEvent needs beyond the four
+// caller-supplied VoiceConversationCallbacks - kept as a separate parameter
+// (not folded into VoiceConversationCallbacks) since these are internal to
+// this hook's own playback queue, not something ChatPage.tsx provides or
+// needs to know about (see this file's module doc / the phase 2 plan's
+// design notes: ChatPage.tsx needs zero changes for spoken replies).
+interface VoiceSessionAudioHandlers {
+  playAudioChunk: (audioBase64: string) => void
+  stopAndClearAudioQueue: () => void
+}
+
+function routeIncomingEvent(
+  event: unknown,
+  callbacks: VoiceConversationCallbacks,
+  audioHandlers: VoiceSessionAudioHandlers,
+): void {
   if (typeof event !== 'object' || event === null || !('type' in event)) {
     // Malformed/unexpected shape - same forward-compatible "ignore it"
     // contract as an unrecognized `.type` below.
@@ -52,6 +69,11 @@ function routeIncomingEvent(event: unknown, callbacks: VoiceConversationCallback
   const typedEvent = event as VoiceSessionEvent
   switch (typedEvent.type) {
     case 'user_message':
+      // A new user turn starting IS the entire barge-in signal (see this
+      // plan's design notes: no separate WS event exists for it) - stop and
+      // clear whatever reply audio was queued or still playing from the
+      // now-stale previous turn before surfacing the new one.
+      audioHandlers.stopAndClearAudioQueue()
       callbacks.onUserMessage({ id: typedEvent.id, content: typedEvent.content })
       return
     case 'reply_delta':
@@ -59,6 +81,9 @@ function routeIncomingEvent(event: unknown, callbacks: VoiceConversationCallback
       return
     case 'reply_done':
       callbacks.onReplyDone({ id: typedEvent.id, noAnswerFound: typedEvent.noAnswerFound })
+      return
+    case 'audio_chunk':
+      audioHandlers.playAudioChunk(typedEvent.audioBase64)
       return
     case 'error':
       callbacks.onError(typedEvent.detail)
@@ -97,6 +122,74 @@ export function useVoiceConversationSession(callbacks: VoiceConversationCallback
   const wsRef = useRef<WebSocket | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  // Sequential spoken-reply playback queue - same imperative-handle
+  // convention as the refs above (these are started/stopped by calling
+  // methods on them directly, never read by a render). audioQueueRef holds
+  // object URLs for clips received but not yet started; currentAudioRef
+  // holds the one clip actually playing right now, if any.
+  const audioQueueRef = useRef<string[]>([])
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  // Plays the next queued clip, if any and if nothing is already playing -
+  // called once per audio_chunk received AND from a clip's own onended/
+  // onerror so playback advances through the queue one clip at a time
+  // (never overlapping, per the plan's design notes on synthesis order).
+  function playNextQueuedAudio(): void {
+    if (currentAudioRef.current) {
+      // Something is already playing - this will be called again once it
+      // ends (or errors).
+      return
+    }
+
+    const nextUrl = audioQueueRef.current.shift()
+    if (!nextUrl) {
+      return
+    }
+
+    const audio = new Audio(nextUrl)
+    currentAudioRef.current = audio
+    const advance = (): void => {
+      URL.revokeObjectURL(nextUrl)
+      currentAudioRef.current = null
+      playNextQueuedAudio()
+    }
+    // onerror is treated identically to onended - one bad clip must not
+    // wedge the rest of the queue behind it.
+    audio.onended = advance
+    audio.onerror = advance
+    audio.play()
+  }
+
+  // The entire barge-in mechanism (see this file's module doc / the phase 2
+  // plan's design notes): stops+clears whatever's currently playing and
+  // discards every still-queued clip. Called both when a new user_message
+  // arrives mid-reply and from teardown(), so ending the session
+  // mid-playback silences immediately too.
+  function stopAndClearAudioQueue(): void {
+    const audio = currentAudioRef.current
+    currentAudioRef.current = null
+    if (audio) {
+      audio.pause()
+      URL.revokeObjectURL(audio.src)
+    }
+
+    audioQueueRef.current.forEach((url) => URL.revokeObjectURL(url))
+    audioQueueRef.current = []
+  }
+
+  // Decodes a base64-encoded MP3 sentence clip into a Blob object URL,
+  // queues it, and kicks off playback (a no-op if a clip is already
+  // playing - it'll be picked up once that one ends).
+  function playAudioChunk(audioBase64: string): void {
+    const binary = atob(audioBase64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mp3' }))
+    audioQueueRef.current.push(url)
+    playNextQueuedAudio()
+  }
 
   // Shared by stop() AND by an unexpected ws.onclose/onerror - both must
   // leave every resource released and status back at 'idle', so this is the
@@ -128,6 +221,8 @@ export function useVoiceConversationSession(callbacks: VoiceConversationCallback
       ws.onerror = null
       ws.close()
     }
+
+    stopAndClearAudioQueue()
 
     setStatus('idle')
   }
@@ -162,7 +257,7 @@ export function useVoiceConversationSession(callbacks: VoiceConversationCallback
         // unrecognized `.type` in routeIncomingEvent above.
         return
       }
-      routeIncomingEvent(parsed, callbacks)
+      routeIncomingEvent(parsed, callbacks, { playAudioChunk, stopAndClearAudioQueue })
     }
 
     // Both an unexpected close and a socket-level error end the session the
