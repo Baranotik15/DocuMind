@@ -19,6 +19,7 @@ from app.chat.voice import AudioConversionError, VoiceRecognitionUnavailableErro
 from app.chunks.embedding import LLMError
 from app.chunks.vectors import format_vector
 from app.config import Settings
+from app.db.session import async_session_factory
 from app.db.sync_session import SyncSessionLocal
 from app.main import app
 
@@ -1036,3 +1037,179 @@ def test_voice_session_unconfigured_model_sends_error_event_and_closes(
                 ws.receive_text()
     finally:
         voice._get_model.cache_clear()
+
+
+# --- _handle_finalized_turn (Task 4: retrieval + streaming reply) ----------
+#
+# Called directly as a plain async function (not through the WebSocket route
+# itself) against a real test-DB session, matching test_analysis_service.py's
+# own `_run(coro)` + `async_session_factory()` idiom rather than
+# test_chat_router.py's HTTP-request-based tests above - there's no HTTP
+# request/response cycle for a VAD-triggered turn to ride along on.
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+async def _call_handle_finalized_turn(websocket, spoken_text: str) -> None:
+    async with async_session_factory() as session:
+        await chat_router._handle_finalized_turn(
+            websocket, session, asyncio.Lock(), spoken_text
+        )
+
+
+async def _fake_generate_reply_stream_success(user_message, context_chunks, result):
+    # Mirrors app.chat.completion.generate_reply_stream's own out-parameter
+    # contract: every piece yielded is also appended to result.content, and
+    # result.no_answer_found is set once the stream is fully consumed.
+    for piece in ["Paris", " is", " the capital"]:
+        result.content += piece
+        yield piece
+    result.no_answer_found = False
+
+
+async def _fake_generate_reply_stream_llm_error_partway(user_message, context_chunks, result):
+    result.content += "Pa"
+    yield "Pa"
+    raise LLMError("boom mid-stream")
+
+
+def _fetch_chat_message_row(message_id: str):
+    with SyncSessionLocal() as session:
+        return session.execute(
+            text(
+                "SELECT id, role, content, question_id, no_answer_found "
+                "FROM chat_messages WHERE id = :id"
+            ),
+            {"id": message_id},
+        ).one_or_none()
+
+
+def _chat_messages_with_question_id(question_id: str) -> list:
+    with SyncSessionLocal() as session:
+        return session.execute(
+            text("SELECT id FROM chat_messages WHERE question_id = :question_id"),
+            {"question_id": question_id},
+        ).all()
+
+
+def test_handle_finalized_turn_happy_path_streams_reply_and_persists_both_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_router, "embed_texts", AsyncMock(side_effect=_fake_embed_texts))
+    monkeypatch.setattr(
+        chat_router, "generate_reply_stream", _fake_generate_reply_stream_success
+    )
+    mock_websocket = MagicMock()
+    mock_websocket.send_json = AsyncMock()
+    user_content = f"what is the capital {uuid.uuid4()}"
+    message_ids: list[str] = []
+
+    try:
+        _run(_call_handle_finalized_turn(mock_websocket, user_content))
+
+        calls = mock_websocket.send_json.call_args_list
+        assert len(calls) == 5
+
+        user_event = calls[0].args[0]
+        assert user_event["type"] == "user_message"
+        assert user_event["content"] == user_content
+        message_ids.append(user_event["id"])
+
+        delta_events = [call.args[0] for call in calls[1:4]]
+        assert [event["type"] for event in delta_events] == ["reply_delta"] * 3
+        assert [event["content"] for event in delta_events] == ["Paris", " is", " the capital"]
+
+        done_event = calls[4].args[0]
+        assert done_event["type"] == "reply_done"
+        assert done_event["noAnswerFound"] is False
+        message_ids.append(done_event["id"])
+
+        user_row = _fetch_chat_message_row(user_event["id"])
+        assert user_row is not None
+        assert user_row.role == "user"
+        assert user_row.content == user_content
+
+        assistant_row = _fetch_chat_message_row(done_event["id"])
+        assert assistant_row is not None
+        assert assistant_row.role == "assistant"
+        assert assistant_row.content == "Paris is the capital"
+        assert str(assistant_row.question_id) == user_event["id"]
+        assert assistant_row.no_answer_found is False
+    finally:
+        _cleanup_messages(message_ids)
+
+
+def test_handle_finalized_turn_embed_texts_llm_error_sends_error_event_no_assistant_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_router, "embed_texts", AsyncMock(side_effect=LLMError("boom")))
+    mock_generate_reply_stream = AsyncMock()
+    monkeypatch.setattr(chat_router, "generate_reply_stream", mock_generate_reply_stream)
+    mock_websocket = MagicMock()
+    mock_websocket.send_json = AsyncMock()
+    user_content = f"doomed voice question {uuid.uuid4()}"
+    message_ids: list[str] = []
+
+    try:
+        _run(_call_handle_finalized_turn(mock_websocket, user_content))
+
+        calls = mock_websocket.send_json.call_args_list
+        assert len(calls) == 2
+
+        user_event = calls[0].args[0]
+        assert user_event["type"] == "user_message"
+        message_ids.append(user_event["id"])
+
+        error_event = calls[1].args[0]
+        assert error_event == {"type": "error", "detail": "chat_completion_failed"}
+
+        mock_generate_reply_stream.assert_not_called()
+
+        user_row = _fetch_chat_message_row(user_event["id"])
+        assert user_row is not None
+
+        # No assistant row was ever written for this question.
+        assert _chat_messages_with_question_id(user_event["id"]) == []
+    finally:
+        _cleanup_messages(message_ids)
+
+
+def test_handle_finalized_turn_generate_reply_stream_llm_error_midstream_no_assistant_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_router, "embed_texts", AsyncMock(side_effect=_fake_embed_texts))
+    monkeypatch.setattr(
+        chat_router,
+        "generate_reply_stream",
+        _fake_generate_reply_stream_llm_error_partway,
+    )
+    mock_websocket = MagicMock()
+    mock_websocket.send_json = AsyncMock()
+    user_content = f"doomed streaming question {uuid.uuid4()}"
+    message_ids: list[str] = []
+
+    try:
+        _run(_call_handle_finalized_turn(mock_websocket, user_content))
+
+        calls = mock_websocket.send_json.call_args_list
+        assert len(calls) >= 2
+
+        user_event = calls[0].args[0]
+        assert user_event["type"] == "user_message"
+        message_ids.append(user_event["id"])
+
+        error_event = calls[-1].args[0]
+        assert error_event == {"type": "error", "detail": "chat_completion_failed"}
+
+        # Still no assistant row - a partial/truncated reply must never be
+        # persisted as if it were complete.
+        assert _chat_messages_with_question_id(user_event["id"]) == []
+
+        # The user message itself still persists (mirrors send_message's own
+        # "user message persists even if generation fails" guarantee).
+        user_row = _fetch_chat_message_row(user_event["id"])
+        assert user_row is not None
+    finally:
+        _cleanup_messages(message_ids)

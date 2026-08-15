@@ -3,13 +3,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import sqlalchemy
 import vosk
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_session
-from app.chat.completion import generate_reply
+from app.chat.completion import StreamingReplyResult, generate_reply, generate_reply_stream
 from app.chat.constants import ChatChannel, ChatRole
 from app.chat.schemas import (
     ChatMessageSummary,
@@ -21,6 +22,9 @@ from app.chat.schemas import (
     TopChunksRequest,
     TranscriptionResult,
     VoiceErrorEvent,
+    VoiceReplyDeltaEvent,
+    VoiceReplyDoneEvent,
+    VoiceUserMessageEvent,
 )
 from app.chat.voice import (
     AudioConversionError,
@@ -503,14 +507,110 @@ async def _handle_finalized_turn(
     send_lock: asyncio.Lock,
     text: str,
 ) -> None:
-    """Placeholder for Task 4 - see
-    `.claude/plans/2026-08-14-voice-conversation-mode.md` Task 4's own
-    contract for the real implementation (retrieval + streaming reply,
-    mirroring send_message's own steps). Task 3 only wires up the call
-    site from voice_session's decode loop above; this stub deliberately
-    does nothing yet."""
-    # TODO(Task 4): mirror send_message's insert-user-row -> embed ->
-    # retrieve -> stream-reply -> insert-assistant-row pipeline here,
-    # sending VoiceUserMessageEvent/VoiceReplyDeltaEvent/VoiceReplyDoneEvent/
-    # VoiceErrorEvent under send_lock at each step.
-    pass
+    """One full voice-triggered turn (called from voice_session's decode
+    loop above once VAD finalizes a non-empty speech segment) - mirrors
+    send_message's own steps but streams the reply instead of blocking on
+    the whole thing, and is triggered by VAD instead of an HTTP POST body.
+
+    This function's own `text` parameter (the recognized speech, per this
+    plan's Task 4 contract) deliberately shadows the module-level
+    `sqlalchemy.text` imported above for the rest of this file's raw-SQL
+    statements - every INSERT below therefore goes through the fully
+    qualified `sqlalchemy.text(...)` instead of the bare `text(...)` every
+    other function here uses, to avoid calling the string parameter as if
+    it were that function.
+
+    1. Inserts + commits the user chat_messages row (role='user',
+       content=text), then sends VoiceUserMessageEvent under send_lock -
+       same "persisted even if everything below fails" resilience as
+       send_message's own step 1.
+    2. embed_texts([text]) -> fetch_similar_chunks -> context_chunks,
+       identical to send_message's own retrieval step. Any LLMError here
+       sends VoiceErrorEvent(detail=_CHAT_COMPLETION_FAILED_ERROR) under
+       send_lock and returns - this turn ends, no assistant row, the
+       session keeps running (one failed turn shouldn't kill the whole
+       voice conversation).
+    3. Streams the reply via generate_reply_stream, sending a
+       VoiceReplyDeltaEvent under send_lock for each yielded piece. An
+       LLMError raised mid-stream gets the exact same
+       VoiceErrorEvent-then-return treatment as step 2 - a partial,
+       silently-truncated reply must never be persisted as if it were
+       complete.
+    4. Once the generator is exhausted, inserts + commits the assistant
+       row (role='assistant', content=result.content, question_id=step 1's
+       row id, no_answer_found=result.no_answer_found - identical column
+       set to send_message's own assistant INSERT), then sends
+       VoiceReplyDoneEvent under send_lock.
+    """
+    # 1. Insert + commit the user message, then announce it immediately.
+    user_row = (
+        await session.execute(
+            sqlalchemy.text(
+                "INSERT INTO chat_messages (role, content) VALUES (:role, :content) "
+                "RETURNING id"
+            ),
+            {"role": str(ChatRole.USER), "content": text},
+        )
+    ).one()
+    await session.commit()
+    async with send_lock:
+        await websocket.send_json(
+            VoiceUserMessageEvent(id=str(user_row.id), content=text).model_dump()
+        )
+
+    # 2. Embed the recognized text and run the same pgvector similarity
+    # search send_message's own retrieval step relies on.
+    try:
+        [query_embedding] = await embed_texts([text])
+        rows = await fetch_similar_chunks(
+            session, query_embedding, get_settings().chat_retrieval_top_k
+        )
+        context_chunks = [row.edited_content for row in rows]
+    except LLMError:
+        async with send_lock:
+            await websocket.send_json(
+                VoiceErrorEvent(detail=_CHAT_COMPLETION_FAILED_ERROR).model_dump()
+            )
+        return
+
+    # 3. Stream the reply, forwarding each piece as its own event as it
+    # arrives. A mid-stream LLMError ends the turn without ever inserting
+    # an assistant row for the (necessarily incomplete) reply.
+    result = StreamingReplyResult()
+    try:
+        async for delta in generate_reply_stream(text, context_chunks, result):
+            async with send_lock:
+                await websocket.send_json(VoiceReplyDeltaEvent(content=delta).model_dump())
+    except LLMError:
+        async with send_lock:
+            await websocket.send_json(
+                VoiceErrorEvent(detail=_CHAT_COMPLETION_FAILED_ERROR).model_dump()
+            )
+        return
+
+    # 4. Insert + commit the assistant message once the full reply is
+    # known, then announce completion - deliberately no `content` field on
+    # the event itself, since the frontend already has the exact text from
+    # accumulating every reply_delta it already received.
+    assistant_row = (
+        await session.execute(
+            sqlalchemy.text(
+                "INSERT INTO chat_messages (role, content, question_id, no_answer_found) "
+                "VALUES (:role, :content, :question_id, :no_answer_found) "
+                "RETURNING id"
+            ),
+            {
+                "role": str(ChatRole.ASSISTANT),
+                "content": result.content,
+                "question_id": str(user_row.id),
+                "no_answer_found": result.no_answer_found,
+            },
+        )
+    ).one()
+    await session.commit()
+    async with send_lock:
+        await websocket.send_json(
+            VoiceReplyDoneEvent(
+                id=str(assistant_row.id), noAnswerFound=result.no_answer_found
+            ).model_dump()
+        )
