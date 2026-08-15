@@ -59,14 +59,20 @@ describe('useVoiceConversationSession', () => {
   // Stands in for the browser's real HTMLAudioElement/`Audio` constructor -
   // jsdom has no real playback, so (matching FakeWebSocket/FakeMediaRecorder
   // above) this fake exposes play/pause as vi.fn()s and lets a test fire
-  // onended/onerror by hand instead of relying on real timing.
+  // onended/onerror/ontimeupdate by hand instead of relying on real timing.
+  // currentTime/duration are plain settable fields - a test sets them then
+  // fires ontimeupdate itself, standing in for the browser doing so as
+  // playback actually progresses.
   class FakeAudio {
     static instances: FakeAudio[] = []
     src: string
     play = vi.fn()
     pause = vi.fn()
+    currentTime = 0
+    duration = 0
     onended: (() => void) | null = null
     onerror: (() => void) | null = null
+    ontimeupdate: (() => void) | null = null
 
     constructor(src: string) {
       this.src = src
@@ -126,6 +132,11 @@ describe('useVoiceConversationSession', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    // Restores real timers for every test, whether or not a given test
+    // opted into vi.useFakeTimers() itself (a no-op when it didn't) - the
+    // no-audio-fallback tests below rely on fake timers and must not leak
+    // that into later tests.
+    vi.useRealTimers()
   })
 
   it('start() requests the mic, opens a WebSocket to the expected URL, and reaches "listening" once the socket opens and recording begins', async () => {
@@ -175,11 +186,16 @@ describe('useVoiceConversationSession', () => {
     act(() => {
       ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'Re' }) })
     })
-    expect(callbacks.onReplyDelta).toHaveBeenCalledWith('Re')
+    // Buffered, not forwarded yet - see the text/audio sync tests below for
+    // the pairing/pacing behavior this hook now applies to reply_delta.
+    expect(callbacks.onReplyDelta).not.toHaveBeenCalled()
 
     act(() => {
       ws.onmessage?.({ data: JSON.stringify({ type: 'reply_done', id: 'msg-2', noAnswerFound: false }) })
     })
+    // Nothing left to ever pair with 'Re' - reply_done flushes it, then
+    // fires immediately since the audio queue is empty/idle.
+    expect(callbacks.onReplyDelta).toHaveBeenCalledWith('Re')
     expect(callbacks.onReplyDone).toHaveBeenCalledWith({ id: 'msg-2', noAnswerFound: false })
 
     act(() => {
@@ -373,5 +389,272 @@ describe('useVoiceConversationSession', () => {
 
     expect(playingClip.pause).toHaveBeenCalledTimes(1)
     expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:fake-url-0')
+  })
+
+  // Task 1 of the text/audio sync plan (see .claude/plans/2026-08-15-voice-
+  // conversation-text-audio-sync.md): reply_delta text is buffered until an
+  // audio_chunk pairs it, then revealed progressively in step with that
+  // clip's own playback via native timeupdate, with a safety-net flush on
+  // onended/onerror and a no-audio fallback so a totally-TTS-broken reply
+  // still surfaces promptly.
+  describe('text/audio pacing', () => {
+    it('buffers several reply_delta events until an audio_chunk pairs them, forwarding nothing yet', async () => {
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'Hello' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: ' world' }) })
+      })
+      expect(callbacks.onReplyDelta).not.toHaveBeenCalled()
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+      })
+
+      // The audio_chunk claims the buffered text as its paired segment and
+      // starts playback, but nothing is REVEALED until timeupdate/ended
+      // fires - pairing and reveal are separate steps.
+      expect(FakeAudio.instances).toHaveLength(1)
+      expect(FakeAudio.instances[0].play).toHaveBeenCalledTimes(1)
+      expect(callbacks.onReplyDelta).not.toHaveBeenCalled()
+    })
+
+    it('reveals the paired text proportionally as ontimeupdate reports playback progress', async () => {
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'Hello world' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+      })
+      const audio = FakeAudio.instances[0]
+
+      act(() => {
+        audio.duration = 10
+        audio.currentTime = 5
+        audio.ontimeupdate?.()
+      })
+      // Roughly the first half of 'Hello world' (11 chars) - assert by
+      // slicing the known full text, not an exact pixel-perfect count.
+      const firstCall = callbacks.onReplyDelta.mock.calls[0]?.[0] ?? ''
+      expect(firstCall.length).toBeGreaterThan(0)
+      expect('Hello world'.startsWith(firstCall)).toBe(true)
+      expect(firstCall.length).toBeLessThan('Hello world'.length)
+
+      act(() => {
+        audio.currentTime = 10
+        audio.ontimeupdate?.()
+      })
+      const revealedSoFar = callbacks.onReplyDelta.mock.calls.map((call) => call[0]).join('')
+      expect(revealedSoFar).toBe('Hello world')
+    })
+
+    it('onended does a safety-net flush of whatever text was not yet revealed, exactly once', async () => {
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'Never fully ticked' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+      })
+      const audio = FakeAudio.instances[0]
+
+      // Simulate timeupdate under-firing: only a small partial reveal
+      // happens before the clip ends.
+      act(() => {
+        audio.duration = 10
+        audio.currentTime = 1
+        audio.ontimeupdate?.()
+      })
+      const revealedBeforeEnd = callbacks.onReplyDelta.mock.calls.map((call) => call[0]).join('')
+      expect(revealedBeforeEnd.length).toBeLessThan('Never fully ticked'.length)
+
+      act(() => {
+        audio.onended?.()
+      })
+
+      const revealedTotal = callbacks.onReplyDelta.mock.calls.map((call) => call[0]).join('')
+      expect(revealedTotal).toBe('Never fully ticked')
+
+      // The safety-net flush must not double-reveal characters already
+      // shown by timeupdate.
+      act(() => {
+        audio.onended?.()
+      })
+      const revealedAfterSecondEnded = callbacks.onReplyDelta.mock.calls.map((call) => call[0]).join('')
+      expect(revealedAfterSecondEnded).toBe('Never fully ticked')
+    })
+
+    it('falls back to immediate, unpaced forwarding for the rest of the turn once no audio_chunk arrives within the timeout', async () => {
+      vi.useFakeTimers()
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'stuck text' }) })
+      })
+      expect(callbacks.onReplyDelta).not.toHaveBeenCalled()
+
+      act(() => {
+        vi.advanceTimersByTime(4000)
+      })
+      expect(callbacks.onReplyDelta).toHaveBeenCalledWith('stuck text')
+      expect(FakeAudio.instances).toHaveLength(0)
+
+      // Sync mode stays OFF for the rest of the turn - a further
+      // reply_delta with still no audio is ALSO forwarded immediately, not
+      // buffered again waiting for another timeout.
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: ' more text' }) })
+      })
+      expect(callbacks.onReplyDelta).toHaveBeenCalledWith(' more text')
+      expect(callbacks.onReplyDelta).toHaveBeenCalledTimes(2)
+    })
+
+    it('reply_done arriving while a segment is still playing is deferred until the queue drains, then fires with the correct payload', async () => {
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'Answer text' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+      })
+      const audio = FakeAudio.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_done', id: 'msg-9', noAnswerFound: false }) })
+      })
+      expect(callbacks.onReplyDone).not.toHaveBeenCalled()
+
+      act(() => {
+        audio.onended?.()
+      })
+      expect(callbacks.onReplyDone).toHaveBeenCalledWith({ id: 'msg-9', noAnswerFound: false })
+      expect(callbacks.onReplyDone).toHaveBeenCalledTimes(1)
+    })
+
+    it('reply_done arriving with the queue already empty and idle fires onReplyDone immediately', async () => {
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_done', id: 'msg-10', noAnswerFound: true }) })
+      })
+      expect(callbacks.onReplyDone).toHaveBeenCalledWith({ id: 'msg-10', noAnswerFound: true })
+    })
+
+    it('reply_done arriving with leftover buffered (never-paired) text flushes it via onReplyDelta before onReplyDone fires', async () => {
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'trailing text' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_done', id: 'msg-11', noAnswerFound: false }) })
+      })
+
+      expect(callbacks.onReplyDelta).toHaveBeenCalledWith('trailing text')
+      expect(callbacks.onReplyDone).toHaveBeenCalledWith({ id: 'msg-11', noAnswerFound: false })
+      const deltaOrder = callbacks.onReplyDelta.mock.invocationCallOrder[0]
+      const doneOrder = callbacks.onReplyDone.mock.invocationCallOrder[0]
+      expect(deltaOrder).toBeLessThan(doneOrder)
+    })
+
+    it('a barge-in mid-reveal resets pairing/reveal/deferred-reply_done state so the new turn starts clean', async () => {
+      const { result } = renderHook(() => useVoiceConversationSession(callbacks))
+      await act(async () => {
+        await result.current.start()
+      })
+      act(() => {
+        FakeWebSocket.instances[0].onopen?.()
+      })
+      const ws = FakeWebSocket.instances[0]
+
+      // Old turn: one paired/playing segment, plus leftover unpaired text
+      // buffered after it, plus a reply_done that arrives while the queue
+      // is still busy (so it gets deferred).
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'Sentence one.' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-1') }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'Sentence two' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_done', id: 'msg-old', noAnswerFound: false }) })
+      })
+      expect(callbacks.onReplyDone).not.toHaveBeenCalled()
+
+      callbacks.onReplyDelta.mockClear()
+
+      // Barge-in: a new user_message interrupts everything above.
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'user_message', id: 'msg-new', content: 'never mind' }) })
+      })
+      expect(callbacks.onReplyDone).not.toHaveBeenCalled()
+
+      // New turn: fresh pairing/reveal, with none of the old turn's
+      // leftover text mixed in.
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_delta', content: 'New reply' }) })
+        ws.onmessage?.({ data: JSON.stringify({ type: 'audio_chunk', audioBase64: btoa('fake-mp3-bytes-2') }) })
+      })
+      const newAudio = FakeAudio.instances[FakeAudio.instances.length - 1]
+
+      act(() => {
+        newAudio.onended?.()
+      })
+      const revealedInNewTurn = callbacks.onReplyDelta.mock.calls.map((call) => call[0]).join('')
+      expect(revealedInNewTurn).toBe('New reply')
+
+      // The OLD turn's deferred reply_done must never fire, even though its
+      // queue is now (coincidentally) drained too.
+      expect(callbacks.onReplyDone).not.toHaveBeenCalled()
+
+      // A reply_done for the NEW turn still works normally (queue idle by
+      // this point).
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: 'reply_done', id: 'msg-new-done', noAnswerFound: false }) })
+      })
+      expect(callbacks.onReplyDone).toHaveBeenCalledWith({ id: 'msg-new-done', noAnswerFound: false })
+    })
   })
 })
