@@ -1,11 +1,14 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+import vosk
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import require_session
 from app.chat.completion import generate_reply
 from app.chat.constants import ChatChannel, ChatRole
 from app.chat.schemas import (
@@ -17,12 +20,16 @@ from app.chat.schemas import (
     TopChunkSummary,
     TopChunksRequest,
     TranscriptionResult,
+    VoiceErrorEvent,
 )
 from app.chat.voice import (
     AudioConversionError,
+    StreamingAudioDecoder,
+    TARGET_SAMPLE_RATE_HZ,
     VoiceRecognitionUnavailableError,
     transcribe_audio,
 )
+from app.chat.voice import _get_model as get_voice_model  # reused, not duplicated
 from app.chunks.embedding import LLMError, embed_texts
 from app.chunks.retrieval import fetch_similar_chunks
 from app.config import get_settings
@@ -395,3 +402,115 @@ async def transcribe_message(file: UploadFile) -> TranscriptionResult:
         raise HTTPException(status_code=400, detail=_AUDIO_PROCESSING_FAILED_ERROR)
 
     return TranscriptionResult(text=text_result)
+
+
+@router.websocket("/chat/voice-session")
+async def voice_session(
+    websocket: WebSocket,
+    user_email: str = Depends(require_session),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """First WebSocket route in this app - see
+    `.claude/plans/2026-08-14-voice-conversation-mode.md`'s "Key design
+    decisions" section for the full rationale behind every choice below.
+
+    `Depends(require_session)` is reused as-is (same dependency every other
+    `/internal/*` route relies on) - chat_router is ALSO wrapped with
+    `dependencies=[Depends(require_session)]` at the app.include_router
+    call in app/main.py, so auth is actually enforced twice over (FastAPI
+    caches same-callable dependency results per connection, so this costs
+    nothing extra); it's declared again here explicitly so `user_email` is
+    available to this function, and so this route's own auth story is
+    readable without cross-referencing app/main.py. A raised
+    HTTPException(401) from this dependency happens BEFORE this function's
+    body ever runs (dependencies are solved first) - FastAPI/Starlette
+    convert that into a clean pre-accept WebSocket denial response, not a
+    server-side crash (verified empirically for this app's exact FastAPI
+    version by this route's own test, not just assumed).
+
+    Flow: accepts the connection, resolves the configured Vosk model
+    (VoiceErrorEvent + close if VoiceRecognitionUnavailableError - the
+    ONLY event send that happens outside send_lock, since nothing else is
+    running yet at that point), then runs a receive loop
+    (`websocket.receive_bytes()` -> `decoder.write()`) and a decode/VAD
+    loop (`decoder.read()` -> `recognizer.AcceptWaveform()`) concurrently
+    via `asyncio.gather` for the connection's lifetime, inside one
+    `async with StreamingAudioDecoder() as decoder:` block. These two loops
+    MUST run concurrently, never sequentially - ffmpeg's stdout pipe has a
+    bounded OS buffer, so nothing draining it stalls ffmpeg's own stdin
+    reads, which stalls our writes (a classic pipe deadlock).
+
+    ONE `vosk.KaldiRecognizer` is created here, once, for the whole
+    connection (not per-chunk/per-turn) - Vosk's own pause/endpoint
+    detection needs continuous audio context across the whole session;
+    recreating it would reset that context and break turn detection.
+    Whenever `AcceptWaveform` reports a finalized segment, its text (if
+    non-empty - silence/noise finalizes to `""`, silently skipped) drives
+    one turn via `_handle_finalized_turn` (Task 4 implements the real
+    retrieval+streaming-reply pipeline there; this task only wires the call
+    site with a placeholder). `send_lock` is shared with that function too
+    (and passed through, not created per-call) since a new turn can
+    finalize and need to send its own `user_message` event while a
+    PREVIOUS turn's `reply_delta` events are still being sent - the mic
+    never stops listening in Phase 1, so these `websocket.send_json` calls
+    are never naturally serialized on their own.
+
+    Either loop ending via WebSocketDisconnect (the client closing the
+    connection) ends the `async with` block, tearing the decoder/ffmpeg
+    process down cleanly - `asyncio.gather` cancels the sibling task the
+    moment one raises, so this is caught once, here, rather than in each
+    loop individually."""
+    await websocket.accept()
+    send_lock = asyncio.Lock()
+
+    try:
+        model = get_voice_model()
+    except VoiceRecognitionUnavailableError:
+        async with send_lock:
+            await websocket.send_json(
+                VoiceErrorEvent(detail=_VOICE_MODEL_NOT_CONFIGURED_ERROR).model_dump()
+            )
+        await websocket.close()
+        return
+
+    recognizer = vosk.KaldiRecognizer(model, TARGET_SAMPLE_RATE_HZ)
+
+    async with StreamingAudioDecoder() as decoder:
+
+        async def _receive_loop() -> None:
+            while True:
+                chunk = await websocket.receive_bytes()
+                await decoder.write(chunk)
+
+        async def _decode_loop() -> None:
+            async for pcm_chunk in decoder.read():
+                if recognizer.AcceptWaveform(pcm_chunk):
+                    finalized_text = json.loads(recognizer.Result())["text"]
+                    if finalized_text:
+                        await _handle_finalized_turn(
+                            websocket, session, send_lock, finalized_text
+                        )
+
+        try:
+            await asyncio.gather(_receive_loop(), _decode_loop())
+        except WebSocketDisconnect:
+            pass
+
+
+async def _handle_finalized_turn(
+    websocket: WebSocket,
+    session: AsyncSession,
+    send_lock: asyncio.Lock,
+    text: str,
+) -> None:
+    """Placeholder for Task 4 - see
+    `.claude/plans/2026-08-14-voice-conversation-mode.md` Task 4's own
+    contract for the real implementation (retrieval + streaming reply,
+    mirroring send_message's own steps). Task 3 only wires up the call
+    site from voice_session's decode loop above; this stub deliberately
+    does nothing yet."""
+    # TODO(Task 4): mirror send_message's insert-user-row -> embed ->
+    # retrieve -> stream-reply -> insert-assistant-row pipeline here,
+    # sending VoiceUserMessageEvent/VoiceReplyDeltaEvent/VoiceReplyDoneEvent/
+    # VoiceErrorEvent under send_lock at each step.
+    pass

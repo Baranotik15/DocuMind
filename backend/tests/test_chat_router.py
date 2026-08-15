@@ -1,12 +1,19 @@
+import asyncio
 import io
+import json
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from starlette.testclient import WebSocketDenialResponse
 
+import app.chat.router as chat_router
+import app.chat.voice as voice
 from app.chat.completion import GeneratedReply
 from app.chat.voice import AudioConversionError, VoiceRecognitionUnavailableError
 from app.chunks.embedding import LLMError
@@ -857,3 +864,175 @@ def test_transcribe_without_session_cookie_returns_401() -> None:
 
     assert response.status_code == 401
     assert response.json() == {"detail": "not_authenticated"}
+
+
+# --- POST /chat/voice-session (WebSocket) -----------------------------------
+#
+# First WebSocket route in this codebase - no prior test precedent to follow
+# here. TestClient's `client.websocket_connect(...)` runs the ASGI app on a
+# separate background thread's own event loop (see
+# starlette.testclient.WebSocketTestSession), concurrently with this test's
+# own foreground thread - so, unlike every other test in this file, there's
+# no synchronous request/response round trip to rely on for "the server has
+# finished processing what I just sent". `_wait_until` below polls instead of
+# assuming any particular asyncio scheduling timing between the two threads.
+
+
+def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.01) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(interval)
+    raise AssertionError(f"condition not satisfied within {timeout}s")
+
+
+class _FakeStreamingAudioDecoder:
+    """Async-context-manager stand-in for app.chat.voice.StreamingAudioDecoder
+    - no real ffmpeg subprocess. write() appends to an internal buffer AND
+    puts the chunk onto an asyncio.Queue; read() re-yields whatever was
+    written, in arrival order, as it becomes available - a queue rather than
+    replaying a static list so the decode loop (a concurrent asyncio task)
+    can consume chunks as the receive loop writes them, matching the real
+    class's own concurrent-loops contract instead of assuming everything is
+    written before anything is read."""
+
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
+
+    async def __aenter__(self) -> "_FakeStreamingAudioDecoder":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+    async def write(self, chunk: bytes) -> None:
+        self.written.append(chunk)
+        await self._queue.put(chunk)
+
+    async def read(self):
+        while True:
+            yield await self._queue.get()
+
+
+def _fake_kaldi_recognizer_factory(
+    accept_waveform_results: list[bool], result_texts: list[str]
+):
+    """Returns a callable standing in for vosk.KaldiRecognizer - same
+    monkeypatching spirit as test_chat_voice.py's own vosk.KaldiRecognizer
+    fakes. `accept_waveform_results` scripts one AcceptWaveform() call per
+    PCM chunk fed to it (in order); `result_texts` scripts Result()'s
+    returned JSON text for each call where AcceptWaveform returned True (in
+    order - fewer entries than True results in the mock's own
+    StopIteration if over-called, which is deliberate: a test scripting too
+    few Result() values indicates a bug in that test)."""
+
+    def _factory(*args: object, **kwargs: object) -> MagicMock:
+        recognizer = MagicMock()
+        recognizer.AcceptWaveform = MagicMock(side_effect=accept_waveform_results)
+        recognizer.Result = MagicMock(
+            side_effect=[json.dumps({"text": t}) for t in result_texts]
+        )
+        return recognizer
+
+    return _factory
+
+
+def test_voice_session_without_session_cookie_is_rejected() -> None:
+    # The one test proving this plan's own design-notes assumption -
+    # Depends(require_session) actually rejects a websocket connection
+    # cleanly under this app's exact FastAPI version - rather than just
+    # trusting it. A bare TestClient (no session cookie, same idiom as
+    # test_list_disliked_messages_without_session_cookie_returns_401 above)
+    # must never reach voice_session's own body: FastAPI solves dependencies
+    # BEFORE the endpoint runs, so require_session's HTTPException(401) is
+    # raised pre-accept and Starlette/FastAPI convert that into a clean
+    # WebSocketDenialResponse (a WebSocketDisconnect subclass carrying the
+    # HTTPException's own status_code/body) instead of ever calling accept().
+    with pytest.raises(WebSocketDenialResponse) as exc_info:
+        with TestClient(app) as bare_client:
+            with bare_client.websocket_connect("/internal/chat/voice-session"):
+                pass  # pragma: no cover - never reached, connection is denied first
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.json() == {"detail": "not_authenticated"}
+
+
+def test_voice_session_finalized_segment_calls_handle_finalized_turn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(chat_router, "get_voice_model", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        chat_router.vosk,
+        "KaldiRecognizer",
+        _fake_kaldi_recognizer_factory(
+            accept_waveform_results=[False, True],
+            result_texts=["what is the refund policy"],
+        ),
+    )
+    monkeypatch.setattr(chat_router, "StreamingAudioDecoder", _FakeStreamingAudioDecoder)
+    mock_handle_turn = AsyncMock()
+    monkeypatch.setattr(chat_router, "_handle_finalized_turn", mock_handle_turn)
+
+    with client.websocket_connect("/internal/chat/voice-session") as ws:
+        ws.send_bytes(b"chunk-1")
+        ws.send_bytes(b"chunk-2")
+
+        _wait_until(lambda: mock_handle_turn.await_count >= 1)
+
+    mock_handle_turn.assert_awaited_once_with(ANY, ANY, ANY, "what is the refund policy")
+
+
+def test_voice_session_empty_finalized_text_is_skipped_and_session_stays_open(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(chat_router, "get_voice_model", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        chat_router.vosk,
+        "KaldiRecognizer",
+        _fake_kaldi_recognizer_factory(
+            # 2nd chunk finalizes to silence/noise (empty text) - must be
+            # silently skipped. 3rd chunk is a "canary": it finalizes to
+            # real text afterward, proving the session is still alive and
+            # correctly processing chunks after the empty one, not just
+            # that nothing crashed within some fixed wait window.
+            accept_waveform_results=[False, True, True],
+            result_texts=["", "canary text"],
+        ),
+    )
+    monkeypatch.setattr(chat_router, "StreamingAudioDecoder", _FakeStreamingAudioDecoder)
+    mock_handle_turn = AsyncMock()
+    monkeypatch.setattr(chat_router, "_handle_finalized_turn", mock_handle_turn)
+
+    with client.websocket_connect("/internal/chat/voice-session") as ws:
+        ws.send_bytes(b"chunk-1")
+        ws.send_bytes(b"chunk-2")
+        ws.send_bytes(b"chunk-3")
+
+        _wait_until(lambda: mock_handle_turn.await_count >= 1)
+
+    # Exactly one call, ever - the canary's. The empty-text finalize on
+    # chunk-2 never triggered a call of its own.
+    mock_handle_turn.assert_awaited_once_with(ANY, ANY, ANY, "canary text")
+
+
+def test_voice_session_unconfigured_model_sends_error_event_and_closes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same monkeypatch idiom as test_chat_voice.py's own
+    # test_get_model_raises_when_vosk_model_path_unconfigured - exercises
+    # the REAL app.chat.voice._get_model (aliased as
+    # app.chat.router.get_voice_model) rather than mocking it away, so this
+    # test also proves the two are genuinely wired together.
+    voice._get_model.cache_clear()
+    monkeypatch.setattr(voice, "get_settings", lambda: Settings(vosk_model_path=""))
+    try:
+        with client.websocket_connect("/internal/chat/voice-session") as ws:
+            event = ws.receive_json()
+            assert event == {"type": "error", "detail": "voice_model_not_configured"}
+
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_text()
+    finally:
+        voice._get_model.cache_clear()
