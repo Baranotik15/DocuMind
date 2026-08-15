@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     openai_admin_api_key: str = ""
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4o-mini"
+    openai_tts_model: str = "tts-1"
+    # One of OpenAI's fixed voice names (alloy/echo/fable/onyx/nova/shimmer,
+    # per the SDK's own Voice literal type) - a single deployment-wide voice,
+    # no per-user/per-message selection (see the spec's Non-Goals).
+    openai_tts_voice: str = "alloy"
     chat_retrieval_top_k: int = 5
 
     storage_base_dir: str = "./data/documents"

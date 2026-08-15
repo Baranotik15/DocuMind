@@ -9,9 +9,11 @@ from app.chat import voice
 from app.chat.voice import (
     AudioConversionError,
     VoiceRecognitionUnavailableError,
+    synthesize_speech,
     transcribe_audio,
 )
-from app.config import Settings
+from app.chunks.embedding import LLMError
+from app.config import Settings, get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -272,3 +274,47 @@ def test_streaming_audio_decoder_aexit_kills_process_if_wait_times_out(
 
     process.kill.assert_called_once()
     assert process.wait.await_count == 2
+
+
+# --- synthesize_speech ------------------------------------------------------
+
+
+def _fake_speech_response(audio_bytes: bytes) -> MagicMock:
+    response = MagicMock()
+    response.aread = AsyncMock(return_value=audio_bytes)
+    return response
+
+
+def test_synthesize_speech_returns_audio_bytes() -> None:
+    client = MagicMock()
+    client.audio.speech.create = AsyncMock(
+        return_value=_fake_speech_response(b"fake-mp3-bytes")
+    )
+
+    result = asyncio.run(synthesize_speech("Hello", client=client))
+
+    assert result == b"fake-mp3-bytes"
+
+
+def test_synthesize_speech_calls_client_with_configured_model_and_voice() -> None:
+    client = MagicMock()
+    client.audio.speech.create = AsyncMock(
+        return_value=_fake_speech_response(b"fake-mp3-bytes")
+    )
+
+    asyncio.run(synthesize_speech("Hello", client=client))
+
+    client.audio.speech.create.assert_awaited_once_with(
+        model=get_settings().openai_tts_model,
+        voice=get_settings().openai_tts_voice,
+        input="Hello",
+        response_format="mp3",
+    )
+
+
+def test_synthesize_speech_raises_llm_error_on_sdk_failure() -> None:
+    client = MagicMock()
+    client.audio.speech.create = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with pytest.raises(LLMError):
+        asyncio.run(synthesize_speech("Hello", client=client))

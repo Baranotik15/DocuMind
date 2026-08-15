@@ -8,7 +8,9 @@ from functools import lru_cache
 from io import BytesIO
 
 import vosk
+from openai import AsyncOpenAI
 
+from app.chunks.embedding import LLMError, get_client  # reused, not duplicated
 from app.config import get_settings
 
 # Silences Kaldi's default stderr logging spam - set once at import time.
@@ -218,3 +220,27 @@ def transcribe_audio(audio_bytes: bytes, model: vosk.Model | None = None) -> str
     recognizer = vosk.KaldiRecognizer(active_model, TARGET_SAMPLE_RATE_HZ)
     recognizer.AcceptWaveform(frames)
     return json.loads(recognizer.FinalResult())["text"]
+
+
+async def synthesize_speech(text: str, client: AsyncOpenAI | None = None) -> bytes:
+    """Synthesizes `text` to speech via get_settings().openai_tts_model/
+    openai_tts_voice, response_format="mp3" (small, universally decodable
+    by a browser <audio>/Web Audio API element - each call synthesizes one
+    already-complete short sentence, not a continuous stream, so there's
+    no container-streaming complexity to handle). Returns the complete
+    clip's raw bytes (`await response.aread()` - HttpxBinaryResponseContent,
+    not a plain awaited bytes value). Raises LLMError on any SDK failure,
+    same contract as embed_texts/generate_reply - callers don't need a
+    separate exception type for a third OpenAI-backed capability.
+    `client` defaults to get_client() - tests inject a fake."""
+    try:
+        active_client = client if client is not None else get_client()
+        response = await active_client.audio.speech.create(
+            model=get_settings().openai_tts_model,
+            voice=get_settings().openai_tts_voice,
+            input=text,
+            response_format="mp3",
+        )
+        return await response.aread()
+    except Exception as exc:
+        raise LLMError(f"Failed to synthesize speech: {exc}") from exc
