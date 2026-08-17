@@ -37,6 +37,8 @@ export interface ApiClient {
   /** POST /internal/chat/messages/{messageId}/dismiss-no-answer - one-way, clears the flag (not a toggle, unlike dislikeMessage). */
   dismissNoAnswerMessage(messageId: string): Promise<void>
   getTopMatchingChunks(content: string): Promise<RelevantChunkMatch[]>
+  /** POST /internal/chat/transcribe - uploads one recorded audio clip, returns its transcribed text. Throws VoiceUnavailableError (503) if no Vosk model is configured server-side. */
+  transcribeVoice(audioBlob: Blob): Promise<string>
   getDashboardEvents(): Promise<DashboardEvent[]>
   /** `tz` is an IANA zone name (e.g. "Europe/Kyiv") sent to the backend as the `tz` query param - only affects the "day" range's bucket alignment (see GET /internal/dashboard/stats's contract); "7days"/"month"/"year" ignore it entirely. */
   getDashboardStats(range: DashboardStatsRange, tz: string): Promise<DashboardStats>
