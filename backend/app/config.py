@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     openai_admin_api_key: str = ""
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4o-mini"
+    openai_tts_model: str = "tts-1"
+    # One of OpenAI's fixed voice names (alloy/echo/fable/onyx/nova/shimmer,
+    # per the SDK's own Voice literal type) - a single deployment-wide voice,
+    # no per-user/per-message selection (see the spec's Non-Goals).
+    openai_tts_voice: str = "alloy"
     chat_retrieval_top_k: int = 5
 
     storage_base_dir: str = "./data/documents"
@@ -53,6 +58,15 @@ class Settings(BaseSettings):
     # fails signature verification (401) rather than crashing at import time.
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
+
+    # Absolute or CWD-relative path to an unzipped Vosk model directory (e.g.
+    # "./data/vosk_models/vosk-model-small-ru-0.22") - operator-installed, never
+    # bundled with the app (see backend/data/vosk_models/, .gitignore'd, and the
+    # README's voice-recognition setup section). Empty (default) means voice
+    # input is unconfigured - app/chat/voice.py's _get_model() is what actually
+    # enforces "gracefully unavailable, not a crash" for that, same convention as
+    # openai_api_key/slack_bot_token above.
+    vosk_model_path: str = ""
 
 
 @lru_cache

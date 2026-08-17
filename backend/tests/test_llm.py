@@ -3,7 +3,14 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.chat.completion import NO_ANSWER_MARKER, GeneratedReply, _parse_reply, generate_reply
+from app.chat.completion import (
+    NO_ANSWER_MARKER,
+    GeneratedReply,
+    StreamingReplyResult,
+    _parse_reply,
+    generate_reply,
+    generate_reply_stream,
+)
 from app.chunks import embedding
 from app.chunks.embedding import LLMError, embed_texts
 from app.config import Settings
@@ -30,6 +37,46 @@ def _make_chat_response(content: str) -> MagicMock:
     message = MagicMock(content=content)
     choice = MagicMock(message=message)
     return MagicMock(choices=[choice])
+
+
+def _make_stream_chunk(delta_content: str | None) -> MagicMock:
+    delta = MagicMock(content=delta_content)
+    choice = MagicMock(delta=delta)
+    return MagicMock(choices=[choice])
+
+
+class FakeAsyncStream:
+    """Wraps a list of scripted items so it behaves like the async-iterable
+    the real OpenAI SDK returns for stream=True: each item is either a chunk
+    MagicMock (yielded) or a BaseException instance (raised from __anext__,
+    simulating an SDK failure partway through iteration)."""
+
+    def __init__(self, items: list) -> None:
+        self._items = iter(items)
+
+    def __aiter__(self) -> "FakeAsyncStream":
+        return self
+
+    async def __anext__(self):
+        try:
+            item = next(self._items)
+        except StopIteration:
+            raise StopAsyncIteration
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+async def _collect_stream(
+    user_message: str,
+    context_chunks: list[str],
+    result: StreamingReplyResult,
+    client: MagicMock,
+) -> str:
+    pieces = []
+    async for delta in generate_reply_stream(user_message, context_chunks, result, client=client):
+        pieces.append(delta)
+    return "".join(pieces)
 
 
 def test_embed_texts_returns_vectors_in_input_order() -> None:
@@ -263,3 +310,73 @@ def test_parse_reply_marker_mentioned_mid_reply_is_not_treated_as_prefix() -> No
     result = _parse_reply(content)
 
     assert result == GeneratedReply(content=content, no_answer_found=False)
+
+
+def test_generate_reply_stream_yields_deltas_with_no_marker() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=FakeAsyncStream(
+            [_make_stream_chunk("Hello"), _make_stream_chunk(" there")]
+        )
+    )
+    result = StreamingReplyResult()
+
+    collected = asyncio.run(_collect_stream("hi", [], result, client))
+
+    assert collected == "Hello there"
+    assert result.content == "Hello there"
+    assert result.no_answer_found is False
+
+
+def test_generate_reply_stream_drops_marker_split_across_chunks() -> None:
+    split_point = len(NO_ANSWER_MARKER) // 2
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=FakeAsyncStream(
+            [
+                _make_stream_chunk(NO_ANSWER_MARKER[:split_point]),
+                _make_stream_chunk(NO_ANSWER_MARKER[split_point:]),
+                _make_stream_chunk("\nActual"),
+                _make_stream_chunk(" answer"),
+            ]
+        )
+    )
+    result = StreamingReplyResult()
+
+    collected = asyncio.run(_collect_stream("what is x?", ["chunk"], result, client))
+
+    assert NO_ANSWER_MARKER not in collected
+    assert collected == "Actual answer"
+    assert result.content == "Actual answer"
+    assert result.no_answer_found is True
+
+
+def test_generate_reply_stream_short_reply_shorter_than_marker_flushes_on_stream_end() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=FakeAsyncStream([_make_stream_chunk("Hi")])
+    )
+    result = StreamingReplyResult()
+
+    collected = asyncio.run(_collect_stream("hi", [], result, client))
+
+    assert collected == "Hi"
+    assert result.content == "Hi"
+    assert result.no_answer_found is False
+
+
+def test_generate_reply_stream_raises_llm_error_on_sdk_failure_mid_stream() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=FakeAsyncStream(
+            [_make_stream_chunk("Hello"), RuntimeError("boom")]
+        )
+    )
+    result = StreamingReplyResult()
+
+    async def _consume() -> None:
+        async for _ in generate_reply_stream("hi", [], result, client=client):
+            pass
+
+    with pytest.raises(LLMError):
+        asyncio.run(_consume())

@@ -2,14 +2,25 @@ import type { JSX } from 'react'
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { ActionIcon, Alert, Box, Button, Group, Modal, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
+import { ActionIcon, Alert, Box, Button, Group, Loader, Modal, Paper, Stack, Text, Textarea, Title } from '@mantine/core'
 
 import classes from './ChatPage.module.css'
+import { useVoiceConversationSession } from './useVoiceConversationSession'
 import { apiClient } from '../api/client'
-import { ChatCompletionError } from '../api/httpClient'
+import { ChatCompletionError, VoiceUnavailableError } from '../api/httpClient'
 import type { ChatMessage } from '../api/types'
 
 const SEND_ERROR_MESSAGE = "The assistant couldn't respond - try again."
+
+// Drives the mic ActionIcon's appearance/behavior (see handleMicClick/
+// handleRecordingStopped below): 'idle' -> clicking starts recording;
+// 'recording' -> clicking stops it (which triggers transcription);
+// 'transcribing' -> clicks are ignored until the request settles.
+type MicState = 'idle' | 'recording' | 'transcribing'
+
+const VOICE_UNAVAILABLE_MESSAGE =
+  "Voice recognition isn't set up on the server yet - see the README's Voice Recognition section."
+const VOICE_GENERIC_ERROR_MESSAGE = "Couldn't transcribe that - try again."
 
 // "Clear chat" (see handleClearChat) never deletes anything server-side -
 // chat history has no session/user scoping at all, so hiding a message
@@ -135,6 +146,15 @@ const CHAT_COLUMN_MAX_WIDTH = '90rem'
 // underneath it.
 const CHAT_INPUT_MAX_WIDTH = '60rem'
 
+// The message input's autosize bounds (see the Textarea below) - starts at
+// one line, grows with wrapped/multi-line content up to
+// CHAT_INPUT_MAX_ROWS rows, then stops growing and scrolls internally
+// instead - added per explicit request, since a long dictated/typed message
+// used to just scroll horizontally inside a single fixed-height line,
+// making it hard to read back before sending.
+const CHAT_INPUT_MIN_ROWS = 1
+const CHAT_INPUT_MAX_ROWS = 6
+
 /** Simple send-arrow glyph - no icon library installed (see design-principles.md). */
 function SendIcon(): JSX.Element {
   return (
@@ -153,6 +173,106 @@ function ThumbsDownIcon(): JSX.Element {
       <path d="M17 2h4v12h-4" />
     </svg>
   )
+}
+
+/** Hand-rolled mic glyph - same no-icon-library rationale as SendIcon/ThumbsDownIcon above. */
+function MicIcon(): JSX.Element {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  )
+}
+
+/**
+ * Filled square glyph shown on the mic button ONLY while recording (see its
+ * render site below) - the widely recognized "click to stop" cue (matches
+ * OS/video-call recording-stop buttons), so the recording state reads as
+ * unambiguous at a glance rather than relying on the button's red fill
+ * color alone.
+ */
+function StopIcon(): JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+      data-testid="voice-recording-icon"
+    >
+      <rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" />
+    </svg>
+  )
+}
+
+/**
+ * Hand-rolled waveform glyph for the SEPARATE voice-conversation button (see
+ * useVoiceConversationSession.ts) - same no-icon-library rationale as
+ * MicIcon/StopIcon above. A set of vertical bars of varying height reads as
+ * "live audio" at a glance, deliberately distinct from MicIcon's single-mic
+ * silhouette so the two controls never get confused for one another sitting
+ * side by side in the input bar.
+ */
+function VoiceConversationIcon(): JSX.Element {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" focusable="false">
+      <line x1="4" y1="9" x2="4" y2="15" />
+      <line x1="9" y1="5" x2="9" y2="19" />
+      <line x1="14" y1="2" x2="14" y2="22" />
+      <line x1="19" y1="7" x2="19" y2="17" />
+    </svg>
+  )
+}
+
+/** Distinguishable-by-ear pitches for playRecordingSound below - start
+ * noticeably higher than stop (mirrors the ascending/descending cue pairs
+ * common in video-call apps' own recording start/stop sounds), so a user
+ * who isn't looking at the screen can tell which one just played. */
+const RECORDING_START_BEEP_HZ = 880
+const RECORDING_STOP_BEEP_HZ = 440
+const RECORDING_BEEP_DURATION_S = 0.15
+
+/**
+ * Short audible cue played when a recording starts or stops (see
+ * handleMicClick's `recorder.start()` call site and its `onstop` handler
+ * below) - the mic button's own visual state change is easy to miss if the
+ * user isn't looking at the input bar, so this makes both edges audible
+ * too. A synthesized Web Audio API tone rather than an `<audio>` element
+ * playing a bundled sound file - no binary asset to ship, same hand-rolled,
+ * no-external-asset rationale as this file's SVG icons (see MicIcon/
+ * SendIcon above). Silently does nothing if the Web Audio API isn't
+ * available (old Safari, jsdom test environments) - same degrade-quietly
+ * convention as loadHiddenMessageIds above; a recording still starts/stops
+ * correctly either way, it just has no sound.
+ */
+function playRecordingSound(cue: 'start' | 'stop'): void {
+  try {
+    const AudioContextClass =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!AudioContextClass) {
+      return
+    }
+    const context = new AudioContextClass()
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.frequency.value = cue === 'start' ? RECORDING_START_BEEP_HZ : RECORDING_STOP_BEEP_HZ
+    // A quick exponential decay (rather than a flat tone cut off abruptly)
+    // so the beep reads as a soft "blip" instead of a harsh click.
+    gain.gain.setValueAtTime(0.15, context.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + RECORDING_BEEP_DURATION_S)
+    oscillator.start()
+    oscillator.stop(context.currentTime + RECORDING_BEEP_DURATION_S)
+    oscillator.onended = () => void context.close()
+  } catch {
+    // See this function's own doc comment - degrade quietly.
+  }
 }
 
 /**
@@ -217,6 +337,11 @@ export function ChatPage(): JSX.Element {
   // below, since without it the UI looks frozen after the optimistic user
   // message appears.
   const [isSending, setIsSending] = useState(false)
+  // Drives the mic ActionIcon and the voiceError Alert below - see
+  // handleMicClick/handleRecordingStopped, which follow the same state-and-
+  // Alert shape handleSend's isSending/sendFailed already use.
+  const [micState, setMicState] = useState<MicState>('idle')
+  const [voiceError, setVoiceError] = useState<string | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   // The scrollable message list itself (the inner Stack below, not the
   // outer page column) - read/written directly via scrollTop/scrollHeight
@@ -252,6 +377,65 @@ export function ChatPage(): JSX.Element {
   // on every later messages/isSending change (which should keep using the
   // ordinary near-bottom auto-follow behavior below it instead).
   const hasRestoredInitialScrollRef = useRef(false)
+  // The in-progress MediaRecorder (see handleMicClick) - a ref, not state,
+  // since it's an imperative handle (started/stopped by calling methods on
+  // it directly), not something a re-render should ever read/display.
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  // Audio chunks collected via the recorder's ondataavailable handler,
+  // assembled into one Blob once recording stops (see
+  // handleRecordingStopped) - a ref rather than state for the same reason as
+  // mediaRecorderRef above, plus it needs to be reset synchronously at the
+  // start of each new recording without waiting on a re-render.
+  const recordedChunksRef = useRef<Blob[]>([])
+  // The in-progress voice-conversation assistant reply's text so far (see
+  // the voiceConversation callbacks below) - null while nothing is
+  // streaming. A transient bubble, not a real entry in `messages` yet, same
+  // "separate from the real list" shape as the isSending typing indicator
+  // below, just showing real growing text instead of three dots.
+  const [streamingReplyContent, setStreamingReplyContent] = useState<string | null>(null)
+  // Mirrors streamingReplyContent's value synchronously, read directly (not
+  // through a state updater) by onReplyDone below - a functional state
+  // updater must stay pure and can be invoked more than once by React (e.g.
+  // under StrictMode's double-invoke-to-catch-impurities behavior), and
+  // nesting a SECOND setState call (setMessages) inside
+  // setStreamingReplyContent's own updater was observed, live, to push the
+  // same finalized message into `messages` twice (a duplicate-key React
+  // warning, and a genuinely duplicated bubble) for exactly that reason.
+  // This ref sidesteps the problem entirely: nothing but a plain synchronous
+  // read happens inside any updater.
+  const streamingReplyContentRef = useRef('')
+
+  // Owns the WebSocket + continuously-chunked MediaRecorder for the SEPARATE
+  // hands-free voice-conversation button (see useVoiceConversationSession.ts
+  // for the full lifecycle) - this component only wires its four events into
+  // existing/new state, per that hook's own design notes.
+  const voiceConversation = useVoiceConversationSession({
+    onUserMessage: (message) => {
+      setMessages((current) => [...current, { id: message.id, role: 'user', content: message.content, disliked: false }])
+      // A reply is now expected - empty string, not null, so the streaming
+      // bubble renders immediately even before the first delta arrives.
+      streamingReplyContentRef.current = ''
+      setStreamingReplyContent('')
+    },
+    onReplyDelta: (content) => {
+      streamingReplyContentRef.current += content
+      setStreamingReplyContent((current) => (current ?? '') + content)
+    },
+    onReplyDone: (message) => {
+      // streamingReplyContentRef.current is the complete accumulated text -
+      // the backend's reply_done event deliberately does NOT resend it (see
+      // this feature's plan).
+      setMessages((prev) => [
+        ...prev,
+        { id: message.id, role: 'assistant', content: streamingReplyContentRef.current, disliked: false },
+      ])
+      setStreamingReplyContent(null)
+    },
+    onError: (detail) => {
+      setStreamingReplyContent(null)
+      setVoiceError(detail === 'voice_model_not_configured' ? VOICE_UNAVAILABLE_MESSAGE : VOICE_GENERIC_ERROR_MESSAGE)
+    },
+  })
 
   function handleMessageListScroll(event: React.UIEvent<HTMLDivElement>): void {
     const list = event.currentTarget
@@ -440,6 +624,71 @@ export function ChatPage(): JSX.Element {
     }
   }
 
+  // Idle -> requests mic access and starts recording. Recording -> stops the
+  // in-progress recorder, which triggers its 'stop' handler (wired below)
+  // and, in turn, handleRecordingStopped. Transcribing -> ignored, so a
+  // stray click mid-request can't stop/restart anything.
+  async function handleMicClick(): Promise<void> {
+    if (micState === 'recording') {
+      mediaRecorderRef.current?.stop()
+      return
+    }
+    if (micState !== 'idle') {
+      return
+    }
+
+    setVoiceError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      recordedChunksRef.current = []
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data)
+        }
+      }
+      recorder.onstop = () => {
+        playRecordingSound('stop')
+        stream.getTracks().forEach((track) => track.stop())
+        void handleRecordingStopped()
+      }
+      mediaRecorderRef.current = recorder
+      recorder.start()
+      playRecordingSound('start')
+      setMicState('recording')
+    } catch {
+      // getUserMedia rejected - no mic, permission denied, or the API isn't
+      // supported at all. Nothing was ever recording, so micState stays
+      // 'idle' rather than needing a reset here.
+      setVoiceError(VOICE_GENERIC_ERROR_MESSAGE)
+    }
+  }
+
+  // Assembles the recorded chunks into one Blob and uploads it for
+  // transcription. The result is APPENDED to the current draft (joined by a
+  // single space) rather than replacing it - revised 2026-08-14 per
+  // explicit request, from this feature's original REPLACES-the-draft
+  // design (see .claude/plans/2026-08-13-voice-recognition.md's design
+  // notes for that original reasoning) after live use showed replace felt
+  // wrong when re-recording to add more onto an already-dictated message.
+  // An empty (or whitespace-only) draft just becomes the transcribed text
+  // directly, with no leading space.
+  async function handleRecordingStopped(): Promise<void> {
+    setMicState('transcribing')
+    const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' })
+    try {
+      const text = await apiClient.transcribeVoice(blob)
+      setDraft((current) => {
+        const trimmedCurrent = current.trim()
+        return trimmedCurrent ? `${trimmedCurrent} ${text}` : text
+      })
+    } catch (error) {
+      setVoiceError(error instanceof VoiceUnavailableError ? VOICE_UNAVAILABLE_MESSAGE : VOICE_GENERIC_ERROR_MESSAGE)
+    } finally {
+      setMicState('idle')
+    }
+  }
+
   return (
     <Stack
       gap="lg"
@@ -588,7 +837,29 @@ export function ChatPage(): JSX.Element {
             ))
           )}
 
-          {isSending ? (
+          {streamingReplyContent !== null ? (
+            // The voice-conversation reply streaming in - the SAME assistant-
+            // message Paper/Group/BotAvatar markup the real message list
+            // above already uses (see ChatPage.tsx's own message-list
+            // rendering), just showing the accumulated text so far rather
+            // than a real `messages` entry. Mutually exclusive with the
+            // isSending typing indicator below it: a voice turn is never
+            // also a manual handleSend in flight.
+            <Group data-testid="voice-streaming-reply" align="flex-start" wrap="nowrap" gap="sm" justify="flex-start">
+              <BotAvatar />
+              <Paper
+                radius="xl"
+                p="lg"
+                maw="75%"
+                bg="var(--doc-surface)"
+                style={{ border: '1px solid var(--doc-hairline)' }}
+              >
+                <Text ff="monospace" size="lg" style={{ whiteSpace: 'pre-wrap' }}>
+                  {streamingReplyContent}
+                </Text>
+              </Paper>
+            </Group>
+          ) : isSending ? (
             <Group data-testid="typing-indicator" align="flex-start" wrap="nowrap" gap="sm" justify="flex-start">
               <BotAvatar />
               <Paper radius="xl" p="lg" bg="var(--doc-surface)" style={{ border: '1px solid var(--doc-hairline)' }}>
@@ -616,6 +887,20 @@ export function ChatPage(): JSX.Element {
           </Alert>
         ) : null}
 
+        {voiceError ? (
+          <Alert
+            color="alertMagenta"
+            variant="light"
+            radius="lg"
+            title="Something went wrong"
+            withCloseButton
+            onClose={() => setVoiceError(null)}
+            style={{ flexShrink: 0 }}
+          >
+            {voiceError}
+          </Alert>
+        ) : null}
+
         {/* Naturally pinned at the bottom: it's the last child of the
             fixed-height flex column above, after the scrollable message
             list - not `position: sticky`, which only engages once there's
@@ -632,25 +917,84 @@ export function ChatPage(): JSX.Element {
           style={{ border: '1px solid var(--doc-hairline)', flexShrink: 0 }}
           my="md"
         >
-          <Group gap="xs" wrap="nowrap">
-            <TextInput
+          {/* align="flex-end" (not the default center) so the mic/send
+              buttons stay pinned to the bottom of the input as it grows
+              past one line, matching how the growing Textarea below visibly
+              extends upward - centering them would look increasingly
+              off-balance the taller the box gets. */}
+          <Group gap="xs" wrap="nowrap" align="flex-end">
+            <Textarea
               aria-label="Message"
               placeholder="Message DocuMind"
               value={draft}
               onChange={(event) => setDraft(event.currentTarget.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') {
+                // Enter sends, same as the old single-line input - Shift+Enter
+                // is left unhandled here so the browser's own default
+                // textarea behavior (insert a newline) applies instead,
+                // letting a message be composed across multiple lines.
+                // preventDefault on the send path stops Enter from ALSO
+                // inserting a newline before handleSend clears the draft.
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
                   void handleSend()
                 }
               }}
+              autosize
+              minRows={CHAT_INPUT_MIN_ROWS}
+              maxRows={CHAT_INPUT_MAX_ROWS}
               variant="unstyled"
               size="lg"
+              disabled={voiceConversation.status !== 'idle'}
               style={{ flex: 1 }}
               styles={{ input: { paddingLeft: 'var(--mantine-spacing-md)' } }}
             />
             <ActionIcon
+              aria-label={micState === 'recording' ? 'Stop recording' : 'Start voice input'}
+              onClick={() => void handleMicClick()}
+              disabled={isSending || micState === 'transcribing' || voiceConversation.status !== 'idle'}
+              color={micState === 'recording' ? 'alertMagenta' : 'signalBlue'}
+              radius="xl"
+              size="xl"
+              variant={micState === 'recording' ? 'filled' : 'outline'}
+            >
+              {micState === 'transcribing' ? (
+                <Loader size="xs" color="white" data-testid="voice-transcribing" />
+              ) : micState === 'recording' ? (
+                <StopIcon />
+              ) : (
+                <MicIcon />
+              )}
+            </ActionIcon>
+            {/* SEPARATE hands-free voice-conversation control (see
+                useVoiceConversationSession.ts) - a distinct sparkOrange
+                outline in its idle state (vs. the dictation mic's own
+                signalBlue outline right next to it), switching to a filled
+                signalBlue with a pulsing glow (classes.voiceConversationActive,
+                ChatPage.module.css) once connecting/listening, so the two
+                controls' active states can never be mistaken for one
+                another either. */}
+            <ActionIcon
+              aria-label={voiceConversation.status === 'idle' ? 'Start voice conversation' : 'End voice conversation'}
+              onClick={() => {
+                if (voiceConversation.status === 'idle') {
+                  void voiceConversation.start()
+                } else {
+                  voiceConversation.stop()
+                }
+              }}
+              color={voiceConversation.status === 'idle' ? 'sparkOrange' : 'signalBlue'}
+              radius="xl"
+              size="xl"
+              variant={voiceConversation.status === 'idle' ? 'outline' : 'filled'}
+              className={voiceConversation.status !== 'idle' ? classes.voiceConversationActive : undefined}
+            >
+              <VoiceConversationIcon />
+            </ActionIcon>
+            <ActionIcon
               aria-label="Send"
               onClick={() => void handleSend()}
+              disabled={voiceConversation.status !== 'idle'}
               color="sparkOrange"
               radius="xl"
               size="xl"

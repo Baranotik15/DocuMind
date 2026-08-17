@@ -59,6 +59,8 @@ embeddings.
 - **🎯 See the retrieval before you trust it** — the Relevance Preview page runs the same retrieval step the chat uses and shows exactly which chunks a question would pull back and how closely each one scores, no LLM call required.
 - **📊 A dashboard that actually watches the pipeline** — a full event log, calendar-aligned usage charts, a live 3D map of how your chunks cluster in embedding space, and OpenAI spend broken down to the token.
 - **🔎 Turns failure into a to-do list** — the Improvements tab quietly tracks every disliked reply and every "I don't know" the bot gives, then an AI-powered pass reads that history and writes a plain-language gap analysis of what your documentation is missing, plus flags places where two documents flatly contradict each other.
+- **🎙️ Dictate instead of type** — a mic button on the Chat page transcribes speech to text entirely offline via a locally-hosted Vosk model, so no audio ever leaves your deployment. Optional and off by default — see [Setting up voice recognition](#-setting-up-voice-recognition-optional).
+- **🗣️ Hands-free voice conversation** — a second button opens a live, continuous conversation: it auto-detects when you've stopped talking and sends what you said with no button press, the reply streams in as text and is spoken back to you at roughly the same pace it's being read, and you can just start talking to interrupt a reply mid-sentence. Speech recognition stays local (same Vosk model as dictation); spoken replies are synthesized via OpenAI's TTS API. Optional and off by default — see [Setting up voice recognition](#-setting-up-voice-recognition-optional).
 
 ---
 
@@ -277,6 +279,8 @@ below, grouped by module; all paths are prefixed with `/internal` except
 |---|---|---|
 | `POST` | `/chat/messages` | Send a message, get an LLM reply |
 | `GET` | `/chat/messages` | List chat history |
+| `POST` | `/chat/transcribe` | Transcribe a recorded audio clip to text (multipart; offline via Vosk, see [Setting up voice recognition](#-setting-up-voice-recognition-optional)) |
+| `WS` | `/chat/voice-session` | Hands-free voice conversation - continuous speech in (Vosk), streamed text + spoken replies out (OpenAI TTS), with barge-in |
 | `POST` | `/chat/messages/{id}/dislike` | Toggle dislike on a message |
 | `POST` | `/chat/top-chunks` | Relevance preview - top-5 matching chunks, no LLM call |
 | `GET` | `/chat/dislikes` | Every currently-disliked message (query: `range`) |
@@ -484,6 +488,72 @@ admin-Chat-page message) is a harmless no-op. An app-authored message
 (the bot's own reply landing back in a DM as a new `message.im` event)
 is always ignored too - otherwise it would answer its own answers in a
 loop.
+
+<a id="-setting-up-voice-recognition-optional"></a>
+
+### 🎙️ Setting up voice recognition (optional)
+
+The Chat page has two voice features, both built on the same locally-hosted
+[Vosk](https://alphacephei.com/vosk/) speech model for recognizing what you
+say - recognition itself always runs offline, no audio of your own voice
+ever leaves your deployment:
+
+- The **mic button** lets you dictate a question instead of typing it:
+  record, get back transcribed text in the input box, review/edit it, send
+  it yourself.
+- The **waveform button** next to it opens a hands-free voice conversation:
+  it keeps listening continuously, auto-sends what you said as soon as you
+  pause (no button press needed), streams the reply in as text, and speaks
+  it back to you - talking again mid-reply interrupts it immediately.
+  Unlike recognizing your voice, the **spoken reply audio is synthesized
+  via OpenAI's cloud TTS API** (reusing the same `OPENAI_API_KEY` chat
+  already needs) - that direction does leave your deployment. If synthesis
+  fails (e.g. no key configured), the reply still streams in as text, it
+  just isn't spoken.
+
+Both are optional and off by default: with no Vosk model configured, the
+mic button still records but transcription fails with a clear "not
+installed" error, and the voice-conversation button's session ends the
+same way instead of silently doing nothing.
+
+**1. Download a model** - pick one for your language from the official
+[Vosk model list](https://alphacephei.com/vosk/models). This project has
+been tested against `vosk-model-small-ru-0.22` (Russian, ~45MB). License
+terms vary per model - most (including the one above) are Apache 2.0, but
+check the specific model you pick on that page rather than assuming.
+
+**2. Unzip it into `backend/data/vosk_models/`** - e.g. unzipping
+`vosk-model-small-ru-0.22.zip` should produce
+`backend/data/vosk_models/vosk-model-small-ru-0.22/`. This directory is
+`.gitignore`d - models are never committed to the repo, you install your
+own copy locally.
+
+**3. Point `VOSK_MODEL_PATH` at it in `.env`** (see `.env.example`):
+
+```
+VOSK_MODEL_PATH=./data/vosk_models/vosk-model-small-ru-0.22
+```
+
+**4. Rebuild/restart the backend and worker** to pick up the new setting:
+
+```bash
+docker compose up -d --build backend worker
+```
+
+Only one model (one language) is active at a time - there's no in-app
+language switcher yet. Switching languages means downloading a different
+model and repointing `VOSK_MODEL_PATH` at it.
+
+**Voice conversation mode's spoken replies** need no separate setup beyond
+the `OPENAI_API_KEY` chat already requires. The TTS model/voice are
+configurable via optional overrides in `.env` (see `.env.example`):
+
+```
+OPENAI_TTS_MODEL=tts-1
+OPENAI_TTS_VOICE=alloy
+```
+
+One voice for the whole deployment - no per-user or per-message choice.
 
 ### 🔗 Exposing your local backend for webhook testing (ngrok)
 

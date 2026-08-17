@@ -14,6 +14,10 @@ __pycache__/
 venv/
 .claude/settings.local.json
 backend/data/
+# Also covered by backend/data/ above, called out explicitly since these
+# are large third-party speech models the user downloads/unzips manually
+# (see README's Voice Recognition setup) rather than app-generated data.
+backend/data/vosk_models/
 coverage/
 coverage.xml
 .coverage
